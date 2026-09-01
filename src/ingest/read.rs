@@ -30,21 +30,21 @@ const KNOWN_TYPES: [&str; 4] = ["TEXT", "IMAGE", "GIF", "VIDEO"];
 static SEEN_UNKNOWN: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// 领域列名 —— `select_sql!` 的 SELECT 列表和 [`scan`] 的取值点引用**同一组常量**。
-/// 曾经 12 个列名各写两遍（SQL 一遍、`r.get("…")` 一遍），必须逐字相同才能跑通，
-/// 编译期零校验；现在打错一个字母是编译错误，不再是运行期 `InvalidColumnName`。
-const COL_MSG_ID: &str = "msg_id";
-const COL_ROOM: &str = "room";
-const COL_CORP: &str = "corp";
-const COL_AT: &str = "at";
-const COL_SENDER_ID: &str = "sender_id";
-const COL_SENDER_ROLE: &str = "sender_role";
-const COL_TEXT: &str = "text";
-const COL_REPLY_TO: &str = "reply_to";
-const COL_SCHEMA_VERSION: &str = "schema_version";
-const COL_PARSER_VERSION: &str = "parser_version";
-const COL_UPSTREAM_TYPE: &str = "upstream_type";
-const COL_SRC_FILE: &str = "src_file";
+/// 全进程**一个** DuckDB 实例，每次查询从它 `try_clone` 一条连接出来。
+///
+/// 不只是省开连接那点时间：`Connection::open_in_memory()` 每次都新建一个完整的数据库
+/// 实例 —— 实测 **24.5ms/次**，且每个实例自带 `threads = 核数` 个工作线程、声明
+/// `memory_limit = 80% RAM`。`room_concurrency = 8` 时那是 **8 × 12 个工作线程压在 12 个
+/// 核上、8 份各 12.7 GiB 的内存预算声明**。共享之后线程池和内存上限都只剩一份，
+/// `try_clone` 实测 **0.03ms**（10 个真实群的 `read_room` 共 957ms，其中 245ms 是纯开连接）。
+///
+/// 锁只圈住 `try_clone` 这一下 —— 查询在各自的连接上跑，不进临界区。要锁是因为
+/// `duckdb::Connection` 是 `Send` 不是 `Sync`。
+///
+/// 建实例失败 / 锁毒化都不是「某个群的事」：进程内内存数据库都起不来，整轮本来就该死，
+/// 按硬规则用 `expect`。
+static DB: LazyLock<Mutex<duckdb::Connection>> =
+    LazyLock::new(|| Mutex::new(duckdb::Connection::open_in_memory().expect("建 DuckDB 实例")));
 
 /// 列名即领域名。上游字段名只允许出现在这里。
 ///
@@ -52,43 +52,49 @@ const COL_SRC_FILE: &str = "src_file";
 /// 推出来的整数宽度跟着样本走，取值端要一个定死的物理类型。
 ///
 /// **为什么是 `macro_rules!` 而不是 `const`**：这样下面那个 `format!` 能在**编译期**
-/// 校验全部占位符。换成 `const` + `.replace("{since}", …)` 的话，占位符打错一个字母
-/// 会原样带进 SQL、到 DuckDB 才报解析错；而且 `.replace` 是有先后顺序的 ——
-/// 先插进去的内容会被后面几次 replace 再扫一遍。
-/// SQL 仍然是文件顶上一个具名的东西，「字段名只出现在这里」这条约束一字未变。
+/// 校验剩下那几个运行期占位符（`{tz}` / `{files}` / 窗口两端 / `{extra}`）。换成
+/// `const` + `.replace("{since}", …)` 的话，占位符打错一个字母会原样带进 SQL、到
+/// DuckDB 才报解析错；而且 `.replace` 有先后顺序 —— 先插进去的内容会被后面几次
+/// replace 再扫一遍。
+///
+/// ⚠️ **领域列名写字面量，不再各起一个 `COL_*` 常量。** 那 12 个常量的理由是
+/// 「打错一个字母是编译错误，而不是运行期 `InvalidColumnName`」，可 `ingest/tests.rs`
+/// 本来就在真文件上执行这条 SQL —— 打错一个字母 `cargo test` 两秒内就红。
+/// 12 个常量 + 12 个具名参数买到的只是把「测试第 2 秒失败」提前成「编译失败」，
+/// 代价是这条 SELECT 读起来不再像 SQL。
 macro_rules! select_sql {
     () => {
         r#"
 WITH src AS (
     SELECT
-        sourceMessageId                                  AS {msg_id},
-        officialRoomId                                   AS {room},
-        corpId                                           AS {corp},
+        sourceMessageId                                  AS msg_id,
+        officialRoomId                                   AS room,
+        corpId                                           AS corp,
         -- messageTime 是毫秒，/1000 转秒再喂 to_timestamp
-        to_timestamp(messageTime / 1000) AT TIME ZONE '{tz}'  AS "{at}",
-        sender.easyUserId                                AS {sender_id},
-        sender.identityType                              AS {sender_role},
-        COALESCE(NULLIF(analysisText, ''), content)      AS {text},
-        semanticPayload.replyTo.sourceMessageId          AS {reply_to},
-        CAST(schemaVersion AS BIGINT)                    AS {schema_version},
-        CAST(parserVersion AS BIGINT)                    AS {parser_version},
-        standardType                                     AS {upstream_type},
-        filename                                         AS {src_file}
+        to_timestamp(messageTime / 1000) AT TIME ZONE '{tz}'  AS "at",
+        sender.easyUserId                                AS sender_id,
+        sender.identityType                              AS sender_role,
+        COALESCE(NULLIF(analysisText, ''), content)      AS text,
+        semanticPayload.replyTo.sourceMessageId          AS reply_to,
+        CAST(schemaVersion AS BIGINT)                    AS schema_version,
+        CAST(parserVersion AS BIGINT)                    AS parser_version,
+        standardType                                     AS upstream_type,
+        filename                                         AS src_file
     FROM read_json_auto([{files}], format='newline_delimited', filename=true)
 )
-SELECT {msg_id}, {room}, {corp}, "{at}", {sender_id}, {sender_role}, {text}, {reply_to},
-       {schema_version}, {parser_version}, {upstream_type}, {src_file}
+SELECT msg_id, room, corp, "at", sender_id, sender_role, text, reply_to,
+       schema_version, parser_version, upstream_type, src_file
 FROM src
-WHERE CAST("{at}" AS DATE) BETWEEN DATE '{since}' AND DATE '{until}'{extra}
-ORDER BY "{at}", {msg_id}
+WHERE CAST("at" AS DATE) BETWEEN DATE '{since}' AND DATE '{until}'{extra}
+ORDER BY "at", msg_id
 "#
     };
 }
 
 /// 一次查询，边取行边变成领域对象，路上守五件事。文件列表为空直接返回空。
 ///
-/// 连接用完即弃 —— `Connection::open_in_memory()` 只有毫秒级开销，换来的是
-/// 「从任意线程调用都安全」，不用给每个线程发一个 cursor。
+/// 连接从共享实例 `try_clone` 出来、用完即弃（见 [`DB`]）—— 换来的是「从任意线程
+/// 调用都安全」，又不必每个群新建一个带 12 条工作线程的数据库实例。
 ///
 /// 过滤、投影、排序全下推给 DuckDB；这里只做「行 → 领域对象」和守卫，
 /// **不把整表拉进内存再筛**。
@@ -116,7 +122,7 @@ fn scan(
     // 窗口的两端是我们自己格式化出来的日期，直接进 SQL；msg_id 来自外部（webUI
     // 下钻），走 `?` 绑定。
     let extra = match ids {
-        Some(ids) => format!(" AND {COL_MSG_ID} IN ({})", vec!["?"; ids.len()].join(", ")),
+        Some(ids) => format!(" AND msg_id IN ({})", vec!["?"; ids.len()].join(", ")),
         None => String::new(),
     };
     let sql = format!(
@@ -126,21 +132,10 @@ fn scan(
         since = w.since(),
         until = w.until(),
         extra = extra,
-        msg_id = COL_MSG_ID,
-        room = COL_ROOM,
-        corp = COL_CORP,
-        at = COL_AT,
-        sender_id = COL_SENDER_ID,
-        sender_role = COL_SENDER_ROLE,
-        text = COL_TEXT,
-        reply_to = COL_REPLY_TO,
-        schema_version = COL_SCHEMA_VERSION,
-        parser_version = COL_PARSER_VERSION,
-        upstream_type = COL_UPSTREAM_TYPE,
-        src_file = COL_SRC_FILE,
     );
 
-    let con = duckdb::Connection::open_in_memory()?;
+    // 共享实例上开一条连接（见 [`DB`]）。锁只圈这一下，查询不在临界区里。
+    let con = DB.lock().expect("锁内只有 try_clone").try_clone()?;
     let mut stmt = con.prepare(&sql)?;
     let mut rows = stmt.query(duckdb::params_from_iter(ids.unwrap_or_default()))?;
 
@@ -180,23 +175,20 @@ fn message_from_row(
 ) -> Result<Message> {
     // 按**列名**取，不按下标 —— 列名即领域名，那个名字必须在读取点也成立。
     // 下标错位在这里是静默的（12 列有 8 列都是字符串，互换类型兼容、编译通过、
-    // 守卫也放行）；列名与 SQL 引用同一组 COL_* 常量，打错是编译错误。
-    let msg_id: String = r.get::<_, Option<String>>(COL_MSG_ID)?.unwrap_or_default();
-    let r_room: String = r.get::<_, Option<String>>(COL_ROOM)?.unwrap_or_default();
-    let r_corp: String = r.get::<_, Option<String>>(COL_CORP)?.unwrap_or_default();
-    let at: Option<NaiveDateTime> = r.get(COL_AT)?;
-    let sender_id: String = r
-        .get::<_, Option<String>>(COL_SENDER_ID)?
-        .unwrap_or_default();
-    let raw_role: Option<String> = r.get(COL_SENDER_ROLE)?;
-    let text: String = r.get::<_, Option<String>>(COL_TEXT)?.unwrap_or_default();
-    let reply_to: Option<String> = r.get(COL_REPLY_TO)?;
-    let schema_v: Option<i64> = r.get(COL_SCHEMA_VERSION)?;
-    let parser_v: Option<i64> = r.get(COL_PARSER_VERSION)?;
-    let upstream_type: Option<String> = r.get(COL_UPSTREAM_TYPE)?;
-    let src_file: String = r
-        .get::<_, Option<String>>(COL_SRC_FILE)?
-        .unwrap_or_default();
+    // 守卫也放行）；列名打错则是运行期 `InvalidColumnName`，而 `tests.rs` 在真文件上
+    // 跑这条 SQL，两秒内就红。
+    let msg_id: String = r.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
+    let r_room: String = r.get::<_, Option<String>>("room")?.unwrap_or_default();
+    let r_corp: String = r.get::<_, Option<String>>("corp")?.unwrap_or_default();
+    let at: Option<NaiveDateTime> = r.get("at")?;
+    let sender_id: String = r.get::<_, Option<String>>("sender_id")?.unwrap_or_default();
+    let raw_role: Option<String> = r.get("sender_role")?;
+    let text: String = r.get::<_, Option<String>>("text")?.unwrap_or_default();
+    let reply_to: Option<String> = r.get("reply_to")?;
+    let schema_v: Option<i64> = r.get("schema_version")?;
+    let parser_v: Option<i64> = r.get("parser_version")?;
+    let upstream_type: Option<String> = r.get("upstream_type")?;
+    let src_file: String = r.get::<_, Option<String>>("src_file")?.unwrap_or_default();
 
     // ① 上游版本 —— 不匹配是**整轮**的事（上游解析器变了），不是某个群的事
     if schema_v != Some(SCHEMA_VERSION) || parser_v != Some(PARSER_VERSION) {
@@ -300,8 +292,6 @@ fn counts(msgs: &[Message]) -> BTreeMap<NaiveDate, (usize, usize)> {
 pub fn read_room(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Result<Conversation> {
     let msgs = scan(&files(raw_root, corp, room, w), w, None, corp, room)?;
     Ok(Conversation {
-        corp: corp.to_string(),
-        room: room.to_string(),
         msg_counts: counts(&msgs),
         msgs,
     })

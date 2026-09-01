@@ -2,12 +2,15 @@
 //!
 //! 四条实测结论决定了这里的写法（2026-09-01，dashscope 兼容端点 + qwen3.8-flash）：
 //!
-//! 1. **端点协商到 HTTP/2**。reqwest 走 ALPN 默认就拿到了，无需任何配置。
-//!    不要设 `http2_prior_knowledge()` —— 那是给明文 h2c 用的，https 上设了会跳过
-//!    协商，反而可能连不上。
+//! 1. **全程 HTTP/1.1，没有 h2 —— 有意的**。`Cargo.toml` 给 reqwest 关了默认 feature
+//!    且没开 `http2`（`Cargo.lock` 里根本没有 `h2` 这个 crate），所以 ALPN 不会去协商
+//!    h2。⚠️ 早先这里写着「端点协商到 HTTP/2，走 ALPN 默认就拿到了」—— 那是拿 curl
+//!    量的，**不是这个二进制的行为**，别照着它推理。
+//!    不开的理由：负载是 8 路并发的长请求（单次实测 118~168s），一路一条 1.1 连接就够，
+//!    多路复用在这里买不到东西，不值得多背一个 `h2` 依赖。
 //!
 //! 2. **连接复用**：`Llm` 全进程只建一次，并发任务 clone 它 —— 内部 `reqwest::Client`
-//!    是 Arc，clone 共享同一个连接池和 h2 多路复用连接。
+//!    是 Arc，clone 共享同一个 HTTP/1.1 连接池。
 //!    ⚠️ 但别把它当性能旋钮：握手成本实测约 85ms（curl 打 /models：首次 connect 6.7ms
 //!    /total 143ms，复用后 0ms/58ms），而真实抽取调用光模型生成就波动 0.8~2.3s ——
 //!    A/B 各跑 3 次「复用」对「每次新建」，**差异完全淹没在噪声里，测不出来**。
@@ -95,20 +98,17 @@ impl From<OpenAIError> for LlmError {
     }
 }
 
-/// 抽取结果连带这次调用的用量。
+/// 一次调用的结果 —— **只有两样，因为调用方只读这两样**。
 ///
-/// 用量不是可选的装饰：ROOM_CONCURRENCY 的上限是端点 TPM 算出来的，而现有估算是拿
-/// 字符数折的、偏差未知。上层把这里的数字累加起来，才能把那个估算坐实。
+/// ⚠️ **用量不在这里**：三个 token 数曾经是 pub 字段，而全仓唯一的读取点是
+/// [`Llm::extract`] 自己那两行日志（`推理没关掉` 的告警 + 一行 info）。
+/// ROOM_CONCURRENCY 的上限确实要靠端点 TPM 坐实，但那需要的是**跨调用累加**，
+/// 不是每次调用带回一份没人接的数字 —— 真做那件事时再让它们出面。
 #[derive(Debug)]
 pub struct Extracted<T> {
     pub data: T,
     /// 模型返回的原始 JSON。校验不过时要把它原样放进 [`Turn::Assistant`] 再问一次。
     pub raw: String,
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    /// 推理 token。抽取任务这里应该恒为 0 —— 不为 0 就说明 reasoning_effort 配错了，
-    /// 在白烧钱。别信"没报错"，就看这个数。
-    pub reasoning_tokens: u32,
 }
 
 /// 全进程共享一个。clone 是廉价的，连接池跟着一起共享。
@@ -218,6 +218,8 @@ impl Llm {
             .ok_or_else(|| LlmError::Other("模型没返回内容".into()))?;
 
         let usage = response.usage.unwrap_or_default();
+        // 抽取任务这里应该恒为 0 —— 不为 0 就说明 reasoning_effort 配错了，在白烧钱。
+        // 别信「没报错」，就看这个数。
         let reasoning_tokens = usage
             .completion_tokens_details
             .and_then(|d| d.reasoning_tokens)
@@ -245,9 +247,6 @@ impl Llm {
                 )
             })?,
             raw: content.to_string(),
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            reasoning_tokens,
         })
     }
 }

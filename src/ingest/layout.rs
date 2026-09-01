@@ -87,3 +87,60 @@ pub(super) fn files(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Vec<
         .filter(|(_, p)| p.is_file())
         .collect()
 }
+
+/// 删掉过保留期的月目录，返回删掉几个。
+///
+/// **本轮窗口要读的月份不可能被删** —— 保留起点锚在 `w.since()` 而不是今天，
+/// 所以 `lookback_days` 配多大都不会自伤。`retention = 2` ⇒ 保留窗口最早月
+/// 和它前一个月。
+///
+/// `%Y%m` 的字典序等于时间序，所以比一次字符串就够，不用把目录名解析回日期 ——
+/// 布局只被拼，不被拆。
+///
+/// ⚠️ **全仓唯一一处递归删生产数据的地方。** 门槛按「必须长得像月目录」设：
+/// 是目录、名字恰好 6 位数字、且严格早于保留起点。raw_root 底下别的东西一律不碰。
+///
+/// ⚠️ **它同时决定 webUI 下钻还能看多久以前的原文** —— 超出保留期的事件，
+/// [`super::read_by_ids`] 会显式报「取不到这些 msg_id」，不会静默少给。
+///
+/// 删不掉只是磁盘继续涨，不是数据错 —— 记 warn，不掀翻这一轮。
+pub fn prune(raw_root: &Path, w: &Window, retention: u32) -> usize {
+    assert!(
+        retention >= 1,
+        "raw_retention_months 必须 ≥ 1（0 会把本轮要读的月份删掉），改 config.toml"
+    );
+    let keep_from = w
+        .since()
+        .checked_sub_months(chrono::Months::new(retention - 1))
+        .expect("窗口起点往前推几个月不会越界")
+        .format(MONTH_FMT)
+        .to_string();
+
+    // raw_root 还不存在 = 一次都没拉过，不是错误。
+    let Ok(entries) = fs::read_dir(raw_root) else {
+        return 0;
+    };
+    let mut n = 0;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.len() != 6
+            || !name.bytes().all(|b| b.is_ascii_digit())
+            || name >= keep_from
+            || !e.path().is_dir()
+        {
+            continue;
+        }
+        match fs::remove_dir_all(e.path()) {
+            Ok(()) => {
+                n += 1;
+                tracing::info!(month = %name, keep_from = %keep_from, "删除过保留期的月目录");
+            }
+            // 静默失败 = 磁盘会一直涨到没人发现为止。
+            Err(err) => tracing::warn!(
+                month = %name,
+                "过保留期的月目录删不掉，磁盘会继续涨：{err}"
+            ),
+        }
+    }
+    n
+}

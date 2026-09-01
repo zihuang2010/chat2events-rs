@@ -34,9 +34,38 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
     // **整轮**预算，各阶段共用同一份 —— 每个阶段各给一份就不叫整轮预算了。
     let deadline = Instant::now() + Duration::from_secs(config.daily.round_deadline_secs);
 
+    // **开轮第一行就是窗口。** 「跑完了但库里没数据」最常见的原因是窗口和数据错开
+    // （样本停更、lookback 配小了），而那条信息此前只出现在收尾那行日志里 ——
+    // 排查的人得先读完一整轮日志才看得到自己读的是哪两天。
+    tracing::info!(
+        run_date = %run_date,
+        since = %w.since(),
+        until = %w.until(),
+        days = w.days().len(),
+        lookback_days = config.ingest.lookback_days,
+        deadline_secs = config.daily.round_deadline_secs,
+        "开始跑批"
+    );
+
     // ① 拉取 —— 把 OSS 上的月文件增量同步到本地 raw 区。
     // 索引表查不到是**整轮**失败（`?` 上抛）；单个群拉不下来只是这个群的事。
     let unsynced = mirror::sync(config, pool, &w, deadline).await?;
+
+    // 保留期 —— **紧跟拉取，不放收尾**：收尾那儿有好几条提前 return，只要有群失败
+    // 就轮不到清理，磁盘偏偏会在最该清的那些天继续涨。删除起点锚在窗口上
+    // （见 `ingest::prune`），本轮要读的月份不可能被删。
+    let pruned = ingest::prune(
+        &config.ingest.raw_root,
+        &w,
+        config.ingest.raw_retention_months,
+    );
+    if pruned > 0 {
+        tracing::info!(
+            pruned,
+            retention_months = config.ingest.raw_retention_months,
+            "清理过保留期的月目录"
+        );
+    }
 
     let t0 = Instant::now();
     let mut rooms = ingest::list_rooms(&config.ingest.raw_root, &w);
@@ -53,7 +82,11 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
     };
     for (corp, room) in &unsynced {
         tracing::error!(corp = %corp, room = %room, "跳过（拉取失败），只记 run_failure");
-        store::write_room(
+        // **记账失败不掀翻整轮**（承重不变量 3，和 `run_room` 里那条 store 失败同一条通道）：
+        // 这个群本来就已经作废，少一行 `run_failure` 是少一条账，不是多一份坏数据。
+        // 库整个连不上的话 `check_schema` 在开轮第一秒就炸过了 —— 走到这里的是瞬时抖动。
+        // 整轮仍然会因为 `unsynced > 0` 非零码退出，不会绿灯过去。
+        if let Err(e) = store::write_room(
             pool,
             run_date,
             corp,
@@ -66,7 +99,10 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
             &[],
             &[],
         )
-        .await?;
+        .await
+        {
+            tracing::error!(corp = %corp, room = %room, "连 run_failure 都没记上：{e}");
+        }
     }
 
     let model = std::sync::Arc::new(LiveModel::new(llm.clone()));
@@ -110,6 +146,19 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
         secs = t0.elapsed().as_secs_f64(),
         "跑批完成"
     );
+
+    // 全部群窗口内都没有消息 —— **一行都没写，但这不是失败**（新部署的第一天、
+    // 长假、上游停更都会这样）。不改退出码，但必须响一声：此前它和「跑得好好的」
+    // 在日志上长得一模一样，而库里是空的。
+    if t.empty > 0 && t.empty == rooms.len() {
+        tracing::warn!(
+            rooms = rooms.len(),
+            since = %w.since(),
+            until = %w.until(),
+            "全部群在本轮窗口内都没有消息，一行都没写 —— \
+             先确认上游是否停更，或窗口（lookback_days）是否和数据错开"
+        );
+    }
 
     // 本轮没跑完必须看得见 —— 绿灯过去的话，指标少了一批群没有任何人会知道。
     if t.over_budget > 0 {
@@ -204,7 +253,10 @@ pub(super) async fn run_room(
         .expect("read_room 的每条失败路径都返回 Err，不 panic")?;
 
     // 有文件但窗口内一条消息都没有 —— 这个群本轮没发生任何事，**不写任何行**。
+    // 走 debug 不走 info：1000 个群时这会是 1000 行，而它是排障信息不是运行状态
+    // （运行状态由收尾那行的 `empty=` 计数承担）。
     if conv.msgs.is_empty() {
+        tracing::debug!(corp = %corp, room = %room, "窗口内没有消息，不写任何行");
         return Ok(Outcome::Empty);
     }
     let msgs = conv.msgs.len();
@@ -241,21 +293,39 @@ pub(super) async fn run_room(
     );
 
     // ⑦ 落库 —— 一个群一个事务（承重不变量 2）
-    store::write_room(
-        pool,
-        run_date,
-        corp,
-        room,
-        w,
-        events.as_deref(),
-        &types,
-        CURRENT_VERSION,
-        reason.as_deref(),
-        &group,
-        &agent,
-    )
-    .await
-    .map_err(|e| IngestError::Room(format!("落库失败：{e}")))?;
+    //
+    // **失败重试一次。** 走到这里，这个群的模型调用已经跑完、token 已经烧掉 ——
+    // 一次连接抖动（池子被别的群占满、库在重启）不该把这份成果整个扔掉。
+    // 重试是安全的：失败的事务已经回滚，而 `write_room` 本来就是按分片删重写 + REPLACE，
+    // 跑两遍和跑一遍等价。**不睡** —— 会失败的那几种情况（池子满、锁等待）本身就已经
+    // 等满了各自的超时，再睡只是让整轮更长。
+    //
+    // ⚠️ **只在抽取成功时重试。** 抽取失败那条路写的是 `run_failure` —— 追加，不幂等，
+    //    重试会在「提交成功但回包丢了」那个窗口里写出第二行。而它值不了这个价：
+    //    那个群已经作废，少一行 `run_failure` 只是少一条账，和拉取失败那条通道一个待遇。
+    let write = || {
+        store::write_room(
+            pool,
+            run_date,
+            corp,
+            room,
+            w,
+            events.as_deref(),
+            &types,
+            CURRENT_VERSION,
+            reason.as_deref(),
+            &group,
+            &agent,
+        )
+    };
+    let mut wrote = write().await;
+    if let Err(e) = &wrote
+        && events.is_some()
+    {
+        tracing::warn!(corp = %corp, room = %room, "落库失败，重试一次：{e}");
+        wrote = write().await;
+    }
+    wrote.map_err(|e| IngestError::Room(format!("落库失败：{e}")))?;
 
     Ok(match events {
         Some(evs) => Outcome::Ok {

@@ -72,6 +72,19 @@ pub struct IngestConfig {
     /// ⚠️ 这条路径配了 30 天 CDN 缓存且客户端绕不掉，见 ADR-0005 结尾。
     pub download_base_url: String,
 
+    /// 本地 raw 区保留几个月，更老的月目录整个删掉（[`crate::ingest::prune`]）。
+    ///
+    /// 保留起点锚在**窗口**上（保留「窗口最早月往前推 N-1 个月」起的全部月目录），
+    /// 所以 `lookback_days` 配多大都不会把本轮要读的月份删掉。
+    ///
+    /// ⚠️ **它同时是 webUI 下钻的可见范围。** 超出保留期的事件，`read_by_ids`
+    /// 会显式报「取不到这些 msg_id」——「本地没有就回 OSS 取」的兜底还没做，
+    /// 见 ADR-0005 结尾。调小它之前先想清楚主管要能往回看多久。
+    ///
+    /// N=2 时磁盘上界 ≈ 2 个月（1000 群约 36 GB）。此前**没有任何清理**，
+    /// 一年约 216 GB 且永不回落。
+    pub raw_retention_months: u32,
+
     /// 同时在飞的月文件下载数。跟 ADR-0004 里 `SEGMENT_MSGS` / `ROOM_CONCURRENCY`
     /// 一个规矩：这类值必须由部署环境明确给出。
     pub mirror_concurrency: usize,
@@ -84,8 +97,12 @@ pub struct IngestConfig {
     ///   * **墙钟旋钮** —— ③ 接上之后这是唯一能压的那个，届时约束是端点 TPM
     ///     而不是并发数本身，调它之前先看限流。
     ///
-    /// 今天只有读取在并发，实测拐点在 8（100 群 / 555 MB / 12 核，串行 9.81s →
+    /// 今天只有读取在并发，**曾**测拐点在 8（100 群 / 555 MB / 12 核，串行 9.81s →
     /// k=8 2.48s，k=12 起不再变快）。
+    ///
+    /// ⚠️ **第六轮之后那个数失效了**：它是「每个群新开一条 DuckDB 连接」时代量的，
+    /// 共享实例把单群读取成本压掉一个数量级（10 群 957ms → 71ms），拐点必然前移。
+    /// 重量之前别拿它当依据 —— 何况 ③ 接上后约束本来就是端点 TPM 而不是本机核数。
     pub room_concurrency: usize,
 }
 
@@ -141,6 +158,19 @@ pub struct MysqlConfig {
     pub acquire_timeout_secs: u64,
 }
 
+/// 会话时区。**sqlx 建连接时会把会话设成 `+00:00`**，而 `schema.sql` 里
+/// `gmt_created_time` / `gmt_modified_time` 是 `DEFAULT CURRENT_TIMESTAMP` ——
+/// 那个默认值按**会话**时区求值，于是这两列比业务本地时间少 8 小时，
+/// 且和别的客户端（走服务器全局时区）插进来的行不一致。
+///
+/// 用固定偏移不用 `'Asia/Shanghai'`：命名时区要 MySQL 导入过 tz 表（多数部署没有），
+/// 而中国不用夏令时，`+08:00` 与它恒等。
+///
+/// ⚠️ **这不影响任何业务时间列。** `first_msg_time` 那几列是 `DATETIME`（MySQL 对它
+/// 不做时区转换）且由代码显式绑 `NaiveDateTime` —— 那条链上本来就没有会话时区的事。
+/// 这里修的只是 MySQL 自己算的那两个审计列。
+const SET_SESSION_TZ: &str = "SET time_zone = '+08:00'";
+
 /// 建连接池。
 ///
 /// ⚠️ 用 `.connect()` 不是 `.connect_lazy()`：这里会立刻握一次手，库连不上就在启动
@@ -149,6 +179,13 @@ pub async fn mysql_pool(cfg: &MysqlConfig, url: &str) -> Result<MySqlPool, sqlx:
     MySqlPoolOptions::new()
         .max_connections(cfg.max_connections)
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
+        // 池里每条连接都要拨一次 —— 会话变量是连接级的，只在建池时设一次管不到后开的连接。
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::Executor::execute(conn, SET_SESSION_TZ).await?;
+                Ok(())
+            })
+        })
         .connect(url)
         .await
 }

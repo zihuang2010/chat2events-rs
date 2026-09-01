@@ -3,7 +3,7 @@
 //! 承重不变量 4（`Ok([])` 与 `Failed` 绝不混淆）和 5（失败的群在 agent 表上整行缺失）
 //! 就靠这几条守着 —— 错了不会报错，只会让报表安静地偏小。
 
-use super::{compute::*, rows::*};
+use super::compute::*;
 use crate::{
     classify::{CURRENT_VERSION, UNTYPED},
     extract::Event,

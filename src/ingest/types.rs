@@ -64,14 +64,12 @@ pub struct Message {
 }
 
 /// **接口粒度 = 群 × 一次运行的完整会话 = 失败隔离粒度 = ③ 的输入。** 四者必须相等。
+///
+/// ⚠️ **没有 `corp` / `room` 字段**：全项目零读取点 —— `daily::run_room` 一路带着自己的
+/// 那两个参数（它得先有 corp/room 才调得动 `read_room`），`Event` 的那两列来自
+/// `Message`。照 `CONTEXT.md`「已删除的字段」那张表的先例删掉：**删的是税，不是功能**。
 #[derive(Debug, Clone)]
-// ③⑦ 已经搬完，但两个字段仍然没有读取点：`daily::run_room` 一路带着自己的
-// `corp` / `room` 参数，`Event` 的那两列来自 `Message`。保留它们是因为
-// `CONTEXT.md` 的领域契约里 `Conversation` 就是这个形状，且 webUI 下钻
-// （唯一还没搬的旁路）拿到 `Conversation` 时要用。
 pub struct Conversation {
-    pub corp: String,
-    pub room: String,
     pub msgs: Vec<Message>,
     /// 每天 (消息条数, 去重发言人数)。搭 `msgs` 的同一趟车算出来 ——
     /// 这个群的消息本来就已经在内存里（③ 要用），这里没有多读一个字节。

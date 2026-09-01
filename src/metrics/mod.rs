@@ -10,15 +10,15 @@
 //!
 //! ```text
 //! metrics/
-//!   rows.rs     两张表的行类型 + Status / Attribution 两个口径枚举
-//!   compute.rs  从 Event / msg_counts 算出那些行的纯函数
+//!   compute.rs  行类型 + Status / Attribution 两个口径枚举 + 算出那些行的纯函数
 //! ```
+//!
+//! 行类型曾经单住 `rows.rs`。合回来是因为那 73 行里 40 行是**在描述算法**
+//! （分母是哪一列、失败时是 `None` 不是 0），读的人两边来回翻。
 
 mod compute;
-mod rows;
 
-pub use compute::{agent_rows, group_rows};
-pub use rows::{AgentRow, Attribution, GroupRow, Status};
+pub use compute::{AgentRow, Attribution, GroupRow, Status, agent_rows, group_rows};
 
 #[cfg(test)]
 mod tests;

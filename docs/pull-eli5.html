@@ -1,0 +1,551 @@
+<title>月文件增量拉取</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@700;900&display=swap">
+<style>
+:root{
+  --paper:#e9edf1; --card:#fff; --ink:#131c25; --ink-2:#4b5866; --ink-3:#75828f;
+  --line:#c9d2db; --line-soft:#dde4ea;
+  --accent:#0e6a68; --accent-soft:#d3e5e4;
+  --new:#b25717; --new-soft:#f3ddc9;
+  --stop:#8d2e3b; --stop-soft:#f0d7da;
+  --hair:rgba(19,28,37,.10);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0f1720; --card:#18212b; --ink:#e3eaf1; --ink-2:#98a6b4; --ink-3:#77848f;
+    --line:#2c3844; --line-soft:#222c36;
+    --accent:#4fb4ad; --accent-soft:#12332f;
+    --new:#e28d48; --new-soft:#3a2a1a;
+    --stop:#e0737f; --stop-soft:#3a1f24;
+    --hair:rgba(227,234,241,.12);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0f1720; --card:#18212b; --ink:#e3eaf1; --ink-2:#98a6b4; --ink-3:#77848f;
+  --line:#2c3844; --line-soft:#222c36;
+  --accent:#4fb4ad; --accent-soft:#12332f;
+  --new:#e28d48; --new-soft:#3a2a1a;
+  --stop:#e0737f; --stop-soft:#3a1f24;
+  --hair:rgba(227,234,241,.12);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Noto Sans SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+  font-size:16px; line-height:1.75; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:920px; margin:0 auto; padding:0 24px 96px}
+
+/* ── 头 ───────────────────────────────── */
+.hero{padding:76px 0 44px; border-bottom:1px solid var(--line)}
+.kicker{
+  font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:12px; font-weight:600;
+  letter-spacing:.22em; text-transform:uppercase; color:var(--accent); margin:0 0 20px;
+}
+h1{
+  font-family:"Noto Serif SC",Songti SC,serif; font-weight:900;
+  font-size:clamp(38px,6.4vw,64px); line-height:1.14; letter-spacing:-.01em;
+  margin:0 0 20px; text-wrap:balance;
+}
+.lede{font-size:19px; line-height:1.8; color:var(--ink-2); max-width:34em; margin:0}
+.lede b{color:var(--ink); font-weight:700}
+
+/* ── 步骤骨架 ─────────────────────────── */
+.step{
+  display:grid; grid-template-columns:60px 1fr; gap:0 26px;
+  padding:52px 0 8px; position:relative;
+}
+.step + .step{border-top:1px solid var(--line-soft)}
+.tick{position:relative}
+.tick .n{
+  font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:600;
+  color:var(--accent); border:1px solid var(--accent); border-radius:2px;
+  width:34px; height:26px; display:grid; place-items:center; background:var(--card);
+}
+.tick::after{
+  content:""; position:absolute; left:17px; top:34px; bottom:-52px; width:1px;
+  background:repeating-linear-gradient(var(--line) 0 3px, transparent 3px 8px);
+}
+.step:last-of-type .tick::after{display:none}
+h2{
+  font-family:"Noto Serif SC",Songti SC,serif; font-weight:700;
+  font-size:26px; line-height:1.35; margin:0 0 10px; letter-spacing:-.005em;
+}
+h2 .en{
+  font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:400;
+  color:var(--ink-3); letter-spacing:.1em; display:block; margin-bottom:6px;
+}
+.body p{margin:0 0 14px; max-width:36em; color:var(--ink-2)}
+.body p b{color:var(--ink); font-weight:700}
+.body p:last-child{margin-bottom:0}
+
+/* ── 大图 ─────────────────────────────── */
+figure{margin:26px 0; background:var(--card); border:1px solid var(--line);
+  border-radius:3px; padding:22px 20px 16px; overflow-x:auto}
+figure svg{display:block; width:100%; height:auto; min-width:520px}
+figcaption{
+  font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-3);
+  margin-top:14px; padding-top:12px; border-top:1px dashed var(--line);
+}
+
+/* ── 代码 ─────────────────────────────── */
+pre{
+  font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:13px; line-height:1.7;
+  background:var(--card); border:1px solid var(--line); border-left:3px solid var(--accent);
+  border-radius:2px; padding:16px 18px; overflow-x:auto; margin:20px 0; color:var(--ink);
+}
+pre .c{color:var(--ink-3)}
+pre .k{color:var(--accent); font-weight:600}
+pre .v{color:var(--new); font-weight:600}
+code{font-family:"IBM Plex Mono",monospace; font-size:.88em;
+  background:var(--accent-soft); color:var(--ink); padding:1px 5px; border-radius:2px}
+
+/* ── 表 ───────────────────────────────── */
+.tw{overflow-x:auto; margin:22px 0}
+table{border-collapse:collapse; width:100%; min-width:520px; font-size:14px}
+th,td{text-align:left; padding:10px 14px 10px 0; border-bottom:1px solid var(--line-soft);
+  vertical-align:top}
+th{font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-3); border-bottom:1px solid var(--line)}
+td.m{font-family:"IBM Plex Mono",monospace; font-size:12.5px; white-space:nowrap;
+  color:var(--accent); font-weight:600}
+td.num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums;
+  text-align:right; padding-right:20px}
+td:last-child{color:var(--ink-2)}
+
+/* ── 四选一卡 ─────────────────────────── */
+.cases{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin:24px 0}
+.case{background:var(--card); border:1px solid var(--line); border-radius:3px; padding:16px 16px 14px}
+.case .cond{font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:600;
+  color:var(--ink); margin-bottom:9px; word-break:break-all}
+.case .act{font-size:13.5px; color:var(--ink-2); line-height:1.6}
+.case.go{border-left:3px solid var(--new)}
+.case.skip{border-left:3px solid var(--line)}
+.case.warn{border-left:3px solid var(--stop)}
+
+/* ── 检查项 ───────────────────────────── */
+.checks{list-style:none; padding:0; margin:22px 0; display:grid; gap:10px}
+.checks li{background:var(--card); border:1px solid var(--line); border-radius:3px;
+  padding:14px 16px; display:grid; grid-template-columns:26px 1fr; gap:12px; align-items:start}
+.checks .no{font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+  color:var(--stop)}
+.checks .t{font-weight:700; font-size:15px; margin-bottom:3px}
+.checks .d{font-size:13.5px; color:var(--ink-2); line-height:1.65}
+.checks .d code{background:var(--stop-soft)}
+
+/* ── 提示条 ───────────────────────────── */
+.note{border-left:3px solid var(--stop); background:var(--stop-soft);
+  padding:16px 18px; margin:24px 0; border-radius:0 3px 3px 0}
+.note .h{font-weight:700; font-size:14px; margin-bottom:6px; color:var(--ink)}
+.note p{margin:0; font-size:14px; color:var(--ink-2); line-height:1.7; max-width:none}
+
+/* ── 实测 ─────────────────────────────── */
+.facts{display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
+  margin:24px 0; border-radius:3px; overflow:hidden}
+.fact{background:var(--card); padding:14px 18px; display:grid;
+  grid-template-columns:88px 1fr; gap:16px; align-items:baseline}
+.fact .lbl{font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+  letter-spacing:.08em; color:var(--accent)}
+.fact .val{font-size:14px; color:var(--ink-2); line-height:1.65}
+.fact .val b{font-family:"IBM Plex Mono",monospace; color:var(--ink);
+  font-variant-numeric:tabular-nums; font-weight:600}
+
+footer{margin-top:64px; padding-top:24px; border-top:1px solid var(--line);
+  font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-3);
+  display:flex; flex-wrap:wrap; gap:8px 20px}
+
+@media (max-width:640px){
+  .step{grid-template-columns:1fr; gap:0}
+  .tick{display:flex; align-items:center; gap:12px; margin-bottom:14px}
+  .tick::after{display:none}
+  .hero{padding-top:52px}
+}
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <p class="kicker">① 摄取 · pull.rs · ADR-0005</p>
+  <h1>每天只把<br>新长出来的那一段抄回来</h1>
+  <p class="lede">OSS 上一个群一个月只有<b>一个文件</b>，每天往它尾巴上接一截。<br>
+  所以拉取不是「同步文件」，是<b>量一下上游长到第几个字节，只搬中间那一段</b>。</p>
+</header>
+
+<!-- 0 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">00</div></div>
+  <div class="body">
+    <h2><span class="en">what upstream looks like</span>先看上游长什么样：一卷会变长的纸带</h2>
+    <p>不是「一天一个文件」。是 <b>一个群 × 一个月 = 一个 NDJSON 文件</b>，OSS 用
+    <code>AppendObject</code> 每天往尾部追加。月初 0.6 MB，月末 18 MB —— 同一个文件。</p>
+
+    <figure>
+      <svg viewBox="0 0 720 210" role="img" aria-label="月文件像一卷纸带，每天在尾部追加一截">
+        <defs>
+          <pattern id="fly" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill="var(--stop-soft)"/>
+            <line x1="0" y1="0" x2="0" y2="8" stroke="var(--stop)" stroke-width="2" opacity=".55"/>
+          </pattern>
+        </defs>
+        <text x="0" y="16" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink-3)">202608/ww05b0.../wr1pO5....ndjson</text>
+
+        <!-- 纸带 -->
+        <rect x="0" y="34" width="300" height="46" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <rect x="300" y="34" width="120" height="46" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <rect x="420" y="34" width="140" height="46" fill="var(--new-soft)" stroke="var(--new)"/>
+        <rect x="560" y="34" width="60" height="46" fill="url(#fly)" stroke="var(--stop)" stroke-dasharray="3 3"/>
+
+        <text x="150" y="62" text-anchor="middle" font-size="13" fill="var(--ink)">8/01 ~ 8/28 的消息</text>
+        <text x="360" y="62" text-anchor="middle" font-size="13" fill="var(--ink)">8/29</text>
+        <text x="490" y="62" text-anchor="middle" font-size="13" fill="var(--ink)" font-weight="700">8/30 新追加</text>
+
+        <!-- 刻度 -->
+        <line x1="0" y1="96" x2="620" y2="96" stroke="var(--line)"/>
+        <g font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink-3)">
+          <line x1="0" y1="92" x2="0" y2="102" stroke="var(--ink-3)"/><text x="0" y="118">0</text>
+          <line x1="420" y1="92" x2="420" y2="102" stroke="var(--ink-3)"/>
+          <line x1="560" y1="88" x2="560" y2="106" stroke="var(--accent)" stroke-width="2"/>
+        </g>
+        <text x="560" y="120" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" fill="var(--accent)">ndjson_position</text>
+        <text x="560" y="136" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">＝ 权威的文件末尾</text>
+
+        <!-- 禁区 -->
+        <text x="590" y="164" text-anchor="middle" font-size="11.5" fill="var(--stop)" font-weight="700">这一截不许碰</text>
+        <text x="590" y="182" text-anchor="middle" font-size="11" fill="var(--ink-2)">可能是一次在飞的追加，</text>
+        <text x="590" y="197" text-anchor="middle" font-size="11" fill="var(--ink-2)">末尾是半行 JSON</text>
+      </svg>
+      <figcaption>NDJSON = 一行一条消息。position 一定落在某个 <span style="color:var(--ink)">\n</span> 后面，所以「只读到 position 为止」拿到的必然是整数条完整消息。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 1 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">01</div></div>
+  <div class="body">
+    <h2><span class="en">list_month_files() · MySQL</span>第一步：问数据库要「尺子」</h2>
+    <p>文件<b>不靠 glob 目录发现</b>，靠查 MySQL 索引表 <code>b_wecom_group_message_month_file</code>。
+    这张表一行 = 一个群一个月的文件，它同时回答了三件事：<b>在哪</b>、<b>长到第几字节</b>、<b>共几行</b>。</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>字段</th><th>它说的事</th></tr></thead>
+        <tbody>
+          <tr><td class="m">ndjson_object_key</td><td>相对 object key，拼上域名就是下载地址</td></tr>
+          <tr><td class="m">ndjson_position</td><td><b>下一批追加的预期字节位置</b> = 权威文件末尾</td></tr>
+          <tr><td class="m">ndjson_record_count</td><td>已确认追加的记录数 = 一道免费的、独立于字节数的校验</td></tr>
+          <tr><td class="m">file_month</td><td><b>消息月份</b> yyyyMM（不是接收月份）</td></tr>
+          <tr><td class="m">corp_id / official_room_id</td><td>哪个企业、哪个群</td></tr>
+          <tr><td class="m">is_deleted</td><td>0 正常 / 1 冻结，筛选条件</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>查哪几个月？由跑批窗口 <code>[T-2, T-1]</code> 决定 —— <code>months(w)</code> 把窗口里的每天格式化成
+    <code>%Y%m</code> 再去重。月初那几天窗口跨月，同一个群就有<b>两行</b>。</p>
+
+<pre><span class="c">// src/pull.rs · 上游字段名只允许出现在这里</span>
+<span class="k">SELECT</span> corp_id, official_room_id, file_month, ndjson_object_key,
+       ndjson_position, ndjson_record_count
+<span class="k">FROM</span>   b_wecom_group_message_month_file
+<span class="k">WHERE</span>  is_deleted = <span class="v">0</span> <span class="k">AND</span> file_month <span class="k">IN</span> (?, ?)   <span class="c">← ["202608","202609"]</span>
+<span class="k">ORDER BY</span> corp_id, official_room_id, file_month</pre>
+
+    <p>只有占位符个数是拼出来的（<code>months.len()</code> 决定），月份的值一律走 <code>bind</code>，
+    没有任何外部数据参与拼串。<b>这张表查不动 = 整轮失败</b>（<code>PullError::Round</code>），
+    那不是某个群的事。</p>
+  </div>
+</section>
+
+<!-- 2 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">02</div></div>
+  <div class="body">
+    <h2><span class="en">have = fs::metadata(local).len()</span>第二步：量一下本地已经有多长</h2>
+    <p>本地是 OSS 的<b>字节级镜像</b> —— 同一个群同一个月，本地这个文件的内容和 OSS 上前 N 字节
+    <b>逐位相同</b>。于是「我已经拉到第几字节」这个状态<b>不需要任何数据库、任何 manifest</b>：</p>
+
+<pre><span class="k">have</span> = 文件大小        <span class="c">// 文件不存在就是 0</span>
+&lt;raw_root&gt;/&lt;yyyyMM&gt;/&lt;corpId&gt;/&lt;roomId&gt;.ndjson
+   ./data/raw / 202608 / ww05b0ccc262c50187 / wr1pO5VgAAfuGk8URr_9uTqNDVsCfgow.ndjson</pre>
+
+    <p>路径不是在 <code>pull.rs</code> 里拼的 —— 它管 <code>ingest::room_path()</code> 要，
+    <b>跟读文件用的是同一个函数</b>。写和读永远不会对不上。</p>
+  </div>
+</section>
+
+<!-- 3 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">03</div></div>
+  <div class="body">
+    <h2><span class="en">pull_one() · 四选一</span>比一下两个数字，四种结果</h2>
+
+    <div class="cases">
+      <div class="case skip">
+        <div class="cond">position == 0</div>
+        <div class="act"><b>Empty</b><br>上游登记了但还没数据，什么都不做。</div>
+      </div>
+      <div class="case skip">
+        <div class="cond">have == position</div>
+        <div class="act"><b>Skip</b><br>已经是最新，<b>零字节下载</b>。天然幂等。</div>
+      </div>
+      <div class="case warn">
+        <div class="cond">have &gt; position</div>
+        <div class="act"><b>作废重拉</b><br>本地比上游还长（上游删档重建）。删掉本地、<code>have = 0</code>，打一条 WARN。</div>
+      </div>
+      <div class="case go">
+        <div class="cond">have &lt; position</div>
+        <div class="act"><b>下载中间那一段</b><br>只要 <code>position - have</code> 这么多字节。</div>
+      </div>
+    </div>
+
+    <p>为什么必须处理第三种？追加写本来不该出现这种事 —— 但<b>不处理的话这个群会每天校验失败、永远跑不了</b>。</p>
+  </div>
+</section>
+
+<!-- 4 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">04</div></div>
+  <div class="body">
+    <h2><span class="en">HTTP Range · 206 Partial Content</span>第三步：只把新的那一段搬回来</h2>
+
+    <figure>
+      <svg viewBox="0 0 720 250" role="img" aria-label="用 HTTP Range 只请求 have 到 position 之间的字节">
+        <defs>
+          <pattern id="fly2" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill="var(--stop-soft)"/>
+            <line x1="0" y1="0" x2="0" y2="8" stroke="var(--stop)" stroke-width="2" opacity=".55"/>
+          </pattern>
+          <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+            <path d="M0,0 L9,4.5 L0,9 z" fill="var(--new)"/>
+          </marker>
+        </defs>
+
+        <!-- OSS 侧 -->
+        <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--ink-3)">OSS / CDN</text>
+        <rect x="0" y="26" width="380" height="40" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <rect x="380" y="26" width="170" height="40" fill="var(--new-soft)" stroke="var(--new)" stroke-width="1.5"/>
+        <rect x="550" y="26" width="70" height="40" fill="url(#fly2)" stroke="var(--stop)" stroke-dasharray="3 3"/>
+        <text x="465" y="51" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ink)">要的就是这一段</text>
+        <g font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink-2)" font-weight="600">
+          <text x="380" y="82" text-anchor="middle">have</text>
+          <text x="380" y="96" text-anchor="middle" fill="var(--ink-3)">18843</text>
+          <text x="550" y="82" text-anchor="middle" fill="var(--accent)">position</text>
+          <text x="550" y="96" text-anchor="middle" fill="var(--ink-3)">25056</text>
+        </g>
+        <line x1="380" y1="20" x2="380" y2="70" stroke="var(--new)" stroke-width="1.5"/>
+        <line x1="550" y1="20" x2="550" y2="70" stroke="var(--accent)" stroke-width="1.5"/>
+
+        <!-- 请求 -->
+        <text x="0" y="136" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="var(--ink)">
+          GET  https://filet.jdd51.com/&lt;ndjson_object_key&gt;
+        </text>
+        <text x="0" y="156" font-family="IBM Plex Mono, monospace" font-size="12.5" font-weight="600" fill="var(--new)">
+          Range: bytes=18843-
+        </text>
+        <text x="196" y="156" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink-3)">
+          ← 没有右端，多给的自己丢掉
+        </text>
+        <text x="0" y="176" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="var(--accent)" font-weight="600">
+          206 Partial Content
+        </text>
+
+        <path d="M470 186 L470 206" stroke="var(--new)" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+
+        <!-- 本地 -->
+        <text x="0" y="204" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--ink-3)">本地 raw 区</text>
+        <rect x="0" y="212" width="380" height="34" fill="var(--card)" stroke="var(--line)"/>
+        <rect x="380" y="212" width="170" height="34" fill="var(--new-soft)" stroke="var(--new)" stroke-width="1.5"/>
+        <text x="190" y="234" text-anchor="middle" font-size="12" fill="var(--ink-2)">原有 18843 字节 · 一个字节都不动</text>
+        <text x="465" y="234" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)">append + fsync</text>
+      </svg>
+      <figcaption>have == 0 时 <span style="color:var(--ink)">bytes=0-</span> 就等于全量下载 —— 冷启动和增量走同一条代码路径，不写两条分支。单文件超时 120 秒。</figcaption>
+    </figure>
+
+    <p><b>有些 CDN 会无视 Range 直接返 200 整个对象。</b>那就自己切：
+    <code>body.slice(have..)</code>。要是整个对象反而比本地已有的还短 —— 直接判这个群失败。</p>
+  </div>
+</section>
+
+<!-- 5 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">05</div></div>
+  <div class="body">
+    <h2><span class="en">write_and_verify()</span>落盘之前，三道检查</h2>
+    <p>任何一道没过，<b>一个字节都不写</b>。不修补、不截断、不落一半。</p>
+
+    <ul class="checks">
+      <li>
+        <span class="no">01</span>
+        <div>
+          <div class="t">字节数必须分毫不差</div>
+          <div class="d">拿回来的长度必须 <code>== position - have</code>。少一个字节就报错 ——
+          这是 <b>CDN 陈旧缓存唯一的防线</b>：拿到旧副本 = 长度不够 = 该群失败，绝不会拿残缺数据去出指标。</div>
+        </div>
+      </li>
+      <li>
+        <span class="no">02</span>
+        <div>
+          <div class="t">必须是完整的 NDJSON 行</div>
+          <div class="d">首字节是 <code>{</code>、末字节是 <code>\n</code>。不成立说明<b>上游的 position 压根不在行边界上</b>——
+          那比少几个字节严重得多，不能让它变成下游某次 JSON 解析失败。</div>
+        </div>
+      </li>
+      <li>
+        <span class="no">03</span>
+        <div>
+          <div class="t">冷启动时数一遍行数</div>
+          <div class="d">整个文件的 <code>\n</code> 个数必须 <code>== ndjson_record_count</code>，
+          对不上就<b>删掉重来</b>（留着的话下次的 <code>have</code> 就是错的）。<br>
+          增量时不数 —— 数一遍要读回整个月文件，月末 1000 群 = 白读 18 GB。</div>
+        </div>
+      </li>
+    </ul>
+
+    <p>过了三关才 <code>append</code> + <code>sync_all()</code>。追加是原子的顺序写，本地永远是「合法的前缀」。</p>
+  </div>
+</section>
+
+<!-- 6 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">06</div></div>
+  <div class="body">
+    <h2><span class="en">JoinSet · pull_concurrency = 8</span>并发怎么压，失败怎么隔离</h2>
+    <p>月文件一个一个 spawn 进 <code>tokio::task::JoinSet</code>，在飞的超过 <code>pull_concurrency</code>（配置里是 8）
+    就先 join 掉一个 —— <b>JoinSet 本身就是背压，不用再加信号量</b>。</p>
+
+    <figure>
+      <svg viewBox="0 0 720 190" role="img" aria-label="失败的群整体退出本轮跑批">
+        <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--ink-3)">索引表 10 行</text>
+        <g font-size="12">
+          <rect x="0" y="26" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="43" y="46" text-anchor="middle" fill="var(--ink)">群 A</text>
+          <rect x="96" y="26" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="139" y="46" text-anchor="middle" fill="var(--ink)">群 B</text>
+          <rect x="192" y="26" width="86" height="30" fill="var(--stop-soft)" stroke="var(--stop)"/><text x="235" y="46" text-anchor="middle" fill="var(--stop)" font-weight="700">群 C</text>
+          <rect x="288" y="26" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="331" y="46" text-anchor="middle" fill="var(--ink)">群 D</text>
+          <text x="392" y="46" fill="var(--ink-3)">…</text>
+        </g>
+        <text x="235" y="76" text-anchor="middle" font-size="11.5" fill="var(--stop)">字节数不够</text>
+
+        <line x1="0" y1="96" x2="620" y2="96" stroke="var(--line)" stroke-dasharray="4 4"/>
+        <text x="0" y="118" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink-2)">
+          pull() → BTreeSet&lt;(corp, room)&gt; { 群 C }
+        </text>
+        <text x="0" y="140" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink-2)">
+          rooms.retain(|r| !unsynced.contains(r))
+        </text>
+
+        <g font-size="12">
+          <rect x="0" y="152" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="43" y="172" text-anchor="middle" fill="var(--ink)">群 A</text>
+          <rect x="96" y="152" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="139" y="172" text-anchor="middle" fill="var(--ink)">群 B</text>
+          <rect x="192" y="152" width="86" height="30" fill="none" stroke="var(--line)" stroke-dasharray="3 3"/><text x="235" y="172" text-anchor="middle" fill="var(--ink-3)">跳过</text>
+          <rect x="288" y="152" width="86" height="30" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="331" y="172" text-anchor="middle" fill="var(--ink)">群 D</text>
+        </g>
+        <text x="420" y="172" font-size="12" fill="var(--ink-2)">整轮继续，一个群失败不掀桌</text>
+      </svg>
+      <figcaption>一个群跨月有两行 —— <span style="color:var(--ink)">任一行失败整个群作废</span>。少一个月就重写，等于用残缺数据覆盖完整数据。</figcaption>
+    </figure>
+
+    <p>两种失败在<b>类型上</b>就分开了：<code>PullError::Round</code> 往上抛、整轮死；
+    <code>PullError::Room</code> 进失败集合、该群本轮一行不写。</p>
+  </div>
+</section>
+
+<!-- 7 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">07</div></div>
+  <div class="body">
+    <h2><span class="en">why not ossutil sync</span>为什么不直接 <code>ossutil sync</code></h2>
+    <p>因为 sync 看见文件变了就<b>整个重下</b>。月文件意味着月末重下的是整月。</p>
+
+    <figure>
+      <svg viewBox="0 0 720 170" role="img" aria-label="全量 sync 与 Range 增量在月末的流量对比">
+        <text x="0" y="16" font-size="13" fill="var(--ink-2)">1000 个群 · 月末的某一天</text>
+
+        <text x="0" y="56" font-size="13.5" fill="var(--ink)">全量 sync</text>
+        <rect x="120" y="40" width="500" height="26" fill="var(--stop-soft)" stroke="var(--stop)"/>
+        <text x="612" y="58" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="14" font-weight="600" fill="var(--stop)">18 GB</text>
+
+        <text x="0" y="102" font-size="13.5" fill="var(--ink)">Range 增量</text>
+        <rect x="120" y="86" width="17" height="26" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="148" y="104" font-family="IBM Plex Mono, monospace" font-size="14" font-weight="600" fill="var(--accent)">600 MB</text>
+
+        <line x1="0" y1="128" x2="620" y2="128" stroke="var(--line)"/>
+        <text x="0" y="152" font-size="12.5" fill="var(--ink-2)">而且 ossutil 拿不到 ndjson_position —— 尾部那半行是不是一次在飞的追加，只能事后猜。</text>
+      </svg>
+    </figure>
+
+    <p>省带宽只是顺带。真正的收益是：<b>「文件尾部半行 JSON」这一整类失败被从结构上消灭了</b> ——
+    不是检测它，是根本读不到它。</p>
+  </div>
+</section>
+
+<!-- 8 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">08</div></div>
+  <div class="body">
+    <h2><span class="en">measured · 2026-09-01 · dev 索引表 10 行</span>实测跑出来的样子</h2>
+
+    <div class="facts">
+      <div class="fact"><span class="lbl">冷启动</span><span class="val">10 个月文件落地 <b>107295</b> 字节 / <b>100</b> 行，与 <b>ndjson_position</b>、<b>ndjson_record_count</b> 逐位相同</span></div>
+      <div class="fact"><span class="lbl">幂等</span><span class="val">再拉一次：新增 <b>0</b> · 已最新 <b>10</b> · <b>零字节</b>下载</span></div>
+      <div class="fact"><span class="lbl">增量</span><span class="val">人为截到 <b>18843</b> 字节（第 20 行末）→ 只补 <b>6213</b> 字节 → 回到 <b>25056</b>，与全量下载 <b>sha256 逐字节相同</b></span></div>
+      <div class="fact"><span class="lbl">超长</span><span class="val">人为多追加 <b>52</b> 字节 → WARN「本地比上游长，作废重拉」→ 重下 <b>3200</b> 字节，与原文件逐字节相同</span></div>
+      <div class="fact"><span class="lbl">行边界</span><span class="val">人为截到 <b>20000</b> 字节（<b>行中间</b>）→ 该群失败，<b>一个字节都没写</b></span></div>
+    </div>
+
+    <div class="note">
+      <div class="h">最后一条暴露了一个已认领的代价</div>
+      <p><code>have</code> 落在行中间时 <code>have &lt; position</code>，不触发「作废重拉」那一条 ——
+      这个群会<b>每天失败、永远卡住</b>，要人工删文件才恢复。不修：<code>have</code> 只由 pull 自己写，
+      而它只写通过校验的完整行块。行中间的 have 意味着磁盘损坏或有人手工改过，那在信任边界之外。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 9 ─────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">09</div></div>
+  <div class="body">
+    <h2><span class="en">unsolved · external</span>还没解决的那个外部问题</h2>
+    <p><code>filet.jdd51.com</code> 是 CDN，实测响应头：</p>
+
+<pre>x-oss-object-type: <span class="v">Appendable</span>              <span class="c">✅ 确认追加写</span>
+x-oss-next-append-position: <span class="v">21103</span>          <span class="c">✅ 与索引表 position 逐位相同</span>
+accept-ranges: bytes  ·  Range → <span class="v">206</span>       <span class="c">✅ 增量可用</span>
+x-swift-cachetime: <span class="v">2592000</span>                <span class="c">⚠️ 30 天缓存</span></pre>
+
+    <div class="note">
+      <div class="h">一个每天都在追加的文件，配了 30 天缓存</div>
+      <p><code>Cache-Control: no-cache</code> 请求头不起作用，加随机 query 参数也不起作用 ——
+      <b>客户端绕不掉</b>。理论上会连续多天拿到旧副本。<br>
+      兜底就是第 05 步那道字节数校验：拿到旧副本 = 该群失败、记 <code>run_failure</code>，
+      <b>数据不会写坏，但这个群可能连续失败很多天</b>。<br>
+      不写自动重试退避 —— 30 天的缓存不是重试几次能解决的，写了只会掩盖问题。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 ────────────────────────────────── -->
+<section class="step">
+  <div class="tick"><div class="n">10</div></div>
+  <div class="body">
+    <h2><span class="en">ingest.rs · DuckDB</span>拉完之后，怎么读</h2>
+    <p>拉取只负责搬字节，<b>不认识任何业务字段</b>。读是另一件事：DuckDB 直接盖在本地 NDJSON 上，
+    过滤 / 投影 / 排序全下推给 SQL，不把整表拉进内存。</p>
+
+<pre><span class="k">FROM</span> read_json_auto([<span class="v">'./data/raw/202608/&lt;corp&gt;/&lt;room&gt;.ndjson'</span>],
+                    format=<span class="v">'newline_delimited'</span>, filename=<span class="v">true</span>)
+<span class="k">WHERE</span> <span class="k">CAST</span>("at" <span class="k">AS DATE</span>) <span class="k">BETWEEN</span> <span class="v">'2026-08-30'</span> <span class="k">AND</span> <span class="v">'2026-08-31'</span>
+<span class="k">ORDER BY</span> "at", msg_id</pre>
+
+    <p><b>路径只用来收窄 I/O，正确性靠那个 <code>BETWEEN</code></b> —— 一个月文件里装着整月，
+    窗口过滤按消息真实时间做。读一个群 18 MB 大约 70 毫秒，而一次跑批光调模型就是几十分钟。</p>
+  </div>
+</section>
+
+<footer>
+  <span>src/pull.rs</span><span>src/ingest.rs</span><span>ADR-0005</span><span>chat2events-rs</span>
+</footer>
+
+</div>

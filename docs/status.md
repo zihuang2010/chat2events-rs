@@ -43,8 +43,7 @@ src/
 │             read.rs     DuckDB · SQL · 上游字段语义 · 五道守卫 · 两个读函数
 │             tests.rs
 ├── metrics/   mod.rs      ⑥
-│             rows.rs     两张表的行类型 + Status / Attribution
-│             compute.rs  算出那些行的纯函数
+│             compute.rs  行类型 + Status / Attribution + 算出那些行的纯函数
 │             tests.rs
 ├── daily/     mod.rs      跑批那一轮的编排
 │             run.rs      run · run_rooms · run_room
@@ -75,7 +74,7 @@ src/
 `Event` / `SegmentModel` / `extract`（＋ 对拍用的 `preview`）。拆的是导航成本不是深度。
 另有 `examples/dry.rs`（`--dry`，不花 token）和 `examples/smoke.rs`（唯一一条真打端点的路径）。
 
-**验证**：`cargo test` **85 个用例 / 1.9s**，clippy 零告警 —— `extract` 37（跨文件 8 +
+**验证**：`cargo test` **85 个用例 / 1.9s**（第六轮后为 93 / 0.23s），clippy 零告警 —— `extract` 37（跨文件 8 +
 redact 9 + render 6 + assemble 8 + segment 4 + model 2）+ `ingest` 21 + `metrics` 7 +
 `mirror` 6 + `daily` 4 + `config` 4 + `window` 3 + `store` 2 + `llm` 1。
 测试拆分规则：**测试块 ≥ 100 行拆成 `<模块>/tests.rs`**，其余留文件底部；
@@ -88,6 +87,11 @@ redact 9 + render 6 + assemble 8 + segment 4 + model 2）+ `ingest` 21 + `metric
 
 ## 已知的坑和已认领的代价
 
+- **本地 raw 区保留 2 个月，超出保留期的原文本地就没有了**（`raw_retention_months`，
+  ADR-0005 决策 8）。后果是 webUI 下钻只能往回看 2 个月，再老的 `read_by_ids`
+  显式报错 —— 不是静默少给。OSS 兜底随 webUI 落地（决策 9）。
+  ⚠️ 连带代价：`lookback_days` 事后调大到跨过保留期，那些月文件已经删了，
+  `have = 0` 会整月重下。正确但很慢。
 - **月份守卫有盲区，且是故意留的。** 8 月的消息被放进 9 月文件、而窗口整个落在
   8 月时，我们根本不会打开 9 月文件，那条消息静默漏掉、不报错。
   `ingest/tests.rs` 里 `month_guard_known_blindspot` 那条测试**把这个行为断言下来了** —— 它记录代价，
@@ -325,11 +329,47 @@ clippy 零告警。
 `dry` 的逐字节对拍；再加一个长度快照只会变成每改一次 prompt 就要更新的噪声）·
 `classify.rs`（`classify()` 返回常量，测它约等于测编译器）。
 
+## 2026-09-01 第六轮：内存 / 性能 / 架构审核 —— 十项实施，两项撤回
+
+一次以**内存和性能**为主轴的全仓审核。**对外接口一字未动**，`cargo test`
+**93 个用例全绿**（2.11s → **0.23s**），clippy 零告警，`cargo run --example dry`
+在真实群上与改前**逐字节相同**（md5 比对）。
+
+| # | 改了什么 | 收益 / 为什么 |
+|---|---|---|
+| A | **DuckDB 全进程一个实例**（`ingest/read.rs` 的 `static DB`），每次查询 `try_clone` 一条连接，取代每个群 `open_in_memory()` | 实测 10 个真实群的 `read_room` **957ms → 71ms（13×）**，`cargo test` **2.11s → 0.23s**。开一个实例实测 24.5ms、`try_clone` 0.03ms；更要紧的是每个实例自带 `threads = 核数`、声明 `memory_limit = 80% RAM` —— `room_concurrency = 8` 时那是 **96 个工作线程压在 12 个核上、8 份各 12.7 GiB 的预算声明**，现在各只剩一份 |
+| B | `mirror` 冷启动数行改数手里的 `body`，不再 `fs::read` 把刚 fsync 完的月文件读回来 | `have == 0` ⇒ 文件内容恒等于 body，那次读只是**第二份 18 MB 分配**。`mirror_concurrency = 8` 的冷启动峰值 ~288 MB → ~144 MB（回到 config.toml 承诺的数） |
+| C | **`reqwest` 自己声明 `features = ["rustls"]`** | 此前本仓库 `default-features = false` 且不声明任何 TLS，`mirror` 的 https 能跑纯靠 async-openai 顺手打开了它 —— 换掉模型层就会静默变成「每个群都拉不下来」（每群一行 `run_failure`，进程不在第一秒炸） |
+| D | `llm.rs` 顶注第 1、2 条订正：**全程 HTTP/1.1，没有 h2** | `Cargo.lock` 里根本没有 `h2` crate、`http2` feature 一处都没开。原文「端点协商到 HTTP/2，走 ALPN 默认就拿到了」是拿 curl 量的，不是这个二进制的行为。**有意不开**：8 路并发的长请求，多路复用买不到东西 |
+| E | `ingest/read.rs` 12 个 `COL_*` + `mirror/index.rs` 8 个 `COL_*` 删除，列名在 SQL 里写字面量（两个 `macro_rules!` 保留 —— `format!` 仍要编译期校验运行期占位符） | 那 20 个常量买到的只是把「测试第 2 秒失败」提前成「编译失败」：`ingest/tests.rs` 本来就在真文件上执行那条 SELECT，`index.rs` 那两条测试查的正是 SQL 文本。代价是两条 SQL 读起来不像 SQL。**-55 行** |
+| F | `Conversation` 删掉 `corp` / `room` 两个字段（CONTEXT.md 照 `Message` 的先例补了一张「已删除的字段」表） | 全项目零读取点：调用方得先有 corp/room 才调得动 `read_room`，`Event` 的那两列来自 `Message` |
+| G | `Extracted` 只剩 `data` / `raw`，三个 token 字段删除 | 全仓唯一读取点是 `Llm::extract` 自己那两行日志。真要坐实 TPM 估算需要的是**跨调用累加**，不是每次调用带回一份没人接的数字 |
+| H | `metrics/rows.rs` 并回 `compute.rs` | 那 73 行里 40 行**在描述算法**（分母是哪一列、失败时是 `None` 不是 0），和算它的函数隔着一个文件 |
+| I | `daily::run` 写 unsynced 的 `run_failure` 不再 `?` 掀翻整轮，改成记一条 error 继续 | 与 `run_room` 里那条 store 失败同一条通道（承重不变量 3）。这个群本来就作废，少一行账不是多一份坏数据；库整个连不上的话 `check_schema` 在开轮第一秒就炸过了。整轮仍因 `unsynced > 0` 非零码退出 |
+| J | `render::view` 的 `labels` 每段重算 —— **实测后决定不改**，把数字写进注释 | 3742 条 / 10 段跑完整条渲染链（release）共 **6.3ms**，而同一个群的 10 次模型调用是分钟级。提到 `extract` 里算一次要给 `run` / `one_call` / `view` 三个签名各加一个参数，换回几毫秒 |
+
+**两项撤回**（审核时提了「删」，读完既有记录后不删）：
+
+- **`read_by_ids` + `IngestError::Missing`** —— 「生产零调用点」属实，但它是**写进契约的端口**
+  （CLAUDE.md 阶段表 ②、`ingest/mod.rs` 那段 `//!` 就是端口本身、architecture.md 三处），
+  且「下一步 3」已经把 webUI 落地时的形状连同 **ADR-0005 决策 9** 一起写好了。
+  删它等于为 35 行去改 4 份文档，下个迭代再原样加回来。
+- **`Attribution::AllParticipants`** —— 第四轮 J 项刚记录过保留决定（能力由测试钉着、
+  切换入口未搬），且 architecture.md:212 那条 **976 > 956** 的反向偏实测只有在这个能力
+  实现着的时候才成立。删掉是拿一条有数字的结论换 12 行。
+
 ## 下一步
 
 1. **重新量 `room_concurrency`** —— 现在压的是端点 TPM 不是本机核数（ADR-0004 的
    `N ≈ TPM额度 / 14000`）。⚠️ 上面 17.3s 那个数**量不出任何东西**：10 个群 83 条消息，
-   离限流差几个数量级。
+   离限流差几个数量级。⚠️ **第六轮之后连读取侧那个拐点（k=8）也失效了** —— 它是
+   「每个群新开一条 DuckDB 连接」时代量的，共享实例把单群读取压掉一个数量级
+   （10 群 957ms → 71ms；8 线程 × 50 次并发读实测 256ms，即 0.64ms/群），
+   读取已经基本不再是那个旋钮要压的东西。
 2. **`store` 的写库 SQL 仍然没有自动化测试** —— 上面是手工跑的一轮，不是 `cargo test`
    跑得到的东西。真要覆盖得起一个 MySQL 容器，今天没做。
-3. webUI（只读）。
+3. webUI（只读）。**落地时连带做「下钻兜底走 OSS」** —— 保留期把本地原文限成了
+   2 个月，更老的事件今天会显式报「取不到这些 msg_id」。方向和落地时的三件事
+   写在 **ADR-0005 决策 9**（核心是 `scan()` 的 `files` 从 `PathBuf` 改成 `String`，
+   本地路径和 URL 走同一条路）。今天不写：`read_by_ids` 零调用方，签名完全由
+   webUI 的形状决定，现在写等于猜接缝。

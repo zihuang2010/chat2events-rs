@@ -8,7 +8,10 @@ async-openai = { version = "0.41.3", features = ["chat-completion"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 duckdb = { version = "1.10505.0", features = ["bundled", "chrono"] }
 regex = "1.12"
-reqwest = { version = "0.13.4", default-features = false }
+# `rustls` 必须由**我们自己**声明：`mirror` 走 https 拉月文件，而 TLS 此前是
+# async-openai 顺手替我们打开的 —— 换掉模型层就会静默变成「每个群都拉不下来」。
+# 不开 `http2`：这个负载是 8 路并发的长请求，1.1 连接池就够，见 src/llm.rs 顶注。
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

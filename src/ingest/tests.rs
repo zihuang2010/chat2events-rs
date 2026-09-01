@@ -328,3 +328,92 @@ fn cross_month_reads_both_files_missing_one_is_ok() {
         HashSet::from(["08".to_string(), "09".to_string()])
     );
 }
+
+// ── 保留期 ───────────────────────────────────────────────────────────
+
+/// 建一个装了若干月目录的 raw 区（每个月目录里放一个真月文件，好让删除是真的删数据）。
+fn raw_months(name: &str, months: &[&str]) -> PathBuf {
+    let root = testutil::fresh_root("ingest", name);
+    for m in months {
+        testutil::write_month(&root, m, "C", "R", &[row("m", ms(25, 9, 0), "u1")]);
+    }
+    root
+}
+
+fn month_dirs(root: &Path) -> HashSet<String> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// retention = 2 ⇒ 保留窗口最早月和它前一个月，更老的整个删掉。
+#[test]
+fn prune_keeps_the_window_month_and_one_before() {
+    let root = raw_months("prune-2", &["202605", "202606", "202607", "202608"]);
+    // 窗口在 202608（`all()` 是 8/25~8/29）
+    assert_eq!(prune(&root, &all(), 2), 2);
+    assert_eq!(
+        month_dirs(&root),
+        HashSet::from(["202607".into(), "202608".into()])
+    );
+}
+
+/// retention = 1 ⇒ 只留窗口要读的月份。跨年往回退不能算错。
+#[test]
+fn prune_of_one_keeps_only_the_window_month() {
+    let root = raw_months("prune-1", &["202512", "202601", "202608"]);
+    assert_eq!(prune(&root, &all(), 1), 2);
+    assert_eq!(month_dirs(&root), HashSet::from(["202608".into()]));
+}
+
+/// **本轮窗口要读的月份一个都不能删** —— 起点锚在 `w.since()` 而不是今天，
+/// 所以 lookback 配到跨月也不会自伤。这条错了就是当天读不到数据。
+#[test]
+fn prune_never_touches_a_month_the_window_reads() {
+    let w = Window::span(day(31), NaiveDate::from_ymd_opt(2026, 9, 2).unwrap());
+    let root = raw_months("prune-window", &["202608", "202609"]);
+    assert_eq!(prune(&root, &w, 1), 0);
+    assert_eq!(months(&w).len(), 2, "这个窗口本来就该跨两个月");
+    assert_eq!(
+        month_dirs(&root),
+        HashSet::from(["202608".into(), "202609".into()])
+    );
+}
+
+/// 全仓唯一一处递归删生产数据的地方 —— **不长得像月目录的东西一律不碰**。
+/// 门槛松一位，`raw_root` 底下手工放的任何东西都会在某天被静默删掉。
+#[test]
+fn prune_only_deletes_things_shaped_like_a_month_dir() {
+    let root = raw_months("prune-shape", &["202601"]);
+    std::fs::write(root.join("202602"), "我是文件不是目录").unwrap();
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    std::fs::create_dir_all(root.join("2026")).unwrap();
+    std::fs::create_dir_all(root.join("20260a")).unwrap();
+
+    assert_eq!(prune(&root, &all(), 2), 1, "只该删掉 202601");
+    assert_eq!(
+        month_dirs(&root),
+        HashSet::from([
+            "202602".into(),
+            "notes".into(),
+            "2026".into(),
+            "20260a".into()
+        ])
+    );
+}
+
+/// 一次都没拉过 —— 目录不存在不是错误。
+#[test]
+fn prune_on_a_missing_root_is_a_no_op() {
+    let root = testutil::fresh_root("ingest", "prune-missing");
+    assert_eq!(prune(&root, &all(), 2), 0);
+}
+
+/// retention = 0 会把本轮要读的月份删掉 —— 配置错误当场崩，不静默降级成 1。
+#[test]
+#[should_panic(expected = "raw_retention_months")]
+fn prune_of_zero_is_a_config_error() {
+    prune(&testutil::fresh_root("ingest", "prune-zero"), &all(), 0);
+}

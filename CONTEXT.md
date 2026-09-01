@@ -80,7 +80,8 @@
 | `ndjson_position` | 下一批 AppendObject 预期字节位置 = **权威的文件末尾** |
 | `ndjson_record_count` | 已确认追加记录数 |
 | `file_month` | **消息月份** `yyyyMM`（不是接收月份 —— ① 的跨月读取依赖这条） |
-| `file_status` / `is_deleted` | 0 正常 / 1 冻结；筛选条件 |
+| `ndjson_last_append_time` | 最近确认追加时刻（可为 NULL）。**早于窗口起点 = 本轮必然没有新消息**，直接不拉 |
+| `file_status` / `is_deleted` | 0 正常 / 1 冻结 · 0 否 / 1 是；两个都是筛选条件 |
 
 取数走 HTTP：`<DOWNLOAD_BASE_URL>/<ndjson_object_key>`，`Range` 增量。见 **ADR-0005**。
 
@@ -166,10 +167,15 @@ reply_to      <- semanticPayload.replyTo.sourceMessageId
 ### 领域 `Conversation`
 
 ```
-corp / room      群标识
 msgs             list[Message]，按 at 升序，一个群在窗口内的完整会话
 msg_counts       dict[date, (msg_count, sender_count)]，消息级指标搭同一趟车
 ```
+
+**已删除的字段**（同上表的规矩 —— 全项目零读取点，删的是税不是功能）：
+
+| 字段 | 为什么删 |
+|---|---|
+| `corp` / `room` | 读取点 **0**。调用方得先有 corp/room 才调得动 `read_room`，`Event` 的那两列来自 `Message` |
 
 **接口粒度 = 群 × 一次运行的完整会话 = 失败隔离粒度 = ③ 的输入。** 四者必须相等。
 

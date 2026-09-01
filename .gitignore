@@ -6,3 +6,19 @@
 # 本地 raw 区 —— OSS 的字节级镜像。每天约 600 MB、一年约 216 GB，
 # 而且里面全是未脱敏的客户正文。永不进 git，丢了重跑 pull 就有。
 /data
+
+# 跑批日志（main.rs 的 `2> run.log`）—— 里面有群 ID 和失败明细
+/*.log
+
+# 开发机上的本地覆盖，因人而异。
+# ⚠️ 之前只靠 ~/.config/git/ignore 挡着 —— 那是这台机器的私事，
+#    换台机器 clone 下来就没人拦了，所以写进仓库。
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# 本地一次性排查用的 example。
+# ⚠️ dry.rs / smoke.rs 已被跟踪，不受此规则影响（gitignore 管不到已跟踪文件），
+#    它们是 CLAUDE.md 里写明的验证路径，本来就该留在仓库里。
+/examples

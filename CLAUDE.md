@@ -42,7 +42,7 @@ OSS 月文件 ──① mirror（索引表 + HTTP Range）──> ./data/raw/  O
 | ③ | **抽取** | `extract/`（`types` / `pipeline` / `model` / `redact` / `prompt` / `render` / `segment`） | `SegmentModel` | `EventDraft` | Rust 版 2 个适配器（`LiveModel` ＋ 测试桩）= **真**接缝 | ✅ |
 | ④ | **装配** | `extract/assemble.rs` | **无，且不该有** | `Event` | 溯源守卫 | ✅ |
 | ⑤ | **分类** | `classify.rs` | 无（v1 不存在，见下） | `type` | 只有 v0 = **假想**接缝 | ✅ |
-| ⑥ | **指标** | `metrics/`（`rows` / `compute`） | 无 | 指标行 | 纯函数 | ✅ |
+| ⑥ | **指标** | `metrics/`（`compute`） | 无 | 指标行 | 纯函数 | ✅ |
 | ⑦ | **落库** | `store.rs` | 无（已排除） | — | MySQL 是唯一目标 | ✅ |
 
 另有 `daily/` —— 跑批那一轮的**编排**（① → ③④ → ⑤⑥ → ⑦）。它不是一个阶段，
@@ -72,7 +72,7 @@ v1 落地时再引。**① 明确不写 `MessageSource` trait** —— 契约是
 
 **现有 ADR**：0001 `_body` 脱敏只掩锚点确定的东西 · 0002 `replyTo` 用于抽取后对齐 ·
 0003 ①~⑦ 不做成 agent · 0004 群内串行链传便签、并行只加在群之间 ·
-0005 拉取靠索引表 + HTTP Range，本地是 OSS 的月文件镜像 ·
+0005 拉取靠索引表 + HTTP Range，本地是 OSS 的月文件镜像、**滚动保留 2 个月** ·
 **0006 配置分 config.toml / secrets.toml 两个文件，不走环境变量**（Rust 版新增）。
 
 ## 承重不变量
@@ -155,7 +155,9 @@ v1 落地时再引。**① 明确不写 `MessageSource` trait** —— 契约是
 - **按群读**：`list_rooms()` 只遍历目录，`read_room()` 读一个群、放 `tokio::task::spawn_blocking`（DuckDB 是同步阻塞的；不挪出去的话每读一个群，N 个在飞的模型调用全被卡在同一个 runtime 线程上）。**内存上界由 `room_concurrency` 保证**，不需要队列 —— 今天由 `daily::run_rooms` 那个
   `JoinSet` 的背压兑现（跟 `mirror` 一个写法，不是 semaphore）。**每个群的 `Conversation`
   在它自己的任务里就地消费掉**，绝不能收集起来再统一处理，否则这个上界就白设了。
-  实测 100 群 / 555 MB / 12 核：串行 9.81s → k=8 2.48s（4.0x），k=12 起不再变快。
+  曾测 100 群 / 555 MB / 12 核：串行 9.81s → k=8 2.48s（4.0x），k=12 起不再变快 ——
+  ⚠️ **第六轮之后这个数失效**：它是「每个群新开一条 DuckDB 连接」时代量的，共享实例
+  把单群读取压掉一个数量级（10 群 957ms → 71ms），拐点必然前移，重量过再用。
   ⚠️ **队列 / 背压 / 生产者线程已经删掉了，别再加回来。** 它们存在的唯一理由是「所有群混在一堆文件里、必须一次排序才能切开」；真实布局是**一个群一个月一个文件**，那个前提没了 —— R 次查询各碰各的几 MB，总 I/O 本来就是一遍。
 - **禁止对全量表 `fetchall()` / `df()`。**
 - ⚠️ **一条例外：消息级计数在进程内算，不下推 SQL。** 那个群的消息本来就已经在内存里了（③ 要用），这里没有多读一个字节。为它单开一条 SQL 等于**同一份数据扫两遍**，而且是逼着未来每个适配器都支持 SQL 的唯一理由。
@@ -255,7 +257,7 @@ prompt 逐字节等价不受影响 —— 首次 reformat 后 `cargo run --examp
 | 正则 | `re` 有后顾/前瞻断言 | `regex` crate 两者都没有：`_PHONE` 的两侧断言手写（`extract::redact::phone_spans`），`_FIELD` 的前瞻改成捕获组再吐回 |
 | `sender_role` / `asker_role` | 裸字符串 `"INTERNAL"` / `"EXTERNAL"` | **枚举 `ingest::Role`**。解析只在读取点发生一次，认不出的 `identityType` = 该群失败（不兜底成任意一边）。理由是错法静默：打错一个字母会同时让 `labels` 标反、`agents` 恒空、首响 p50/p90 全 `NULL`，而编译器不吭声。落库仍走 `as_str()`，库里那一列的取值一字未变 |
 
-**已验证**：`cargo test` **85 个用例 / 1.9s**，clippy 零告警。真数据端到端跑通一轮：
+**已验证**：`cargo test` **93 个用例 / 0.23s**，clippy 零告警。真数据端到端跑通一轮：
 10 群 / 83 条 / 23 个事件 / 17.3s，落库 23+40+12 行、`run_failure` 0，重跑幂等。
 
 **`mod.rs` 只装三样：模块文档、`mod` 声明、`pub use` 导出。** 一行生产代码都不放 ——

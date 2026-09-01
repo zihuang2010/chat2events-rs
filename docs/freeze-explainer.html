@@ -1,0 +1,339 @@
+<title>冷冻区怎么更新</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#F1F5F8; --surface:#FFFFFF; --surface-2:#E8EEF3;
+    --ink:#132029; --ink-soft:#5C7080; --line:#D3DDE5;
+    --frozen:#5F82A3; --frozen-fill:#DCE6EF;
+    --live:#B8760F; --live-fill:#FAEACB;
+    --halt:#A5382B; --halt-fill:#F6DED9;
+    --serif:"Noto Serif SC",Songti SC,serif;
+    --sans:"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E151C; --surface:#161F29; --surface-2:#1D2833;
+      --ink:#E3EAF0; --ink-soft:#8FA3B4; --line:#2A3743;
+      --frozen:#93B2CD; --frozen-fill:#1C2B39;
+      --live:#E3A73F; --live-fill:#3A2B10;
+      --halt:#DB7565; --halt-fill:#3B1F1A;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E151C; --surface:#161F29; --surface-2:#1D2833;
+    --ink:#E3EAF0; --ink-soft:#8FA3B4; --line:#2A3743;
+    --frozen:#93B2CD; --frozen-fill:#1C2B39;
+    --live:#E3A73F; --live-fill:#3A2B10;
+    --halt:#DB7565; --halt-fill:#3B1F1A;
+  }
+
+  body{background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.7;
+       -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:900px;margin:0 auto;padding:64px 24px 96px;
+        display:flex;flex-direction:column;gap:64px;}
+
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+           color:var(--ink-soft);margin:0 0 14px;}
+  h1{font-family:var(--serif);font-size:clamp(34px,6vw,56px);line-height:1.15;margin:0;
+     text-wrap:balance;letter-spacing:-.01em;}
+  .answer{margin-top:28px;background:var(--surface);border:1px solid var(--line);
+          border-radius:2px;padding:28px 30px;display:flex;flex-direction:column;gap:18px;}
+  .answer .row{display:flex;gap:18px;align-items:baseline;}
+  .answer .k{font-family:var(--mono);font-size:12px;letter-spacing:.1em;flex:0 0 76px;
+             padding-top:6px;}
+  .answer .v{font-family:var(--serif);font-size:clamp(19px,2.6vw,26px);line-height:1.45;}
+  .k.cold{color:var(--frozen)} .k.warm{color:var(--live)}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px 26px;font-size:13px;color:var(--ink-soft);
+          font-family:var(--mono);border-top:1px solid var(--line);padding-top:18px;}
+  .legend span{display:inline-flex;align-items:center;gap:9px;}
+  .sw{width:15px;height:15px;border-radius:2px;display:inline-block;}
+  .sw.c{background:var(--frozen-fill);border:1.5px solid var(--frozen);}
+  .sw.w{background:var(--live-fill);border:1.5px solid var(--live);}
+  .sw.h{background:var(--halt-fill);border:1.5px solid var(--halt);}
+
+  section{display:flex;flex-direction:column;gap:22px;}
+  h2{font-family:var(--serif);font-size:clamp(22px,3.4vw,30px);line-height:1.35;margin:0;
+     text-wrap:balance;}
+  h2 .num{font-family:var(--mono);font-size:13px;color:var(--ink-soft);
+          display:block;margin-bottom:10px;letter-spacing:.12em;}
+  p{margin:0;font-size:16px;max-width:64ch;}
+  p .m{font-family:var(--mono);font-size:14px;background:var(--surface-2);
+       padding:1px 5px;border-radius:2px;}
+  strong{font-weight:700;}
+  .cold-t{color:var(--frozen);font-weight:700;} .warm-t{color:var(--live);font-weight:700;}
+  .halt-t{color:var(--halt);font-weight:700;}
+
+  figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:2px;
+         padding:22px 20px 16px;overflow-x:auto;}
+  figure svg{display:block;width:100%;max-width:100%;height:auto;min-width:560px;}
+  figcaption{margin-top:14px;font-size:13.5px;color:var(--ink-soft);max-width:70ch;}
+
+  svg text{fill:var(--ink);font-family:var(--mono);font-size:12px;}
+  svg .sm{font-size:11px;fill:var(--ink-soft);}
+  svg .hd{font-size:12.5px;fill:var(--ink-soft);letter-spacing:.08em;}
+  svg .cf{fill:var(--frozen-fill);stroke:var(--frozen);stroke-width:1.5;}
+  svg .wf{fill:var(--live-fill);stroke:var(--live);stroke-width:1.5;}
+  svg .hf{fill:var(--halt-fill);stroke:var(--halt);stroke-width:1.5;}
+  svg .pf{fill:var(--surface);stroke:var(--line);stroke-width:1.5;}
+  svg .ln{stroke:var(--ink-soft);stroke-width:1.5;fill:none;}
+  svg .ln-c{stroke:var(--frozen);stroke-width:1.5;fill:none;}
+  svg .ln-h{stroke:var(--halt);stroke-width:2;fill:none;}
+  svg .dash{stroke-dasharray:5 4;}
+  svg .t-c{fill:var(--frozen);} svg .t-w{fill:var(--live);} svg .t-h{fill:var(--halt);}
+  svg .a-ink{fill:var(--ink-soft);} svg .a-h{fill:var(--halt);} svg .a-c{fill:var(--frozen);}
+
+  .note{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--halt);
+        border-radius:2px;padding:24px 26px;display:flex;flex-direction:column;gap:18px;}
+  .note h3{font-family:var(--serif);font-size:20px;margin:0;}
+
+  ol.foot{margin:0;padding-left:0;list-style:none;counter-reset:f;
+          display:flex;flex-direction:column;gap:16px;}
+  ol.foot li{counter-increment:f;padding-left:38px;position:relative;font-size:15px;
+             color:var(--ink);max-width:68ch;}
+  ol.foot li::before{content:counter(f,decimal-leading-zero);position:absolute;left:0;top:1px;
+                     font-family:var(--mono);font-size:12px;color:var(--live);letter-spacing:.06em;}
+  ol.foot code{font-family:var(--mono);font-size:13.5px;background:var(--surface-2);
+               padding:1px 5px;border-radius:2px;}
+  .src{font-family:var(--mono);font-size:12px;color:var(--ink-soft);border-top:1px solid var(--line);
+       padding-top:18px;}
+  @media (prefers-reduced-motion:no-preference){a{transition:color .15s}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">承重不变量 1 · 冻结</p>
+  <h1>冷冻区是怎么更新的</h1>
+  <div class="answer">
+    <div class="row"><div class="k cold">事实列</div>
+      <div class="v">永远<strong>不</strong>更新。没有入口，也没有人回去改。</div></div>
+    <div class="row"><div class="k warm">标注列</div>
+      <div class="v">只在<strong>换词表</strong>那一天，整体重贴一次标签 —— 不重跑模型。</div></div>
+  </div>
+</header>
+
+<div class="legend">
+  <span><i class="sw c"></i>冻住 · 本轮不可写</span>
+  <span><i class="sw w"></i>本轮可写 · 每轮删重写</span>
+  <span><i class="sw h"></i>守卫拦截</span>
+</div>
+
+<section>
+  <h2><span class="num">01 / 线在走</span>不是有人去改老数据，是<span class="cold-t">冻结线</span>每天往右挪一格</h2>
+  <p>跑批只看窗口里的那几天。窗口每天整体右移，昨天还能写的那一格，今天就落到线的左边 ——
+     <strong>它没被改动，只是不再被任何一条 SQL 指向了。</strong></p>
+  <figure>
+    <svg viewBox="0 0 880 252" role="img" aria-label="时间轴：冻结线左边是冷冻区，右边是跑批窗口，线每天右移一格">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="a-ink"/></marker>
+      </defs>
+      <text x="24" y="128" class="sm">…</text>
+      <rect x="70"  y="90" width="74" height="58" rx="2" class="cf"/>
+      <rect x="152" y="90" width="74" height="58" rx="2" class="cf"/>
+      <rect x="234" y="90" width="74" height="58" rx="2" class="cf"/>
+      <rect x="316" y="90" width="74" height="58" rx="2" class="wf"/>
+      <rect x="398" y="90" width="74" height="58" rx="2" class="wf"/>
+      <rect x="480" y="90" width="74" height="58" rx="2" class="wf"/>
+      <rect x="562" y="90" width="74" height="58" rx="2" class="wf"/>
+      <rect x="644" y="90" width="74" height="58" rx="2" class="wf"/>
+      <rect x="726" y="90" width="74" height="58" rx="2" class="pf dash"/>
+      <text x="107" y="168" text-anchor="middle" class="sm">T-8</text>
+      <text x="189" y="168" text-anchor="middle" class="sm">T-7</text>
+      <text x="271" y="168" text-anchor="middle" class="sm">T-6</text>
+      <text x="353" y="168" text-anchor="middle" class="sm">T-5</text>
+      <text x="435" y="168" text-anchor="middle" class="sm">T-4</text>
+      <text x="517" y="168" text-anchor="middle" class="sm">T-3</text>
+      <text x="599" y="168" text-anchor="middle" class="sm">T-2</text>
+      <text x="681" y="168" text-anchor="middle" class="sm">T-1</text>
+      <text x="763" y="168" text-anchor="middle" class="sm">T 今天</text>
+      <path d="M70,66 L70,58 L308,58 L308,66" class="ln-c"/>
+      <text x="189" y="46" text-anchor="middle" class="hd t-c">冷冻区 · 事实列不可写</text>
+      <path d="M316,66 L316,58 L718,58 L718,66" class="ln" stroke="var(--live)"/>
+      <text x="517" y="46" text-anchor="middle" class="hd t-w">跑批窗口 · 每轮整体删重写</text>
+      <line x1="312" y1="72" x2="312" y2="196" class="ln-c" stroke-width="2.5"/>
+      <text x="312" y="212" text-anchor="middle" class="t-c" font-size="11.5">冻结线</text>
+      <line x1="394" y1="80" x2="394" y2="190" class="ln-c dash" opacity=".6"/>
+      <text x="404" y="212" class="sm">明天线走到这里 · T-5 随之冻住</text>
+      <text x="726" y="212" class="sm">T 还没过完</text>
+    </svg>
+    <figcaption>冻结线 = 窗口起点 = <span style="font-family:var(--mono)">T − lookback_days</span>（config.toml 今天配 5）。
+      窗口里的天每轮都被整体删重写；线左边的天，SQL 根本不提。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">02 / 一行分两半</span>一条 event 上，只有<span class="warm-t">两列</span>是可以事后改的</h2>
+  <p>十二列<strong>事实</strong>由那一次抽取定死；两列<strong>标注</strong>是贴上去的标签。冻结管的是前者。</p>
+  <figure>
+    <svg viewBox="0 0 880 258" role="img" aria-label="event 行分成 12 个事实列和 2 个标注列，只有标注列可以事后重写">
+      <text x="30" y="40" class="hd t-c">事实列 · 12 列 · 那一次抽取定死</text>
+      <rect x="30" y="52" width="560" height="164" rx="2" class="cf"/>
+      <rect x="45"  y="66"  width="170" height="28" rx="2" class="pf"/><text x="130" y="85" text-anchor="middle" font-size="10.5">corpid</text>
+      <rect x="225" y="66"  width="170" height="28" rx="2" class="pf"/><text x="310" y="85" text-anchor="middle" font-size="10.5">roomid</text>
+      <rect x="405" y="66"  width="170" height="28" rx="2" class="pf"/><text x="490" y="85" text-anchor="middle" font-size="10.5">source_msg_ids</text>
+      <rect x="45"  y="102" width="170" height="28" rx="2" class="pf"/><text x="130" y="121" text-anchor="middle" font-size="10.5">first_msg_time</text>
+      <rect x="225" y="102" width="170" height="28" rx="2" class="pf"/><text x="310" y="121" text-anchor="middle" font-size="10.5">last_msg_time</text>
+      <rect x="405" y="102" width="170" height="28" rx="2" class="pf"/><text x="490" y="121" text-anchor="middle" font-size="10.5">first_agent_reply_time</text>
+      <rect x="45"  y="138" width="170" height="28" rx="2" class="pf"/><text x="130" y="157" text-anchor="middle" font-size="10.5">occurred_on</text>
+      <rect x="225" y="138" width="170" height="28" rx="2" class="pf"/><text x="310" y="157" text-anchor="middle" font-size="10.5">asker · asker_role</text>
+      <rect x="405" y="138" width="170" height="28" rx="2" class="pf"/><text x="490" y="157" text-anchor="middle" font-size="10.5">agents</text>
+      <rect x="45"  y="174" width="170" height="28" rx="2" class="pf"/><text x="130" y="193" text-anchor="middle" font-size="10.5">first_responder</text>
+      <rect x="225" y="174" width="350" height="28" rx="2" class="pf"/><text x="400" y="193" text-anchor="middle" font-size="10.5">summary　（也是事实列）</text>
+      <rect x="614" y="120" width="18" height="14" rx="2" class="cf"/>
+      <path d="M618,120 v-5 a5,5 0 0 1 10,0 v5" class="ln-c"/>
+      <text x="30" y="240" class="sm">冻结区里这些格子，没有任何写入路径</text>
+      <text x="672" y="40" class="hd t-w">标注列 · 2 列</text>
+      <rect x="672" y="52" width="178" height="164" rx="2" class="wf"/>
+      <rect x="686" y="86"  width="150" height="34" rx="2" class="pf"/><text x="761" y="107" text-anchor="middle" font-size="11">event_type</text>
+      <rect x="686" y="146" width="150" height="34" rx="2" class="pf"/><text x="761" y="167" text-anchor="middle" font-size="11">taxonomy_version</text>
+      <text x="761" y="240" text-anchor="middle" class="sm t-w">只有词表升版会重写</text>
+    </svg>
+    <figcaption><span style="font-family:var(--mono)">summary</span> 被划进事实列是有意的：它是分类的缓存键
+      <span style="font-family:var(--mono)">sha256(summary)</span>，一旦会变，冷冻区的缓存就永远命不中。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">03 / 两道锁</span>跑批就算想写冷冻区，也<span class="halt-t">写不进去</span></h2>
+  <p>第一道是构造：删重写的 <span class="m">IN</span> 列表里只有窗口那几天。第二道是守卫：真有事件算到了窗口外，
+     写库之前就拦下，<strong>那个群整轮失败、一行不写</strong>。</p>
+  <figure>
+    <svg viewBox="0 0 880 316" role="img" aria-label="两道锁：SQL 的 IN 列表只指向窗口，stray_days 守卫拦住落在窗口外的事件">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="a-ink"/></marker>
+        <marker id="arh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="a-h"/></marker>
+      </defs>
+      <text x="30" y="26" class="hd">锁 1 · SQL 只指向窗口</text>
+      <rect x="30" y="40" width="300" height="56" rx="2" class="pf"/>
+      <text x="46" y="64" font-size="11">DELETE … WHERE occurred_on</text>
+      <text x="46" y="82" font-size="11">IN (T-5, T-4, T-3, T-2, T-1)</text>
+      <path d="M334,52 C 420,4 520,4 564,38" class="ln" marker-end="url(#ar2)"/>
+      <text x="452" y="18" text-anchor="middle" class="sm">指向</text>
+      <line x1="334" y1="80" x2="384" y2="80" class="ln-c dash"/>
+      <text x="360" y="72" text-anchor="middle" class="t-h" font-size="13">✕</text>
+      <rect x="392" y="40" width="150" height="56" rx="2" class="cf"/>
+      <text x="467" y="66" text-anchor="middle" font-size="11" class="t-c">冷冻区</text>
+      <text x="467" y="84" text-anchor="middle" class="sm">更早的每一天</text>
+      <rect x="564" y="40" width="286" height="56" rx="2" class="wf"/>
+      <text x="707" y="66" text-anchor="middle" font-size="11" class="t-w">窗口 T-5 … T-1</text>
+      <text x="707" y="84" text-anchor="middle" class="sm">整体删掉、整体重写</text>
+
+      <line x1="30" y1="126" x2="850" y2="126" class="ln dash" opacity=".45"/>
+      <text x="30" y="158" class="hd">锁 2 · stray_days 守卫</text>
+      <rect x="30" y="172" width="262" height="56" rx="2" class="hf"/>
+      <text x="46" y="196" font-size="11">模型抽出一个 event</text>
+      <text x="46" y="214" font-size="11" class="t-h">occurred_on = T-9（窗口外）</text>
+      <path d="M296,200 L392,200" class="ln-h" marker-end="url(#arh)"/>
+      <rect x="404" y="150" width="9" height="112" rx="1" fill="var(--halt)"/>
+      <text x="408" y="142" text-anchor="middle" class="t-h" font-size="11.5">写库之前挡住</text>
+      <rect x="444" y="172" width="150" height="56" rx="2" class="cf"/>
+      <text x="519" y="204" text-anchor="middle" font-size="11" class="t-c">冷冻区</text>
+      <path d="M161,232 L161,264" class="ln-h" marker-end="url(#arh)"/>
+      <rect x="30" y="270" width="564" height="34" rx="2" class="pf"/>
+      <text x="46" y="292" font-size="11">该群本轮整体失败 · event 表一行不写 · 记一行 run_failure</text>
+      <text x="620" y="292" class="sm">整轮不中断，其他群照跑</text>
+    </svg>
+    <figcaption>守卫不是写完再查，是写之前挡住 —— 承重不变量 1 的实现就是
+      <span style="font-family:var(--mono)">store::stray_days</span> 这一个纯函数。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">04 / 唯一的入口</span>换词表那天，把<span class="warm-t">标签</span>整体重贴一遍</h2>
+  <p>拿早就存好的 <span class="m">summary</span> 重新查一次分类，写回两列，再重算指标。
+     <strong>一次抽取模型都不调，一个 token 都不烧。</strong></p>
+  <figure>
+    <svg viewBox="0 0 880 236" role="img" aria-label="词表升版流程：读已存的 summary，重新分类，写回标注列，重算指标，不重跑抽取模型">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="a-ink"/></marker>
+      </defs>
+      <rect x="250" y="14" width="180" height="40" rx="2" class="pf dash"/>
+      <text x="340" y="39" text-anchor="middle" class="sm">③ 抽取（LLM）</text>
+      <line x1="340" y1="54" x2="340" y2="86" class="ln dash"/>
+      <text x="352" y="76" class="t-h" font-size="13">✕</text>
+      <text x="450" y="39" class="sm t-h">不重跑 · 不烧 token</text>
+
+      <rect x="20" y="86" width="190" height="68" rx="2" class="cf"/>
+      <text x="115" y="114" text-anchor="middle" font-size="11" class="t-c">冷冻区的 event 行</text>
+      <text x="115" y="134" text-anchor="middle" class="sm">summary 原样不动</text>
+      <path d="M214,120 L246,120" class="ln" marker-end="url(#ar3)"/>
+      <text x="230" y="110" text-anchor="middle" class="sm">读</text>
+
+      <rect x="250" y="86" width="180" height="68" rx="2" class="wf"/>
+      <text x="340" y="114" text-anchor="middle" font-size="11" class="t-w">classify(summary)</text>
+      <text x="340" y="134" text-anchor="middle" class="sm">词表 v1</text>
+      <path d="M434,120 L466,120" class="ln" marker-end="url(#ar3)"/>
+      <text x="450" y="110" text-anchor="middle" class="sm">写回</text>
+
+      <rect x="470" y="86" width="180" height="68" rx="2" class="wf"/>
+      <text x="560" y="114" text-anchor="middle" font-size="11">event_type</text>
+      <text x="560" y="134" text-anchor="middle" font-size="11">taxonomy_version</text>
+      <path d="M654,120 L686,120" class="ln" marker-end="url(#ar3)"/>
+      <text x="670" y="110" text-anchor="middle" class="sm">重算</text>
+
+      <rect x="690" y="86" width="170" height="68" rx="2" class="pf"/>
+      <text x="775" y="114" text-anchor="middle" font-size="11">指标表</text>
+      <text x="775" y="134" text-anchor="middle" class="sm">整体重算</text>
+
+      <text x="20" y="196" class="sm">同一个 summary ＋ 同一份词表 → 永远同一个 type（确定性 ＋ sha256 缓存），所以重贴不会抖。</text>
+      <text x="20" y="218" class="sm">加类只能升版：v0 → v1 → v2。不给现有版本热加一个类，否则同一个版本号会对应两套词表。</text>
+    </svg>
+    <figcaption>标签不刻在 event 上，是每次落库现算的 —— 所以日常的分片重写也不会丢标签。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">05 / 为什么不许</span>重抽事实制造的是<span class="halt-t">抖动</span>，不是修正</h2>
+  <div class="note">
+    <h3>同一份聊天记录，模型不保证抽出同样多的事件</h3>
+    <svg viewBox="0 0 440 156" role="img" aria-label="同一天的数据重跑，昨天抽出 12 个事件，今天抽出 11 个" style="max-width:440px;min-width:0">
+      <text x="12" y="22" class="sm">昨天这一天的结果</text>
+      <text x="248" y="22" class="sm">今天原样重跑一次</text>
+      <g class="wf">
+        <circle cx="24" cy="56" r="9"/><circle cx="54" cy="56" r="9"/><circle cx="84" cy="56" r="9"/>
+        <circle cx="114" cy="56" r="9"/><circle cx="144" cy="56" r="9"/><circle cx="174" cy="56" r="9"/>
+        <circle cx="24" cy="88" r="9"/><circle cx="54" cy="88" r="9"/><circle cx="84" cy="88" r="9"/>
+        <circle cx="114" cy="88" r="9"/><circle cx="144" cy="88" r="9"/><circle cx="174" cy="88" r="9"/>
+      </g>
+      <g class="wf">
+        <circle cx="260" cy="56" r="9"/><circle cx="290" cy="56" r="9"/><circle cx="320" cy="56" r="9"/>
+        <circle cx="350" cy="56" r="9"/><circle cx="380" cy="56" r="9"/><circle cx="410" cy="56" r="9"/>
+        <circle cx="260" cy="88" r="9"/><circle cx="290" cy="88" r="9"/><circle cx="320" cy="88" r="9"/>
+        <circle cx="350" cy="88" r="9"/><circle cx="380" cy="88" r="9"/>
+      </g>
+      <circle cx="410" cy="88" r="9" fill="none" stroke="var(--halt)" stroke-width="1.5" stroke-dasharray="3 3"/>
+      <text x="12" y="124" class="t-w" font-size="13">12 个事件</text>
+      <text x="248" y="124" class="t-w" font-size="13">11 个事件</text>
+      <text x="330" y="124" class="t-h" font-size="12">少 1 个</text>
+      <text x="12" y="146" class="sm">数据一个字没改，数字自己动了 —— 同比环比就不能看了</text>
+    </svg>
+    <p>所以冻结区不是"暂时懒得重算"，是<strong>拒绝重算</strong>：报表要能拿去做同比环比，历史数字就必须钉死。</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">06 / 四条脚注</span>诚实地说，还有这些</h2>
+  <ol class="foot">
+    <li><strong>指标表不受冻结约束。</strong>它依赖的事实全都还在，随时可以整体重算 ——
+        换归属口径（<code>first_responder</code> ↔ <code>all_participants</code>）同理，不用重跑 LLM。</li>
+    <li><strong>冻结线的位置由配置决定。</strong><code>lookback_days</code> 今天是 <code>5</code>，
+        所以窗口是 <code>[T-5, T-1]</code>（CLAUDE.md 里写的 <code>T-2</code> 是它还等于 2 时的说法）。
+        把它调大，就是在<em>亲手把冻结线往左推</em> —— 那是有意打破不变量 1，不是正常入口。</li>
+    <li><strong>真想重跑更早的天，本地也没料了。</strong>raw 区滚动只留 2 个月，更老的月目录每轮跑完就删。
+        要重跑得整月重下（ADR-0005）。</li>
+    <li><strong>今天冷冻区其实一次都没被更新过。</strong>词表还在 v0，全部 <code>__untyped__</code>；
+        而那条 <code>recompute --taxonomy-version vN</code> 的 CLI，Rust 版<em>还没搬</em>（<code>docs/status.md</code> ⑥ 行）。
+        上面第 04 节讲的是<em>设计好的唯一入口</em>，不是今天已经能跑的命令。</li>
+  </ol>
+</section>
+
+<p class="src">出处 · CLAUDE.md 承重不变量 1 / 3 · CONTEXT.md 事实列 vs 标注列 · 词表生命周期 ·
+   src/store.rs stray_days · src/window.rs · src/classify.rs · docs/architecture.md ⑤⑥⑦</p>
+
+</div>

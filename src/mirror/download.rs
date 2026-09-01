@@ -204,10 +204,12 @@ fn write_and_verify(
     fh.sync_all()?;
 
     if have == 0 {
-        // 冷启动才数行：整文件数一遍，换一次独立于字节数的验证。
+        // 冷启动才数行，换一次独立于字节数的验证。**数手里这份 `body`**：`have == 0`
+        // ⇒ 落地的文件内容恒等于它，`fs::read` 把刚 fsync 完的 18 MB 原样读回来只是
+        // 第二份 18 MB 分配（`mirror_concurrency = 8` 的冷启动峰值凭空翻倍）。
         // ponytail: 增量时只校验字节数（position 已是精确的端到端证明）。要每次都
         //           校验就得读回整个月文件，月末 1000 群 = 多读 18 GB。
-        let n = fs::read(local)?.iter().filter(|b| **b == b'\n').count() as u64;
+        let n = body.iter().filter(|b| **b == b'\n').count() as u64;
         if n != record_count {
             fs::remove_file(local)?;
             return Err(format!("落地 {n} 行，索引表说 {record_count} 行，已删除重来").into());

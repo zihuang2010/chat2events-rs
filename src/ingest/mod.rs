@@ -40,7 +40,7 @@
 //! ```text
 //! ingest/
 //!   types.rs   Role · Message · Conversation · IngestError —— 领域类型，不认识上游
-//!   layout.rs  路径布局：months · room_path · list_rooms · files
+//!   layout.rs  路径布局：months · room_path · list_rooms · files · prune（保留期）
 //!   read.rs    DuckDB 连接 · SQL · 上游字段语义 · 五道守卫 · read_room / read_by_ids
 //! ```
 //!
@@ -50,7 +50,7 @@ mod layout;
 mod read;
 mod types;
 
-pub use layout::{list_rooms, months, room_path};
+pub use layout::{list_rooms, months, prune, room_path};
 pub use read::{read_by_ids, read_room};
 pub use types::{Conversation, IngestError, Message, Role};
 

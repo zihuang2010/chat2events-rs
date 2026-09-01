@@ -39,17 +39,20 @@ OSS 月文件 ──① pull（索引表 + HTTP Range）──> ./data/raw/   OS
 |---|---|---|---|---|---|---|
 | ① | **摄取** | `pull.rs` ＋ `ingest.rs` | 无（契约写在 `ingest.rs` 顶上的模块文档注释里） | `Message` | 1 个适配器 = **假想**接缝 | ✅（`pull.rs` ＋ `ingest.rs`） |
 | ② | **会话** | 同 ①，不独立成模块 | `read_room()` | `Conversation` | — | ✅ |
-| ③ | **抽取** | `extract.rs` | `SegmentModel` | `EventDraft` | 3 个适配器 = **真**接缝 | ⚠️ 只有冒烟 |
-| ④ | **装配** | `extract.rs::assemble` | **无，且不该有** | `Event` | 溯源守卫 | ❌ |
-| ⑤ | **分类** | `classify.rs` | `Classifier` | `type` | 2 个（v0 / v1）= **真**接缝 | ❌ |
-| ⑥ | **指标** | `metrics.rs` | 无 | 指标行 | 纯函数 | ❌ |
-| ⑦ | **落库** | `store.rs` | 无（已排除） | — | MySQL 是唯一目标 | ❌（连接池已建） |
+| ③ | **抽取** | `extract/`（`mod` ＋ `redact` / `prompt` / `render` / `segment`） | `SegmentModel` | `EventDraft` | Rust 版 2 个适配器（`LiveModel` ＋ 测试桩）= **真**接缝 | ✅ |
+| ④ | **装配** | `extract/assemble.rs` | **无，且不该有** | `Event` | 溯源守卫 | ✅ |
+| ⑤ | **分类** | `classify.rs` | 无（v1 不存在，见下） | `type` | 只有 v0 = **假想**接缝 | ✅ |
+| ⑥ | **指标** | `metrics.rs` | 无 | 指标行 | 纯函数 | ✅ |
+| ⑦ | **落库** | `store.rs` | 无（已排除） | — | MySQL 是唯一目标 | ✅ |
 
 另有 `daily.rs` —— 跑批那一轮的**编排**（① → ③④ → ⑤⑥ → ⑦）。它不是一个阶段，
 是把七个阶段串起来的进程。`main.rs` 只负责读配置、起日志、建资源、调 `daily::run`。
 
 
-**端口判据：一个适配器 = 假想接缝，两个 = 真接缝。** 只有 ③ 和 ⑤ 今天就有第二个实现，所以只有它们值得写 trait。**① 明确不写 `MessageSource` trait** —— 契约是**文字**的价值，写成 trait 壳只多一处「改签名要改两处」的负担，`ingest.rs` 顶上那段模块文档注释（`//!`）就是端口本身。**④ 明确不给端口** —— 它是承重不变量 6（溯源）的守卫，给它接缝等于给溯源留绕过口。**② 有阶段名但不独立成模块**（分组必须下推给源）：**五个阶段，四个模块。**
+**端口判据：一个适配器 = 假想接缝，两个 = 真接缝。** ③ 有第二个实现，值得写 trait。
+**⑤ 在 Rust 版没写 trait** —— v1 需要词表表 + embedding + 缓存，今天一样都没有
+（Python 那边的 `Classifier` Protocol 也只有 v0 一个实现），按本仓库自己的判据那是假想接缝；
+v1 落地时再引。**① 明确不写 `MessageSource` trait** —— 契约是**文字**的价值，写成 trait 壳只多一处「改签名要改两处」的负担，`ingest.rs` 顶上那段模块文档注释（`//!`）就是端口本身。**④ 明确不给端口** —— 它是承重不变量 6（溯源）的守卫，给它接缝等于给溯源留绕过口。**② 有阶段名但不独立成模块**（分组必须下推给源）：**五个阶段，四个模块。**
 
 各模块内部、端口上什么不许出门 → `docs/architecture.md`。
 
@@ -149,9 +152,10 @@ OSS 月文件 ──① pull（索引表 + HTTP Range）──> ./data/raw/   OS
 过滤、投影、排序、分组尽量下推到适配器（今天是 DuckDB 的 SQL）里。
 
 - 用 `read_json_auto(..., format='newline_delimited')` 直接扫描文件/glob，不预先反序列化成内存对象。
-- **按群读**：`list_rooms()` 只遍历目录，`read_room()` 读一个群、放 `tokio::task::spawn_blocking`（DuckDB 是同步阻塞的；不挪出去的话每读一个群，N 个在飞的模型调用全被卡在同一个 runtime 线程上）。**内存上界由 `ROOM_CONCURRENCY` 那个 `tokio::sync::Semaphore` 保证**，不需要队列。
-  ⚠️ **群级**并发还没搬过来 —— 今天 `daily.rs` 是串行 for 循环。（`pull` 自己是并发的，
-  走 `JoinSet` 的背压 + `pull_concurrency`，那是下载不是读取，两回事。）
+- **按群读**：`list_rooms()` 只遍历目录，`read_room()` 读一个群、放 `tokio::task::spawn_blocking`（DuckDB 是同步阻塞的；不挪出去的话每读一个群，N 个在飞的模型调用全被卡在同一个 runtime 线程上）。**内存上界由 `room_concurrency` 保证**，不需要队列 —— 今天由 `daily::read_rooms` 那个
+  `JoinSet` 的背压兑现（跟 `pull` 一个写法，不是 semaphore）。**每个群的 `Conversation`
+  在它自己的任务里就地消费掉**，绝不能收集起来再统一处理，否则这个上界就白设了。
+  实测 100 群 / 555 MB / 12 核：串行 9.81s → k=8 2.48s（4.0x），k=12 起不再变快。
   ⚠️ **队列 / 背压 / 生产者线程已经删掉了，别再加回来。** 它们存在的唯一理由是「所有群混在一堆文件里、必须一次排序才能切开」；真实布局是**一个群一个月一个文件**，那个前提没了 —— R 次查询各碰各的几 MB，总 I/O 本来就是一遍。
 - **禁止对全量表 `fetchall()` / `df()`。**
 - ⚠️ **一条例外：消息级计数在进程内算，不下推 SQL。** 那个群的消息本来就已经在内存里了（③ 要用），这里没有多读一个字节。为它单开一条 SQL 等于**同一份数据扫两遍**，而且是逼着未来每个适配器都支持 SQL 的唯一理由。
@@ -221,9 +225,11 @@ OSS 月文件 ──① pull（索引表 + HTTP Range）──> ./data/raw/   OS
 ## 当前状态
 
 ⚠️ **这是 Rust 重写仓库（`chat2events-rs`），不是 Python 那份。** 七阶段、承重不变量、
-领域契约、ADR 全部照搬 —— 那些是设计不是实现。**已搬过来的是 ①②**（拉取 + 摄取 + 会话）
-和 LLM 调用层，③④⑤⑥⑦ 仍然只存在于 Python 版（`../pychat2events/`）。逐阶段的搬运状态见上面
-七阶段表的「Rust 现状」列，细节与待办见 `docs/status.md`。
+领域契约、ADR 全部照搬 —— 那些是设计不是实现。**①~⑦ 全部搬完**（2026-09-01），
+`daily::run` 真的跑完 ① → ③④ → ⑤⑥ → ⑦。细节与待办见 `docs/status.md`。
+
+**搬运等价性有据**：同一份 823 条样本，Rust 与 Python 的 prompt **59664 字节逐字节相同**、
+分段边界一致（`cargo run --example dry`，不花 token）。
 
 **Rust 版和 Python 版的三处实质差异**（不是翻译，是重新决定的）：
 
@@ -231,13 +237,24 @@ OSS 月文件 ──① pull（索引表 + HTTP Range）──> ./data/raw/   OS
 |---|---|---|
 | 配置来源 | `os.environ` + `.env` | `config.toml` ＋ `secrets.toml`（0600 强制），见 **ADR-0006** |
 | 承重不变量的表达 | 显式 `raise`（`assert` 会被 `-O` 删掉） | `Result` 为主；`assert!` 在 release 下不会消失，**`debug_assert!` 才会**。判据换成失败隔离粒度，见上面「让程序错误显式暴露」 |
-| 并发 | `asyncio` + `ROOM_CONCURRENCY` semaphore | 群级还没搬（`daily.rs` 串行 for）；`pull` 已并发，走 `JoinSet` 背压 |
+| 并发 | `asyncio` + `ROOM_CONCURRENCY` semaphore | `JoinSet` 背压代替 semaphore，读取走 `spawn_blocking`（`daily::run_rooms`）；`pull` 同一写法 |
+| ⑤ 的端口 | `Classifier` Protocol（只有 v0 一个实现） | **不写 trait**，两个常量 —— 一个适配器 = 假想接缝 |
+| 正则 | `re` 有后顾/前瞻断言 | `regex` crate 两者都没有：`_PHONE` 的两侧断言手写（`extract::redact::phone_spans`），`_FIELD` 的前瞻改成捕获组再吐回 |
+| `sender_role` / `asker_role` | 裸字符串 `"INTERNAL"` / `"EXTERNAL"` | **枚举 `ingest::Role`**。解析只在读取点发生一次，认不出的 `identityType` = 该群失败（不兜底成任意一边）。理由是错法静默：打错一个字母会同时让 `labels` 标反、`agents` 恒空、首响 p50/p90 全 `NULL`，而编译器不吭声。落库仍走 `as_str()`，库里那一列的取值一字未变 |
 
-**已验证**：`cargo test` **29 个用例 / 0.8s**（`ingest` 20 + `pull` 5 + `llm` 1 + `window` 3）。
-单元测试跟着被测代码走（`#[cfg(test)] mod tests`；`ingest` 的测试体积大，用 `#[path]`
-分文件、逻辑上仍是同一模块，私有可见性不变）。lib + bin 拆分后 `tests/` 结构上可用，
-但今天没有集成测试 —— `daily::run` 需要真实 MySQL 与端点。共享 fixture 在
-`src/testutil.rs`（仅 `cfg(test)` 编译）。
+**已验证**：`cargo test` **80 个用例 / 1.9s**，clippy 零告警。真数据端到端跑通一轮：
+10 群 / 83 条 / 23 个事件 / 17.3s，落库 23+40+12 行、`run_failure` 0，重跑幂等。
+
+**单元测试跟着被测代码走，规则只有一条**：测试块 **≥ 100 行**的模块拆成目录
+（`<模块>/mod.rs` ＋ `<模块>/tests.rs`），其余留在文件底部的 `#[cfg(test)] mod tests`。
+今天分出去的是 `extract` / `ingest` / `metrics` / `daily`，留在文件里的是
+`pull`（82 行）/ `store` / `llm` / `window` / `config`。**测试始终是被测模块的子模块** ——
+私有项照常可见，「单元测试跟着被测代码走」的实质一字未变，动的只是物理位置。
+lib + bin 拆分后 `tests/` 结构上可用，但今天没有集成测试 —— `daily::run` 需要真实
+MySQL 与端点。共享 fixture 在 `src/testutil.rs`（仅 `cfg(test)` 编译）。
+
+⚠️ **两处没有离线测试，别以为全绿就等于全验过**：`store` 的写库 SQL（要真 MySQL）
+和 `LiveModel`（要真端点）。分别靠 `cargo run` 和 `cargo run --example smoke` 验。
 
 ⚠️ **样本会被就地替换**，文档里带条数的实测数字必须注明是哪一版样本量的。当前样本单群跨 5 天 3742 条（2026-08-25 ~ 08-29），**时间戳真实**。
 

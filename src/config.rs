@@ -21,7 +21,9 @@ use std::{
 
 #[derive(Deserialize)]
 pub struct Config {
+    pub daily: DailyConfig,
     pub ingest: IngestConfig,
+    pub extract: ExtractConfig,
     pub llm: LlmConfig,
     pub mysql: MysqlConfig,
     pub log: LogConfig,
@@ -34,6 +36,22 @@ pub struct LogConfig {
     /// 端点侧的埋点情况见 `llm.rs` 里 create 调用处的注释。
     /// 环境变量 RUST_LOG 若存在会覆盖它 —— 临时排障不用改配置文件。
     pub level: String,
+}
+
+/// 跑批那一轮本身的参数 —— 不属于任何单个阶段，所以不塞进 `[ingest]`。
+#[derive(Deserialize)]
+pub struct DailyConfig {
+    /// **整轮**的墙钟预算，从 `daily::run` 进门开始算，① 和 ①② 共用同一份。
+    ///
+    /// 到点之后**不再启动**新的下载 / 新的群，在飞的跑完就收工，进程以非零码退出。
+    /// 不是硬砍：砍在半路会让一个群只写进去一半（承重不变量 2 要求两个分片同一个
+    /// 事务），而"不再开新的"天然落在事务边界上。
+    ///
+    /// ⚠️ **这是失控护栏，不是调优旋钮。** 正常一轮是分钟级；它存在只为了让
+    /// 「OSS 半死不活、每个文件都读到一半断」那种情况在几小时内收场，
+    /// 而不是把 cron 挂到第二天。没跑完的群下一轮会重新拉 —— 只要
+    /// `lookback_days ≥ 2`，漏掉的那天下一轮还在窗口里。
+    pub round_deadline_secs: u64,
 }
 
 /// ① 摄取 —— 拉取（`pull.rs`）和读取（`ingest.rs`）共用这一段。
@@ -57,6 +75,31 @@ pub struct IngestConfig {
     /// 同时在飞的月文件下载数。跟 ADR-0004 里 `SEGMENT_MSGS` / `ROOM_CONCURRENCY`
     /// 一个规矩：这类值必须由部署环境明确给出。
     pub pull_concurrency: usize,
+
+    /// 同时在处理的群数（ADR-0004 的 `ROOM_CONCURRENCY`）。**段之间仍然串行，
+    /// 并行只加在群与群之间。** 无默认值，缺失即报错。
+    ///
+    /// 它同时是两件事：
+    ///   * **内存上界** —— 一次最多持有这么多个 `Conversation`；
+    ///   * **墙钟旋钮** —— ③ 接上之后这是唯一能压的那个，届时约束是端点 TPM
+    ///     而不是并发数本身，调它之前先看限流。
+    ///
+    /// 今天只有读取在并发，实测拐点在 8（100 群 / 555 MB / 12 核，串行 9.81s →
+    /// k=8 2.48s，k=12 起不再变快）。
+    pub room_concurrency: usize,
+}
+
+/// ③ 抽取 —— 只有一个旋钮，而且是省钱的那种。
+#[derive(Deserialize)]
+pub struct ExtractConfig {
+    /// 一个群一天切成 `ceil(n / segment_msgs)` 段。**省钱旋钮，不是质量旋钮**
+    /// （ADR-0004）：切几段都不产生接缝（段之间串行传便签），它只是省掉
+    /// 「拿整群去试、注定被截断」那一次调用。无默认值，缺失即报错。
+    ///
+    /// 它还兼着**便签的保留窗口**：「上一整段都没动静就撤下」复用的就是这个数，
+    /// 不另发明一个。两者眼下量级相同才合用 —— 换了输出预算大得多的模型、
+    /// 段长跳到几千时要拆成独立常量（ADR-0004 结尾）。
+    pub segment_msgs: usize,
 }
 
 #[derive(Deserialize)]
@@ -159,4 +202,18 @@ fn require_owner_only(path: &Path) {
         mode & 0o777,
         path.display()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 仓库里那份 `config.toml` 必须能填满 [`Config`]。所有键必填、代码里没有默认值，
+    /// 所以漏一个键就是**进程起不来** —— 让它在 `cargo test` 里炸，别留到跑批那天。
+    #[test]
+    fn the_shipped_config_toml_fills_every_field() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml"))
+            .unwrap();
+        toml::from_str::<Config>(&text).unwrap();
+    }
 }

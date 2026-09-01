@@ -7,12 +7,13 @@ edition = "2024"
 async-openai = { version = "0.41.3", features = ["chat-completion"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 duckdb = { version = "1.10505.0", features = ["bundled", "chrono"] }
+regex = "1.12"
 reqwest = { version = "0.13.4", default-features = false }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "mysql"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "mysql", "chrono"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "1.1.4"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

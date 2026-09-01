@@ -5,12 +5,19 @@
 //!   * `daily::run` 等编排从此可被集成测试调用 —— 纯 bin crate 没有可导入的
 //!     crate 根，`tests/` 结构上编不了。
 
+// 目录模块（`<模块>/mod.rs`）与单文件模块混排，规则只有一条：**测试块 ≥ 100 行
+// 就把测试拆成 `<模块>/tests.rs`**，其余留在文件底部的 `#[cfg(test)] mod tests`。
+// `extract/` 是唯一一个连生产代码也分了文件的 —— 它一个人装了 6 件互不相干的事，
+// 而对外仍然只有 `Event` / `SegmentModel` / `extract` 三样（拆的是导航，不是深度）。
+pub mod classify;
 pub mod config;
 pub mod daily;
 pub mod extract;
 pub mod ingest;
 pub mod llm;
+pub mod metrics;
 pub mod pull;
+pub mod store;
 pub mod window;
 
 #[cfg(test)]

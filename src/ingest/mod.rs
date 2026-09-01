@@ -117,6 +117,48 @@ ORDER BY "{at}", {msg_id}
     };
 }
 
+/// 群里的两方，**都是客服**（`CONTEXT.md`：群里没有终端消费者）。
+/// 上游 `identityType` 只有这两个值，实测 100% 填充。
+///
+/// **收成枚举而不是裸字符串，是因为错法是静默的**：`== "INTERNAL"` 打错一个字母，
+/// [`crate::extract`] 的 `labels` 会把平台客服全标成「商家X」、`assemble` 的 `agents`
+/// 恒空、`first_agent_reply_time` 恒 `None`、⑥ 的首响 p50/p90 全 `NULL` ——
+/// 三条链路一起坏，而编译器一句话都不说，报表只是安静地偏小。
+///
+/// 「上游只有这两个值」这条契约从此**只在 [`Role::parse`] 那一处成立一次**，
+/// 下游全部是 `match`，打错是编译错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// 平台客服 —— 受理诉求、协调师傅上门。指标口径里的 `agent` 就是这一边。
+    Internal,
+    /// 商家客服 —— 把订单诉求发到群里。事件多数由这一边发起。
+    External,
+}
+
+impl Role {
+    /// 上游 `identityType` -> 领域角色。**唯一的解析点**（[`scan`] 的取值处）。
+    ///
+    /// 认不出就是 `None`，由调用方判该群失败 —— **不能兜底成任意一边**：
+    /// 判成 `Internal` 会把商家算进 `agents`，判成 `External` 会让平台的回复不再算首响，
+    /// 两个方向都是静默把指标写歪。
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "INTERNAL" => Some(Self::Internal),
+            "EXTERNAL" => Some(Self::External),
+            _ => None,
+        }
+    }
+
+    /// 落库用。与上游 `identityType` 的取值**逐字相同** —— `event.asker_role`
+    /// 那一列存的就是它，库里的历史数据和新写进去的必须对得上。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "INTERNAL",
+            Self::External => "EXTERNAL",
+        }
+    }
+}
+
 /// 八个字段，每一个都有读取点。
 ///
 /// 端口上每多一个死字段，就是向未来每一个适配器收一次税 —— `msg_type` /
@@ -128,15 +170,17 @@ pub struct Message {
     pub corp: String,
     pub at: NaiveDateTime,
     pub sender_id: String,
-    /// INTERNAL（平台客服）/ EXTERNAL（商家客服）
-    pub sender_role: String,
+    pub sender_role: Role,
     pub text: String,
     pub reply_to: Option<String>,
 }
 
 /// **接口粒度 = 群 × 一次运行的完整会话 = 失败隔离粒度 = ③ 的输入。** 四者必须相等。
 #[derive(Debug, Clone)]
-// corp / room 的读取点在 ③ 抽取和 ⑦ 落库，那两步还没搬过来
+// ③⑦ 已经搬完，但两个字段仍然没有读取点：`daily::run_room` 一路带着自己的
+// `corp` / `room` 参数，`Event` 的那两列来自 `Message`。保留它们是因为
+// `CONTEXT.md` 的领域契约里 `Conversation` 就是这个形状，且 webUI 下钻
+// （唯一还没搬的旁路）拿到 `Conversation` 时要用。
 #[allow(dead_code)]
 pub struct Conversation {
     pub corp: String,
@@ -324,8 +368,7 @@ fn scan(
         let r_corp: String = r.get::<_, Option<String>>(COL_CORP)?.unwrap_or_default();
         let at: Option<NaiveDateTime> = r.get(COL_AT)?;
         let sender_id: String = r.get::<_, Option<String>>(COL_SENDER_ID)?.unwrap_or_default();
-        let sender_role: String =
-            r.get::<_, Option<String>>(COL_SENDER_ROLE)?.unwrap_or_default();
+        let raw_role: Option<String> = r.get(COL_SENDER_ROLE)?;
         let text: String = r.get::<_, Option<String>>(COL_TEXT)?.unwrap_or_default();
         let reply_to: Option<String> = r.get(COL_REPLY_TO)?;
         let schema_v: Option<i64> = r.get(COL_SCHEMA_VERSION)?;
@@ -353,6 +396,15 @@ fn scan(
             return Err(IngestError::Room(format!(
                 "{src_file}: 有消息缺必填字段 \
                  (msg_id={msg_id:?} sender_id={sender_id:?} text={text:?} at={at:?})"
+            )));
+        };
+
+        // ②b 角色 —— 认不出的 identityType 是该群失败，**不兜底成任意一边**
+        //     （理由见 [`Role::parse`]）。上游加一个新的身份类型时，这里会当场喊，
+        //     而不是让它默默按某一边参与指标计算。
+        let Some(sender_role) = raw_role.as_deref().and_then(Role::parse) else {
+            return Err(IngestError::Room(format!(
+                "{src_file}: 认不出的 identityType {raw_role:?}，只接受 INTERNAL / EXTERNAL"
             )));
         };
 
@@ -485,10 +537,9 @@ pub fn read_by_ids(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 自检 —— 断言要能在 CI 里跑：cargo test。
-// #[path] 只分文件不分模块：测试逻辑上仍是 `ingest` 的子模块，私有项照常可见，
-// 「单元测试跟着被测代码走」的实质不变，搬走的只是那 300 行的物理位置。
+// 测试是 `ingest` 的子模块（`ingest/tests.rs`），私有项照常可见，
+// 「单元测试跟着被测代码走」的实质不变，分出去的只是那 300 行的物理位置。
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "ingest_tests.rs"]
 mod tests;

@@ -66,11 +66,31 @@ read_by_ids(raw_root, corp, room, window, ids)  -> [Message]      # webUI 下钻
   列名打错则是 `InvalidColumnName`，当场炸。
 - **月份由 `files()` 一路带进 `scan()`，不从 `filename` 反解。** 布局只被「拼」一次
   （`room_path`），没有第二处再去「拆」它。`EXT` / `MONTH_FMT` 两个 const 同理。
+- **`sender_role` 是 `Role` 枚举，不是 `String`。** 解析只在取值点发生一次，认不出的
+  `identityType` 是该群失败（不兜底成任意一边）。理由是**错法静默**：`== "INTERNAL"`
+  打错一个字母，`labels` 会把平台客服全标成商家、`assemble` 的 `agents` 恒空、
+  ⑥ 的首响 p50/p90 全 `NULL`，三条链路一起坏而编译器不吭声。落库仍走 `as_str()`，
+  库里那一列的取值一字未变。
 - **必填字段包含 `text`。** 契约头一条是「`text` 恒非空」，而它是 `COALESCE` 兜完底的
   结果 —— 到读取点还是空，说明上游连占位符都没给。NULL 和空串都算缺失
   （`content` 是空串时 `COALESCE` 返回的就是空串，只判 NULL 漏得掉）。
 
 ### ③ 抽取 extract ＋ ④ 装配 assemble
+
+**Rust 版是个目录模块，但接口一字未动** —— 对外仍然只有 `Event` / `SegmentModel` /
+`extract`（＋ 对拍用的 `preview`）。拆的是**导航成本，不是深度**：
+
+```text
+extract/mod.rs       领域类型 · 端口 SegmentModel · 校验 · LiveModel · 调用链
+        redact.rs    正文脱敏与订单号正则（ADR-0001）
+        prompt.rs    SYSTEM —— 逐字搬运，改一个字所有带数字的实测结论同时作废
+        render.rs    便签 · 匿名标签 · 行号箭头，view 是唯一出口
+        segment.rs   分段与切点选择（ADR-0004）
+        assemble.rs  ④ merge / align / assemble / orphans
+```
+
+`prompt.rs` 单独成文件是有意的：那句「改一个字实测结论全作废」得贴在改它的人眼皮底下。
+
 
 ```
 extract(conversation, *, model) -> Ok([Event]) | Failed(reason)

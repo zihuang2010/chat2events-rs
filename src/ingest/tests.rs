@@ -1,5 +1,5 @@
-//! `ingest` 的测试 —— `#[path]` 分文件：物理上单独一个文件、逻辑上仍是
-//! `ingest` 的子模块，私有项照常可见。fixture 在 `crate::testutil`。
+//! `ingest` 的测试 —— `ingest` 的子模块，私有项照常可见。
+//! fixture 在 `crate::testutil`。
 
 use super::*;
 use crate::{testutil, window::Window};
@@ -198,6 +198,23 @@ fn missing_required_field_fails_room() {
         let e = read_room(&root, "C", "R", &all()).unwrap_err();
         assert!(matches!(e, IngestError::Room(_)), "{blank}: {e}");
         assert!(e.to_string().contains("缺必填字段"), "{blank}: {e}");
+    }
+}
+
+/// 认不出的 `identityType` = 该群失败，**不兜底成任意一边**。
+///
+/// 这是 `Role` 换掉裸字符串之后新长出来的守卫：此前 `unwrap_or_default()` 会让上游
+/// 加一个新身份类型时静默变成空串，然后 `== "INTERNAL"` 恒假 —— 那一整个群的消息
+/// 全被当成商家发言，`agents` 空、首响全 NULL，而没有任何一处会报错。
+#[test]
+fn an_unknown_identity_type_fails_the_room() {
+    for bad in [json!("BOT"), json!(""), json!(null)] {
+        let mut rows = sample();
+        rows[1]["sender"]["identityType"] = bad.clone();
+        let root = raw(&format!("role-{bad}"), "202608", &rows);
+        let e = read_room(&root, "C", "R", &all()).unwrap_err();
+        assert!(matches!(e, IngestError::Room(_)), "{bad}: {e}");
+        assert!(e.to_string().contains("identityType"), "{bad}: {e}");
     }
 }
 

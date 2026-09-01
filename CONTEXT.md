@@ -138,10 +138,17 @@ room          <- officialRoomId
 corp          <- corpId
 at            <- messageTime（ms -> timestamp，业务本地时区）
 sender_id     <- sender.easyUserId
-sender_role   <- sender.identityType      INTERNAL / EXTERNAL
+sender_role   <- sender.identityType      Role::Internal / Role::External
 text          <- COALESCE(NULLIF(analysisText,''), content)
 reply_to      <- semanticPayload.replyTo.sourceMessageId
 ```
+
+`sender_role` 的契约：**是领域枚举 `Role`，不是字符串**（Rust 版 `ingest::Role`）。
+上游 `identityType` 只有 `INTERNAL` / `EXTERNAL` 两个值，认不出的值 → **该群失败**，
+不兜底成任意一边 —— 判成 `Internal` 会把商家算进 `agents`，判成 `External` 会让平台的
+回复不再算首响，两个方向都是静默把指标写歪。解析只发生在适配器的取值点那一处，
+下游全是 `match`。`event.asker_role` 那一列存的仍是 `INTERNAL` / `EXTERNAL` 原样字符串
+（`Role::as_str`），库里的历史数据不受影响。
 
 `text` 的契约：**恒非空**，是这条消息可读的正文；非文本消息给 `[图片消息]` 这样的占位符，保上下文连贯。
 「`analysisText` 可能是空串」是**上游的形状**，兜底做在适配器的 `SELECT` 里，不外泄 —— 领域里只有一个文本字段，第二个适配器不用去猜两个有什么区别。

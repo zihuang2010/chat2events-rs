@@ -25,6 +25,12 @@
 //! 3. **本地比上游还长 → 本地作废重拉。** 追加写不该出现这种事（上游删档重建才会），
 //!    但不处理就会每天校验失败、这个群永远跑不了。
 //!
+//! **瞬时失败重试 3 次**（退避 1s → 2s）。1000 个群一轮就是 1000 次 GET，CDN 抖动
+//! 0.5% 就是每天 5 个群从指标里静默消失 —— 不变量 3 让它一行不写，不变量 5 让那些
+//! 客服的 `metric_agent_daily` 整行缺失，主管直接 `SUM` 会得到一个偏小但看起来正常
+//! 的数字。只重端侧的临时状况（连接类 / 超时 / 5xx / 429 / 408，见
+//! [`http_status_error`]）；**上面那三道校验一次都不重**，那是旧副本，再要还是它。
+//!
 //! 失败按**群**隔离（承重不变量 3），与抽取失败同一条路径；**索引表本身查不到是
 //! 整轮失败** —— 那不是某个群的事。两种处置在类型上分开（[`PullError`]），
 //! 跟 `ingest` 的 [`crate::ingest::IngestError`] 一个规矩。
@@ -35,7 +41,13 @@
 
 use crate::{config::Config, ingest, window::Window};
 use sqlx::{MySqlPool, Row};
-use std::{collections::BTreeSet, fmt, fs, io::Write, path::Path, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fmt, fs,
+    io::Write,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// 两种失败的**处置方式不同**，所以必须在类型上分开（跟 `IngestError` 同一规矩）。
 /// 曾经这条分界靠「错误出现的位置」表达（走 `?` = 整轮死、进 done 向量 = 群级），
@@ -46,12 +58,18 @@ pub enum PullError {
     Round(String),
     /// 某群某月拉取或校验失败 —— 该群本轮不参与跑批（承重不变量 3）。
     Room(String),
+    /// 端侧的临时状况（连接类 / 超时 / 5xx / 429 / 408）—— **还能靠重试救回来**。
+    ///
+    /// 它只活在 [`pull_one`] 和 [`pull_with_retry`] 之间：重试次数用完就降级成
+    /// [`Self::Room`]，不出那个函数。分成独立变体是因为「能不能重试」和「谁失败了」
+    /// 是两个正交的问题 —— 校验失败也是 `Room`，但重试一万次还是同一份旧副本。
+    Transient(String),
 }
 
 impl fmt::Display for PullError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Round(m) | Self::Room(m) => f.write_str(m),
+            Self::Round(m) | Self::Room(m) | Self::Transient(m) => f.write_str(m),
         }
     }
 }
@@ -65,10 +83,13 @@ impl From<sqlx::Error> for PullError {
     }
 }
 
-/// 下载中的 HTTP 错误发生在单个月文件上 —— 群级。
+/// 下载中的 HTTP 错误 —— 连不上 / 超时 / 读 body 断了，全是重试能救的那类。
+///
+/// ⚠️ URL 拼错也会走这里（`send()` 返回 builder error），白白重试三次。
+/// 不为它单开一条分支：那是配置错误，每个群都会撞上，第一个群就够吼醒你了。
 impl From<reqwest::Error> for PullError {
     fn from(e: reqwest::Error) -> Self {
-        Self::Room(format!("下载：{e}"))
+        Self::Transient(format!("下载：{e}"))
     }
 }
 
@@ -89,7 +110,21 @@ impl From<String> for PullError {
 type Result<T> = std::result::Result<T, PullError>;
 
 /// 单个月文件的下载超时。月末一个群 18 MB，两分钟绰绰有余。
+/// ⚠️ 这是**每次尝试**的上限，不是这个文件的总耗时 —— 乘 [`ATTEMPTS`] 才是。
 const TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 只管 TCP+TLS 握手。单独设是为了让「OSS 连不上」十秒内失败，而不是每个文件都
+/// 耗满上面那个按分钟计的整体超时 —— 1000 个群时这是「几分钟」和「几小时」之差。
+/// 跟 `llm.rs` 同一个理由（见 `config.rs` 的 `connect_timeout_secs`）。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 单个月文件的总尝试次数（含第一次）。1000 个群跑一轮就是 1000 次 GET，
+/// CDN 抖动 0.5% 就是每天 5 个群从指标里静默消失。
+const ATTEMPTS: u32 = 3;
+
+/// 首次重试前等多久，之后翻倍（1s → 2s）。
+/// ponytail: 不加抖动。在飞的只有 `pull_concurrency` 个（8），凑不出惊群。
+const BACKOFF: Duration = Duration::from_secs(1);
 
 /// 索引表的一行 = 一个群一个月的月文件。
 #[derive(Debug, Clone)]
@@ -179,6 +214,62 @@ enum Outcome {
     Pulled(u64),
 }
 
+/// 非 2xx 的响应算哪一类失败。
+///
+/// **此前根本没有这个检查** —— `send()` 不会因为 4xx/5xx 报错，于是一个 503 的
+/// HTML 错误页会一路流进 [`write_and_verify`]，撞在字节数那道校验上，报出
+/// 「多半是命中了陈旧缓存」。诊断指向完全错误的方向，还不会被重试。
+fn http_status_error(status: reqwest::StatusCode, url: &str) -> PullError {
+    let msg = format!("HTTP {status}：{url}");
+    // 5xx 是对端的事，429/408 是它让我们等会儿再来 —— 都能靠重试救。
+    // 其余 4xx（404 对象不存在、403 签名过期、416 上游 position 跑到了对象末尾之后）
+    // 重试多少次都是同一个答案，直接判这个群本轮失败。
+    if status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+    {
+        PullError::Transient(msg)
+    } else {
+        PullError::Room(msg)
+    }
+}
+
+/// 瞬时失败重试。**只有 [`PullError::Transient`] 会重来** —— 三道校验失败一次都不重，
+/// 那是 CDN 给了旧副本，再要一次还是同一份（ADR-0005 结尾）。
+///
+/// 重来时 [`pull_one`] 会重新读一次本地文件大小，所以「上一次写到哪」不需要在这里
+/// 传递 —— 本地是字节级镜像，那个状态本来就存在磁盘上。
+///
+/// 单个文件最坏耗时 = 3 × [`TIMEOUT`] + 3s 退避 ≈ 6 分钟。**整轮的上界不在这里** ——
+/// 由 `daily::run` 那个 deadline 兜（`round_deadline_secs`），到点就不再开新的下载。
+async fn pull_with_retry(
+    http: &reqwest::Client,
+    base: &str,
+    raw_root: &Path,
+    f: &MonthFile,
+) -> Result<Outcome> {
+    let (mut attempt, mut delay) = (1u32, BACKOFF);
+    loop {
+        match pull_one(http, base, raw_root, f).await {
+            Err(PullError::Transient(m)) if attempt < ATTEMPTS => {
+                // 静默重试等于不知道 CDN 在抖。这条 warn 是唯一的信号。
+                tracing::warn!(
+                    room = %f.room, month = %f.month, attempt,
+                    "瞬时失败，{delay:?} 后重试：{m}"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                delay *= 2;
+            }
+            // 次数用完 → 降级成群级失败。**`Transient` 不出这个函数。**
+            Err(PullError::Transient(m)) => {
+                return Err(PullError::Room(format!("重试 {ATTEMPTS} 次仍失败：{m}")));
+            }
+            r => return r,
+        }
+    }
+}
+
 async fn pull_one(
     http: &reqwest::Client,
     base: &str,
@@ -216,6 +307,13 @@ async fn pull_one(
         .send()
         .await?;
     let status = resp.status();
+    if !status.is_success() {
+        return Err(http_status_error(status, &url));
+    }
+    // ⚠️ 整包进内存。峰值 = `pull_concurrency` × 最大月文件（月末 8 × 18 MB ≈ 144 MB）——
+    //    **那个旋钮同时是内存旋钮**，往上调之前先乘一遍。
+    // ponytail: 不改成流式写盘。承重规则 1 要求「校验没过一个字节都不落地」，
+    //           流式就得先写临时文件再改名，为 144 MB 换一套两阶段提交不划算。
     let mut body = resp.bytes().await?;
 
     // 有些 CDN 会忽略 Range 直接返 200 整个对象 —— 那就自己切掉已有的部分。
@@ -272,7 +370,10 @@ fn write_and_verify(
     // 追加 + fsync。**这里不 spawn_blocking**：拉取是跑批的第一步，跑完才进抽取，
     // 此刻 runtime 上没有在飞的模型调用会被卡住 —— 跟硬规则点名的 `read_room`
     // （DuckDB，与 N 个模型调用同时在飞）不是一回事。
-    let mut fh = fs::OpenOptions::new().create(true).append(true).open(local)?;
+    let mut fh = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(local)?;
     fh.write_all(body)?;
     fh.sync_all()?;
 
@@ -283,9 +384,7 @@ fn write_and_verify(
         let n = fs::read(local)?.iter().filter(|b| **b == b'\n').count() as u64;
         if n != record_count {
             fs::remove_file(local)?;
-            return Err(
-                format!("落地 {n} 行，索引表说 {record_count} 行，已删除重来").into(),
-            );
+            return Err(format!("落地 {n} 行，索引表说 {record_count} 行，已删除重来").into());
         }
     }
     Ok(())
@@ -295,10 +394,15 @@ fn write_and_verify(
 ///
 /// 返回 `(corp, room)`：一个群跨月有两行，**任一行失败整个群就作废** ——
 /// 承重不变量 3，少一个窗口就重写等于用残缺数据覆盖完整数据。
+///
+/// `deadline` 是**整轮**的预算（`daily::run` 算的，不是这个函数自己的）。到点之后
+/// 不再启动新的下载，剩下的文件按「没拉成」处理 —— 本地那份很可能缺今天的字节，
+/// 拿去跑批就是用残缺数据覆盖完整数据，正是不变量 3 要禁的事。
 pub async fn pull(
     cfg: &Config,
     pool: &MySqlPool,
     w: &Window,
+    deadline: Instant,
 ) -> Result<BTreeSet<(String, String)>> {
     let files = list_month_files(pool, w).await?;
     tracing::info!(
@@ -309,12 +413,21 @@ pub async fn pull(
 
     let http = reqwest::Client::builder()
         .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|e| PullError::Round(format!("HTTP 客户端构建失败：{e}")))?;
     let mut set = tokio::task::JoinSet::new();
     let mut done: Vec<(MonthFile, Result<Outcome>)> = Vec::with_capacity(files.len());
+    let mut failed_by_deadline = BTreeSet::new();
+    let mut over_budget = 0usize;
 
     for f in files {
+        // 整轮预算用完 —— 不再开新的，但已经在飞的让它跑完（那是事务边界）。
+        if Instant::now() >= deadline {
+            over_budget += 1;
+            failed_by_deadline.insert((f.corp, f.room));
+            continue;
+        }
         // 背压：在飞的最多 pull_concurrency 个。JoinSet 自己就够了，不用再加信号量。
         if set.len() >= cfg.ingest.pull_concurrency {
             done.push(join(set.join_next().await));
@@ -323,7 +436,7 @@ pub async fn pull(
         let base = cfg.ingest.download_base_url.clone();
         let root = cfg.ingest.raw_root.clone();
         set.spawn(async move {
-            let r = pull_one(&http, &base, &root, &f).await;
+            let r = pull_with_retry(&http, &base, &root, &f).await;
             (f, r)
         });
     }
@@ -331,7 +444,7 @@ pub async fn pull(
         done.push(join(Some(j)));
     }
 
-    let mut failed = BTreeSet::new();
+    let mut failed = failed_by_deadline;
     let (mut pulled, mut skipped, mut empty, mut bytes) = (0usize, 0usize, 0usize, 0u64);
     for (f, r) in &done {
         match r {
@@ -352,10 +465,14 @@ pub async fn pull(
             }
         }
     }
+    if over_budget > 0 {
+        tracing::error!(over_budget, "整轮预算用完，这些月文件本轮没拉，对应的群作废");
+    }
     tracing::info!(
         pulled,
         skipped,
         empty,
+        over_budget,
         failed = failed.len(),
         bytes,
         "拉取完成"
@@ -384,6 +501,23 @@ mod tests {
 
     const A: &[u8] = b"{\"a\":1}\n"; // 8 字节
     const B: &[u8] = b"{\"b\":2}\n"; // 8 字节
+
+    /// 分类错一边的代价不对称：把 503 判成 `Room`，这个群白白丢一天；把 404 判成
+    /// `Transient`，白等 3 秒再丢。所以这条边界值得钉死。
+    #[test]
+    fn transient_statuses_retry_and_the_rest_do_not() {
+        use reqwest::StatusCode as S;
+        for s in [S::INTERNAL_SERVER_ERROR, S::BAD_GATEWAY, S::SERVICE_UNAVAILABLE,
+                  S::GATEWAY_TIMEOUT, S::TOO_MANY_REQUESTS, S::REQUEST_TIMEOUT] {
+            let e = http_status_error(s, "u");
+            assert!(matches!(e, PullError::Transient(_)), "{s} 该重试：{e}");
+        }
+        // 416 = 上游 position 跑到了对象末尾之后，重试不会让 OSS 长出字节来
+        for s in [S::NOT_FOUND, S::FORBIDDEN, S::RANGE_NOT_SATISFIABLE, S::BAD_REQUEST] {
+            let e = http_status_error(s, "u");
+            assert!(matches!(e, PullError::Room(_)), "{s} 不该重试：{e}");
+        }
+    }
 
     #[test]
     fn cold_start_writes_every_byte() {
@@ -431,6 +565,9 @@ mod tests {
         let e = write_and_verify(&p, A, 0, 8, 2).unwrap_err();
         assert!(matches!(e, PullError::Room(_)), "{e}");
         assert!(e.to_string().contains("已删除重来"), "{e}");
-        assert!(!p.exists(), "行数不对的文件必须删掉，否则下次 have 就是错的");
+        assert!(
+            !p.exists(),
+            "行数不对的文件必须删掉，否则下次 have 就是错的"
+        );
     }
 }

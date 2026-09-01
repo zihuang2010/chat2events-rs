@@ -10,7 +10,9 @@
 use chat2events_rs::{Result, config, daily, llm::Llm};
 use std::{io::IsTerminal, path::Path};
 
-/// 日志走 stderr，抽取结果走 stdout —— `./chat2events-rs > out.json` 两者不会混。
+/// 日志一律走 stderr。**stdout 全程不写一个字节** —— 抽取结果由 ⑦ 落 MySQL，
+/// 跑批没有「把结果打出来」这条路径。写 stderr 是为了让 `2> run.log` 能单独收日志，
+/// 且重定向到文件/journald 时不掺 ANSI 颜色码。
 fn init_logging(cfg: &config::LogConfig) {
     use tracing_subscriber::{EnvFilter, fmt};
 
@@ -44,7 +46,10 @@ async fn main() -> Result<()> {
 
     // 连不上就在这里炸，别等抽完了才发现库进不去
     let pool = config::mysql_pool(&config.mysql, &secrets.mysql.url).await?;
-    tracing::info!(max_connections = config.mysql.max_connections, "MySQL 连接池就绪");
+    tracing::info!(
+        max_connections = config.mysql.max_connections,
+        "MySQL 连接池就绪"
+    );
 
     daily::run(&config, &llm, &pool).await
 }

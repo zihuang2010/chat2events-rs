@@ -4,7 +4,8 @@
 
 ⚠️ **这是 `chat2events-rs` 自己的进度，不是 Python 版的。**
 Python 那边 ①→⑦ 已经端到端跑通（实测数字见 `../pychat2events/docs/status.md`）；
-这边搬了 ①②。两份 status 不要互相复制。
+这边 ①~⑦ 也全部搬完（2026-09-01），`daily::run` 真的跑完整条链。
+两份 status 不要互相复制 —— 实测数字各测各的。
 
 ## 搬运进度
 
@@ -13,20 +14,45 @@ Python 那边 ①→⑦ 已经端到端跑通（实测数字见 `../pychat2event
 | ① | 拉取 `pull` | ✅ | ✅ | 索引表 + HTTP `Range`，见 ADR-0005 |
 | ① | 摄取 `ingest` | ✅ | ✅ | `list_rooms` / `read_room` / `read_by_ids` 三个出口全在 |
 | ② | 会话 | ✅ | ✅ | 同 ①，不独立成模块 |
-| ③ | 抽取 `extract` | ✅ | ⚠️ | 只有 `extract::smoke` 一段冒烟。缺：自适应二分 · 段间便签 · 序号↔`msg_id` 映射 · `_body` 脱敏 |
-| ④ | 装配 `assemble` | ✅ | ❌ | |
-| ⑤ | 分类 `classify` | ✅ | ❌ | |
-| ⑥ | 指标 `metrics` | ✅ | ❌ | |
-| ⑦ | 落库 `store` | ✅ | ❌ | 连接池已建（启动即握手，连不上当场炸），SQL 一条没写 |
+| ③ | 抽取 `extract` | ✅ | ✅ | 自适应二分 · 段间便签 · 序号↔`msg_id` 映射 · `_body` 脱敏 · 校验重灌，全在 |
+| ④ | 装配 `assemble` | ✅ | ✅ | 无端口（溯源守卫）。11 个字段从真实消息算，只有 `summary` 来自模型 |
+| ⑤ | 分类 `classify` | ✅ | ✅ | **只有 v0 两个常量，没写 trait** —— 一个适配器 = 假想接缝，见 `classify.rs` 模块注释 |
+| ⑥ | 指标 `metrics` | ✅ | ✅ | 纯函数。`recompute` 手动 CLI 没搬 |
+| ⑦ | 落库 `store` | ✅ | ✅ | 三张表 + `run_failure`，一个群一个事务。`read_*` 四个读函数没搬（只服务手动重算） |
 | — | webUI | ❌ | ❌ | 两边都没做 |
 
 **已有模块**：`lib.rs`（crate 根：mod 声明 + 全仓唯一 `Result`/`BoxError` 别名） ·
 `main.rs`（入口） · `daily.rs`（编排） · `config.rs` · `window.rs`（跑批窗口类型） ·
-`pull.rs` · `ingest.rs`（测试在 `ingest_tests.rs`，`#[path]` 分文件） · `llm.rs` ·
-`extract.rs`（冒烟） · `testutil.rs`（测试 fixture，仅 `cfg(test)`）。
+`pull.rs` · `ingest/`（①②） · `llm.rs` · `extract/`（③④） · `classify.rs`（⑤） ·
+`metrics/`（⑥） · `store.rs`（⑦） · `testutil.rs`（测试 fixture，仅 `cfg(test)`）。
 
-**验证**：`cargo test` **29 个用例 / 0.8s** —— `ingest` 20 + `pull` 5 + `llm` 1 + `window` 3。
-单元测试跟着被测代码走；`ingest` 用 `#[path]` 分文件（逻辑上同一模块）。
+```text
+src/
+├── lib.rs · main.rs · config.rs · window.rs · classify.rs · llm.rs · pull.rs · store.rs
+├── daily/    mod.rs  tests.rs                          跑批那一轮的编排
+├── ingest/   mod.rs  tests.rs                          ①②
+├── metrics/  mod.rs  tests.rs                          ⑥
+├── extract/  mod.rs  tests.rs                          ③④，见下
+│             redact.rs   正文脱敏与订单号正则（ADR-0001）
+│             prompt.rs   SYSTEM —— 逐字搬运，改一个字实测结论全作废
+│             render.rs   便签 · 匿名标签 · 行号箭头，view 是唯一出口
+│             segment.rs  分段与切点选择（ADR-0004）
+│             assemble.rs ④ merge / align / assemble / orphans
+└── testutil.rs
+```
+
+⚠️ **`extract/` 拆成 6 个文件，接口一字未动** —— 对外仍然只有
+`Event` / `SegmentModel` / `extract`（＋ 对拍用的 `preview`）。拆的是导航成本不是深度。
+另有 `examples/dry.rs`（`--dry`，不花 token）和 `examples/smoke.rs`（唯一一条真打端点的路径）。
+
+**验证**：`cargo test` **80 个用例 / 1.9s**，clippy 零告警 —— `extract` 40 + `ingest` 21 +
+`metrics` 7 + `pull` 5 + `daily` 4 + `window` 3 + `store` 2 + `llm` 1。
+测试拆分规则：**测试块 ≥ 100 行的模块拆成目录**（`<模块>/tests.rs`），其余留在文件底部。
+测试始终是被测模块的**子模块**，私有项照常可见。
+
+⚠️ **`store` 只有两条离线用例**（`stray_days` 冻结区守卫、占位符个数），
+写库 SQL 本身要真 MySQL 才跑得到；`LiveModel` 要真端点。两者都没有离线测试，
+分别靠 `cargo run` 和 `cargo run --example smoke` 验。
 
 ## 已知的坑和已认领的代价
 
@@ -35,14 +61,17 @@ Python 那边 ①→⑦ 已经端到端跑通（实测数字见 `../pychat2event
   `ingest.rs` 里 `month_guard_known_blindspot` 那条测试**把这个行为断言下来了** —— 它记录代价，
   不是 bug。根治要让 `pull` 认识 `messageTime`，那会破坏「上游字段名只出现在 ingest 里」。
   实际敞口≈0（跨月窗口本来就读两个月文件）。
-- **`daily.rs` 是串行 for 循环。** Python 版的 `ROOM_CONCURRENCY` semaphore +
-  `asyncio.to_thread` 还没搬。DuckDB 是同步阻塞的，将来要走
-  `tokio::task::spawn_blocking`，否则每读一个群会卡住所有在飞的模型调用。
-- **`daily.rs` 把 `Conversation` 读完就丢**，只留 `.msgs.len()` —— 因为 ③ 还没接上，
-  它才是这份数据的消费者。③ 一接上，那个 `.msgs.len()` 就变成 `extract(conv)`。
-- **`extract::smoke` 走的是硬编码样本**，不是 ①② 读出来的会话。它是唯一一条真打端点
-  的路径，作用是确认配置、鉴权、结构化输出、以及 `reasoning_effort` 有没有关掉
-  （看输出里那个 `推理 0`）。③ 写完它就该死。
+- **`room_concurrency` 现在压的是模型调用，那个数已经作废。** `daily::run_rooms` 的
+  `JoinSet` 背压没变，但每个任务从「读一个群」变成了「读 + 抽 + 落库」。**8 是按本机
+  核数量读取量出来的**，现在约束是端点 TPM —— ADR-0004 给了公式
+  `N ≈ TPM额度 / 14000`，**去控制台确认额度后重新量**。
+- **`run_rooms` 收了一个「一个群干什么」的闭包参数。** 不是给 ⑦ 开接缝（明确不建存储层
+  抽象），是为了让循环那三条性质离线可测：每个群恰好记一次 · 到点不算失败 ·
+  `Upstream` 整轮死。生产传的是 `run_room`，测试传一个只读的。
+- **Rust 的 `regex` 不支持后顾断言**，而 `_PHONE` 的两侧非数字断言是承重的
+  （ADR-0001:36 那 363 处差额全在订单号内部）。断言手写在 `extract::phone_spans` 里，
+  连带复刻了 Python 正则引擎的两处回溯行为，各有测试钉着。
+- **`FIELD` 的零宽前瞻同理改成了捕获组**（吃进分隔符再 `${3}` 吐回去），停在同一个位置。
 - **窗口里没有消息，但不是故障。** 索引表登记的 10 个群共 100 条消息，日期落在
   08-26 / 08-28 / 08-29；而今天（09-01）的窗口是 `[08-30, 08-31]` —— 拉取全成功、
   `read_room` 读出 0 条，两件事都对。要看到消息得让 `window` 覆盖 08-29 之前。
@@ -71,14 +100,20 @@ Python 那边 ①→⑦ 已经端到端跑通（实测数字见 `../pychat2event
 
 - `lookback_days` 配置值 **2**（已无代码默认值，必填）。⚠️ 判据仍未量：跨 2 天以上才闭合的占比，
   **要按周几分别看**，> 5% 立刻调 4。（与 Python 版同一个未决项，不要各测一遍。）
-- `SEGMENT_MSGS` / `ROOM_CONCURRENCY` —— ③ 没搬，还没有这两个值。
-  搬的时候照 ADR-0004：**都无默认值，缺失即报错**。
+- `segment_msgs` 配置值 **400**（`[extract]` 段，已必填，无代码默认值）。
+  跟 Python 版 `.env` 同一个值。**省钱旋钮不是质量旋钮**，调大换墙钟是空的
+  （墙钟由输出吞吐定，全群输出总量不随分段变）。
+- `room_concurrency` 配置值 **8** —— ③ 已经接上，**这个数现在是错的**，见上面「已知的坑」。
+- `round_deadline_secs` 配置值 **21600**（6 小时，已必填）。**拍的，没量过** ——
+  正常一轮分钟级，这个数只需要「比最坏的正常轮长、比 cron 周期短」。
+  真实群数上线后看一轮实际耗时再收紧。
 - `pull` 用哪个 TLS feature（`rustls` + `webpki-roots` 还是走系统证书库），
   见 ADR-0005 结尾。
 
 ## 2026-09-01 第二轮评审后的改动
 
-一次评审（架构 + 字面量 + 测试布局），全部实施，29 个用例全绿、clippy 零警告：
+一次评审（架构 + 字面量 + 测试布局），全部实施，clippy 零警告。
+（当时 29 个用例 —— 那是**第二轮的时点数**，③~⑦ 还没搬；今天是 80，见文末。）
 
 | # | 改了什么 | 为什么 |
 |---|---|---|
@@ -95,7 +130,84 @@ Python 那边 ①→⑦ 已经端到端跑通（实测数字见 `../pychat2event
 明确没做：`tests/` 集成测试（`daily::run` 需要真实 MySQL 与端点，无法离线跑）；
 `llm::strict_schema` 的「T 必须是 struct」启动期自检（③ 落地时补，今天冒烟已覆盖唯一的 T）。
 
+## 2026-09-01 搬完 ③④⑤⑥⑦
+
+`daily::run` 现在真的跑完 ① → ③④ → ⑤⑥ → ⑦。
+
+**与 Python 版对拍（`examples/dry.rs`）**：同一份 823 条样本、同一条 `view`，
+prompt **59664 字节逐字节相同**，分段边界同为 `(0,277) (277,535) (535,823)`，
+`[段外引用]` 三段计数同为 6/0/6 · 14/0/3 · 3/0/2。
+这一条直接验证了 `_body`（含手写的手机号边界）· `_labels` · `render` · `_segments` ·
+`_cut` 五件事的搬运等价，**一个 token 都没花**。复现：
+
+```sh
+cargo run --example dry -- <raw_root> <corp> <room> <since> <until> [segment_msgs]
+```
+
+**真端点冒烟（`examples/smoke.rs`）**：6 条手写消息，走生产的 `LiveModel`。实测
+`prompt=1153 / completion=129 / reasoning=0`、2.7s、抽出 2 个事件 ——
+其中 5 条消息（含平台的「稍等」）正确归成**一个**事件、首响锚在「稍等」那条。
+这条同时确认了 dashscope **认** `SegmentExtraction` 那个带 `$defs`/`$ref` 的嵌套 schema
+（`strict: true`），以及 `reasoning_effort=none` 真的生效。
+
+**真数据端到端跑通（2026-09-01，`lookback_days` 临时改 4 → 窗口 `[08-28, 08-31]`）**：
+
+| 数 | 值 |
+|---|---|
+| 群 / 消息 / 事件 | 10 / **83** / **23**（`ok=10 failed=0 empty=0`） |
+| 墙钟 | **17.3s**（首轮）· 6.2s（重跑，连接已热） |
+| 单次调用 | 1.0~3.6s，input 1.1~2.0k / output 52~385 token |
+| `reasoning_tokens` | **全部 0**（哨兵一次没喊） |
+| 落库 | `event` 23 行 / 10 群 / 2 天 · `metric_daily` **40 行**（10 群 × 4 天）全 `ok` · `agent_metric_daily` 12 行 / 7 人 · `run_failure` **0** |
+
+**库里核过的承重不变量**：溯源为空 0 · 时间倒挂 0 · summary 超长 0 ·
+事件级 NULL 0（全 `ok` 时就该是 0）· `merchant_event_count > event_count` 0 ·
+`unreplied_count > merchant_event_count` 0。未回复 3 条（`first_agent_reply_time IS NULL`）。
+
+**幂等性实测**：原样重跑一轮，`event` / `metric_daily` / `agent_metric_daily`
+三张表行数**一个不多一个不少**（23 / 40 / 12）—— 分片删重写是对的，没有重复插入。
+
+**校验重灌（`MAX_RETRIES=1`）在生产路径上真的触发了一次**：模型把三个订单号写进了
+`summary`，报错原文回灌后自我修正通过。这条路径此前只有单元测试覆盖。
+
+⚠️ **`lookback_days` 已改回 2。** 常规跑批窗口是 `[T-2, T-1]`，而本机 raw 区那 100 条
+消息落在 08-26 / 08-28 / 08-29 —— 09-01 之后再跑会是 10 个群全部 `empty`、一行不写。
+**那是对的，不是 bug。** 要再跑一轮验证得先把窗口挪回消息上。
+
+## 2026-09-01 第三轮评审：结构 · 字面量 · 注释
+
+一次全仓审核（架构 + 目录 + 硬编码 + 注释正确性），七项全部实施。
+**没有一项改变模块的对外接口**，`cargo test` 78 → **80 个用例全绿**，clippy 零告警。
+
+| # | 改了什么 | 为什么 |
+|---|---|---|
+| A | `sender_role` / `asker_role` 从 `String` 换成 `ingest::Role` 枚举；解析只在读取点发生一次，认不出的 `identityType` = 该群失败 | 这是全仓**唯一一个能静默损坏数据**的架构问题：`== "INTERNAL"` 在 4 个模块比较 8 次，打错一个字母会同时让 `labels` 标反、`agents` 恒空、首响 p50/p90 全 `NULL`，而编译器和测试都不会红（测试也用字面量造数据，错得一致就一起绿）。旧的 `unwrap_or_default()` 还会让上游新增身份类型静默变成空串 |
+| B | `extract.rs`（1080 行）拆成 `extract/` 六个文件；`ingest` / `metrics` / `daily` 转目录模块 | 一个文件里挨着放 6 件互不相干的事（正则脱敏 / prompt / 渲染 / 分段 / 端口校验 / 装配），改便签规则要先滚过 200 行正则。**深度没变，对外仍是三样** |
+| C | 测试分文件规则定死：**测试块 ≥ 100 行拆目录**，其余留文件底部；`#[path]` 全部去掉 | `#[path]` 是绕过，Rust 原生做法是目录模块。此前 `ls src/` 13 个文件里 3 个是测试，看不出来 |
+| D | `store` 的 4 个表名 + `FAILURE_COLS` 提 const，DELETE / INSERT / `check_schema` 引用同一组 | 列名早就收进 `*_COLS` 了，表名没有：`b_merchant_group_agent_metric_daily` 这个 35 字符的名字写了 4 遍。`run_failure` 的列是唯一一组没常量、也没进占位符测试的 |
+| E1 | 脱敏占位符提 `MASK_PHONE` / `MASK_FIELD` / `MASK_AT`，新增 `the_prompt_and_the_masks_agree` | 三处必须逐字一致（`body` 产出 · `PLACEHOLDER` 拦截 · `SYSTEM` 教模型认）。不一致 = 模型拿占位符当关联线索、validator 也拦不住它进 `summary`，而 **`sha256(summary)` 是 ⑤ 的缓存键，PII 进去就焊死**。prompt 那份保持字面量（逐字搬运不能动），一致性交给测试 |
+| E2/E3 | `examples/dry.rs` 的 `segment_msgs` 默认值 400 删掉，改必填；`llm.rs` 的 `tcp_keepalive(60)` 提具名 const | 前者与「`segment_msgs` 无默认值，缺失即报错」的规矩**相反** —— 对拍工具悄悄用一个和配置无关的数跑，而分段边界正是它要验的东西。后者是全仓唯一没有名字的时间常量 |
+| F | 五条**已证实说错**的注释 | `main.rs` 说「抽取结果走 stdout」而全仓没有一个 `println!`（结果走 MySQL）；`extract` 的测试指向不存在的 `examples/xcheck.rs`（是 `dry.rs`）；`ingest` 说「③⑦ 还没搬过来」（早搬完了，字段确实仍无读取点但理由失效）；`store::check_schema` 说查「五张表」实查四张（第五张 `taxonomy` 是 v1 的，不查是对的）；`status.md` 开头说「这边搬了 ①②」 |
+
+**明确查过但不动的两处**（免得下次评审再提一遍）：
+
+- **`Conversation.corp` / `.room` 是死字段** —— 实测零读取点（`daily::run_room` 一路带
+  自己的参数）。但 `CONTEXT.md` 的领域契约里 `Conversation` 就是这个形状，且 webUI 下钻
+  会用。**只改了那条说错的理由，字段保留。**
+- **`store::write_room` 11 个参数 / `run_room` 8 个** —— 参数多是**刻意的成本**：
+  拆开就意味着调用方可以只写一半，而这个函数存在的全部理由就是承重不变量 2
+  （一个群的写入不可分割）。收进一个 struct 只是把 8 个字段换个地方写，
+  复杂度没被集中，只是挪了个位置。
+
+**没做的**：`labels()` 的 `"平台"` / `"商家"` 前缀、`render` 的 `"%H:%M:%S"`、
+失败原因文案 —— 各只出现**一次**且都在自己唯一的归属地，提成 const 只是把定义
+挪到 200 行以外，读者反而要多跳一次。
+
 ## 下一步
 
-③④ → ⑤⑥⑦。`pull` 已搬完，本机现在有自己的 raw 区（`./data/raw`，10 个群 / 100 条），
-③ 一搬过来就有真数据可跑。
+1. **重新量 `room_concurrency`** —— 现在压的是端点 TPM 不是本机核数（ADR-0004 的
+   `N ≈ TPM额度 / 14000`）。⚠️ 上面 17.3s 那个数**量不出任何东西**：10 个群 83 条消息，
+   离限流差几个数量级。
+2. **`store` 的写库 SQL 仍然没有自动化测试** —— 上面是手工跑的一轮，不是 `cargo test`
+   跑得到的东西。真要覆盖得起一个 MySQL 容器，今天没做。
+3. webUI（只读）。

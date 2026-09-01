@@ -132,6 +132,11 @@ cargo build --release
 | `https://dashscope.aliyuncs.com` | ③ 抽取的模型端点（`llm.base_url`） |
 | MySQL | 双向：读索引表 `b_wecom_group_message_month_file`，写 ⑦ 的三张表 + `run_failure` |
 
+**不需要** `https://extensions.duckdb.org` —— `read_json_auto` 所在的 json 扩展已经
+静态链进二进制（`Cargo.toml` 的 `duckdb` features 里那个 `json`）。把它去掉的话，DuckDB
+会在第一次 `read_room()` 时按 AUTOINSTALL 默认值联网下载，内网出不去 = 整轮死。CI 的
+「校验 json 扩展已静态链」那步就是挡这个的。
+
 ---
 
 ## 定时跑

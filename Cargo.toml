@@ -1,12 +1,15 @@
 [package]
 name = "chat2events-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
 async-openai = { version = "0.41.3", features = ["chat-completion"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-duckdb = { version = "1.10505.0", features = ["bundled", "chrono"] }
+# `json` 必须显式开：`ingest` 用 read_json_auto，而它在 json 扩展里。不开的话
+# DuckDB 会在运行时按 AUTOINSTALL 默认值联网去 extensions.duckdb.org 下载 ——
+# 跑批机在内网，出不去就是第一次 read_room() 整轮死。开了它静态链进二进制。
+duckdb = { version = "1.10505.0", features = ["bundled", "json", "chrono"] }
 regex = "1.12"
 # `rustls` 必须由**我们自己**声明：`mirror` 走 https 拉月文件，而 TLS 此前是
 # async-openai 顺手替我们打开的 —— 换掉模型层就会静默变成「每个群都拉不下来」。

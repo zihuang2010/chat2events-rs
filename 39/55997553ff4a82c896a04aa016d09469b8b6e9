@@ -1,0 +1,104 @@
+config.toml
+  s_31b2b7ecad3896::t_b56604e3c8d3da 12,20-27,43-46
+  s_534d1d18512cff::t_e25dbb494c972a 96-100
+CONTEXT.md
+  s_31b2b7ecad3896::t_b56604e3c8d3da 83-84,174-178
+  s_31b2b7ecad3896::t_bcd441411f0dc9 179
+src/extract/render.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 181-186
+src/daily/run.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 37-49,54-69,85-89,102-105,150-162,256-257,259
+  s_534d1d18512cff::t_307a0606ec06c9 296-328
+src/mirror/download.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 207-209,212
+src/ingest/read.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 33-47,55-64,70-72,74-82,85-86,88-89,96-97,125,137-138,178-191
+Cargo.toml
+  s_31b2b7ecad3896::t_b56604e3c8d3da 11-14
+src/metrics/compute.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 1-6,12-87
+  s_31b2b7ecad3896::t_7eb259890c10a6 88
+src/llm.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 5-10,13,101,103-106,221-222
+src/ingest/layout.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 90-146
+.gitignore
+  s_31b2b7ecad3896::t_b56604e3c8d3da 9-24
+src/mirror/index.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 24-26,28-29,33-34,36-39,44-52,55-71,77-78,82,88-93,98-130
+  s_31b2b7ecad3896::t_c5c3e59f5bd1bd 131
+docs/adr/0005-pull-via-index-table-and-http-range.md
+  s_31b2b7ecad3896::t_b56604e3c8d3da 25-26,131,161-234
+src/ingest/types.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 67-70
+docs/status.md
+  s_31b2b7ecad3896::t_b56604e3c8d3da 46,77,90-94,332-360,365-368,371-375
+src/ingest/tests.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 331-419
+src/metrics/mod.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 13,15-17,21
+src/ingest/mod.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 43,53
+src/config.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 75-87,100,102-105,161-173,182-188
+CLAUDE.md
+  s_31b2b7ecad3896::t_b56604e3c8d3da 45,75,158-160,260
+src/metrics/tests.rs
+  s_31b2b7ecad3896::t_b56604e3c8d3da 6
+.github/workflows/ci.yml
+  s_6b7c0908289175::t_c2cdf0cda80946 1-72
+docs/deploy.md
+  s_6b7c0908289175::t_f8d5e62675ac3d 1-190
+docs/freeze-explainer.html
+  s_fbd9c72c33da66::t_4b6e82dbd60c01 1-339
+docs/pull-eli5.html
+  s_e99a251331dba2::t_5225329a685b3d 1-551
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "3955997553ff4a82c896a04aa016d09469b8b6e9",
+  "prompts": {},
+  "sessions": {
+    "s_31b2b7ecad3896": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85aedd60-5eba-46a3-a7b3-5ca9d1196900",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_534d1d18512cff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a1783137-72c6-4fd2-a3db-a61ae825edc8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_6b7c0908289175": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6316edef-52d6-46da-94a1-2429d88f0106",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_e99a251331dba2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c8133d08-44f7-485f-b570-675bb3c80541",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_fbd9c72c33da66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7feca188-a393-4fd7-b0ac-6572e8febcca",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

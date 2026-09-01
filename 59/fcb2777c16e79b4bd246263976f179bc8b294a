@@ -1,0 +1,21 @@
+docs/deploy.md
+  s_1a300063450009::t_6f1ee4cad90695 56-79
+.github/workflows/ci.yml
+  s_1a300063450009::t_ff4847fbea0fdb 52-77,79-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "59fcb2777c16e79b4bd246263976f179bc8b294a",
+  "prompts": {},
+  "sessions": {
+    "s_1a300063450009": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aeec8adf-9519-4626-a79c-cd47911c4000",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

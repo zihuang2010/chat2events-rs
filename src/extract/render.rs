@@ -7,11 +7,15 @@
 //! 越界即校验失败（承重不变量 6）。
 
 use super::{
-    Draft, NOTE_QUOTE,
     redact::{ORDER_NO, body},
+    types::Draft,
 };
 use crate::ingest::{Message, Role};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// 便签里带的原话截断长度（**字符数**不是字节，`chars().take` 保证）。
+/// 只有本文件消费它（便签原话 · 段外引用的原话退化），所以住在这里。
+const NOTE_QUOTE: usize = 40;
 
 /// 角色化匿名标签：`sender_id -> 平台A / 商家B`。
 ///
@@ -31,7 +35,11 @@ pub(super) fn labels(msgs: &[Message]) -> BTreeMap<String, String> {
             continue;
         }
         let is_internal = m.sender_role == Role::Internal;
-        let n = if is_internal { &mut internal } else { &mut external };
+        let n = if is_internal {
+            &mut internal
+        } else {
+            &mut external
+        };
         let k = *n;
         *n += 1;
         let prefix = if is_internal { "平台" } else { "商家" };
@@ -44,11 +52,6 @@ pub(super) fn labels(msgs: &[Message]) -> BTreeMap<String, String> {
         out.insert(m.sender_id.clone(), format!("{prefix}{letter}{suffix}"));
     }
     out
-}
-
-/// 取前 n 个**字符**（不是字节）—— 便签原话的截断。
-pub(super) fn head_chars(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +69,7 @@ pub(super) fn head_chars(s: &str, n: usize) -> String {
 ///
 /// **例外：本段有人显式 `replyTo` 它就捞回来，多远都捞**（实测最远回指 947 条）。
 ///
-/// **撤下便签 ≠ 丢掉事件** —— draft 还在 `drafts` 里照样被 [`assemble`] 输出，撤的只是
+/// **撤下便签 ≠ 丢掉事件** —— draft 还在 `drafts` 里照样被 `super::assemble` 输出，撤的只是
 /// 「拿给模型看的那一份」。这是注意力问题，不是存储问题。
 ///
 /// **便签上必须带订单号**：`summary` 按契约不含 ID，可订单号正是这个群唯一可靠的关联键
@@ -93,19 +96,27 @@ pub(super) fn note(
         // saturating：二分时后一半的 lo 恒 > 前一半 draft 的 idx，正常不会倒过来；
         // 真倒过来说明这个 draft 刚被本段碰过，语义上就是「有动静」，不该撤。
         let stale = lo.saturating_sub(last_idx) > keep;
-        let replied = d.idx.iter().any(|&i| replied_to.contains(msgs[i].msg_id.as_str()));
+        let replied = d
+            .idx
+            .iter()
+            .any(|&i| replied_to.contains(msgs[i].msg_id.as_str()));
         if stale && !replied {
             continue;
         }
-        let head = d
-            .idx
-            .iter()
-            .find_map(|&i| ORDER_NO.find(&body(&msgs[i])).map(|m| m.as_str().to_string()));
+        let head = d.idx.iter().find_map(|&i| {
+            ORDER_NO
+                .find(&body(&msgs[i]))
+                .map(|m| m.as_str().to_string())
+        });
         let summary = match head {
             Some(h) => format!("{h} · {}", d.summary),
             None => d.summary.clone(),
         };
-        out.push((r, summary, head_chars(&body(&msgs[last_idx]), NOTE_QUOTE)));
+        out.push((
+            r,
+            summary,
+            body(&msgs[last_idx]).chars().take(NOTE_QUOTE).collect(),
+        ));
     }
     out
 }
@@ -203,7 +214,10 @@ pub(super) fn view(
         .filter(|m| want.contains(m.msg_id.as_str()))
         .map(|m| {
             let tag = on_note.get(m.msg_id.as_str()).cloned().unwrap_or_else(|| {
-                format!("「{}」", head_chars(&body(m), NOTE_QUOTE))
+                format!(
+                    "「{}」",
+                    body(m).chars().take(NOTE_QUOTE).collect::<String>()
+                )
             });
             (m.msg_id.clone(), tag)
         })
@@ -225,4 +239,157 @@ pub(super) fn view(
 
     let refs = note_rows.iter().map(|(r, _, _)| *r).collect();
     (render(seg, &labels(msgs), &note_rows, &outside), refs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{
+        segment::segments,
+        tests::{SEG, draft, msgs},
+    };
+    use super::*;
+
+    #[test]
+    fn labels_are_computed_once_per_room_and_never_collide() {
+        let ms = msgs(200);
+        let all = labels(&ms);
+        let distinct: BTreeSet<&String> = all.values().collect();
+        assert_eq!(distinct.len(), all.len(), "标签撞号 —— 两个人共用一个标签");
+        assert!(
+            all.values()
+                .all(|v| v.starts_with("平台") || v.starts_with("商家"))
+        );
+
+        // 真正要守的：render 用传进来的那份，不自己现算
+        for (lo, hi) in segments(&ms, 70) {
+            let out = render(&ms[lo..hi], &all, &[], &BTreeMap::new());
+            assert!(
+                ms[lo..hi].iter().all(|m| out.contains(&all[&m.sender_id])),
+                "render 没用传入的标签"
+            );
+        }
+    }
+
+    #[test]
+    fn labels_roll_over_past_twenty_six_speakers() {
+        let mut ms = msgs(1);
+        for i in 0..27 {
+            let mut m = ms[0].clone();
+            m.msg_id = format!("x{i}");
+            m.sender_id = format!("s{i}");
+            m.sender_role = Role::Internal;
+            ms.push(m);
+        }
+        let l = labels(&ms);
+        assert_eq!(l["s0"], "平台B", "u0 先占了 平台A");
+        assert_eq!(l["s25"], "平台A1", "26 个之后要进位");
+    }
+
+    #[test]
+    fn reply_arrows_render_in_segment_on_note_and_as_a_quote() {
+        let ms = msgs(700);
+        let l = labels(&ms);
+        let tag = [(7u32, "远处那件事".to_string(), "上次说到".to_string())];
+        let far_id = ms[10].msg_id.clone();
+        let e7: BTreeMap<String, String> = [(far_id.clone(), "E7".to_string())].into();
+        let quoted: BTreeMap<String, String> = [(far_id.clone(), "「原话」".to_string())].into();
+
+        let seg: Vec<Message> = ms[600..610].to_vec();
+        assert!(
+            !render(&seg, &l, &tag, &e7).contains("↩回复"),
+            "没人引用时不该冒出箭头"
+        );
+
+        let mut far = seg.clone();
+        far[3].reply_to = Some(far_id.clone()); // 指到段外
+        assert!(
+            render(&far, &l, &tag, &e7).contains("↩回复 E7"),
+            "段外 replyTo 的箭头被丢了"
+        );
+        assert!(
+            render(&far, &l, &tag, &quoted).contains("↩回复 「原话」"),
+            "便签上没有的该给原话"
+        );
+        assert!(
+            !render(&far, &l, &tag, &BTreeMap::new()).contains("↩回复"),
+            "outside 没给映射时不能凭空造箭头"
+        );
+
+        let mut near = seg.clone();
+        near[5].reply_to = Some(seg[1].msg_id.clone());
+        assert!(
+            render(&near, &l, &[], &BTreeMap::new()).contains("↩回复 #2"),
+            "段内 replyTo 没渲染"
+        );
+    }
+
+    #[test]
+    fn view_keeps_open_refs_identical_to_the_note() {
+        let mut ms = msgs(700);
+        let far_id = ms[10].msg_id.clone();
+        ms[605].reply_to = Some(far_id); // 指到段外、且挂在便签上
+
+        let probe: BTreeMap<u32, Draft> = [(7u32, draft(&[10], "远处那件事", true))].into();
+        let (text, open_refs) = view(&ms, 600, 610, &probe, SEG);
+        assert_eq!(
+            open_refs,
+            [7u32].into_iter().collect::<BTreeSet<_>>(),
+            "open_refs 与便签不一致"
+        );
+        assert!(
+            text.contains("E7:") && text.contains("↩回复 E7"),
+            "便签上的段外引用没接上"
+        );
+
+        let (text2, open2) = view(&ms, 600, 610, &BTreeMap::new(), SEG);
+        assert!(open2.is_empty(), "没有便签时 open_refs 必须为空");
+        assert!(
+            text2.contains("↩回复 「"),
+            "便签外的段外引用该退化成原话，不能静默丢"
+        );
+        assert!(!text2.contains("【进行中的事件】"), "空便签不该渲染出标题");
+    }
+
+    #[test]
+    fn note_evicts_the_stale_rescues_explicit_replies_and_skips_the_closed() {
+        let ms = msgs(700);
+        let probe: BTreeMap<u32, Draft> = [
+            (1u32, draft(&[500], "近", true)),
+            (2u32, draft(&[10], "远", true)),
+            (3u32, draft(&[505], "闭", false)),
+        ]
+        .into();
+        let kept = |m: &[Message], keep: usize| -> Vec<u32> {
+            note(&probe, m, 600, 700, keep)
+                .into_iter()
+                .map(|(r, _, _)| r)
+                .collect()
+        };
+        assert_eq!(
+            kept(&ms, 1000),
+            [1, 2],
+            "窗口够大时不该撤，闭合的本来就不该进"
+        );
+        assert_eq!(kept(&ms, 200), [1], "窗口外的没撤下去");
+
+        let mut pulled = ms.clone();
+        pulled[650].reply_to = Some(ms[10].msg_id.clone()); // 本段显式引用那件远事
+        assert_eq!(
+            kept(&pulled, 200),
+            [1, 2],
+            "被 replyTo 指到的必须捞回来，多远都捞"
+        );
+    }
+
+    #[test]
+    fn note_carries_the_order_number_as_the_only_reliable_join_key() {
+        let mut ms = msgs(700);
+        ms[10].text = "5127366458053009229  加14个筒灯".into();
+        let probe: BTreeMap<u32, Draft> = [(1u32, draft(&[10], "商家要求加单", true))].into();
+        let rows = note(&probe, &ms, 600, 700, 10_000);
+        assert_eq!(
+            rows[0].1, "5127366458053009229 · 商家要求加单",
+            "便签没带上订单号"
+        );
+    }
 }

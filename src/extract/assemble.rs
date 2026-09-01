@@ -9,8 +9,8 @@
 //!   * [`orphans`] —— 模型分组质量的哨兵，**只打不改**。
 
 use super::{
-    Draft, Event, EventDraft, SUMMARY_MAX,
     redact::{ORDER_NO, body},
+    types::{Draft, Event, EventDraft, SUMMARY_MAX},
 };
 use crate::{
     BoxError,
@@ -29,6 +29,12 @@ use std::collections::BTreeMap;
 /// `still_open` 相反，**必须取最新** —— 它是状态标志，不是事实。
 pub(super) fn merge(drafts: &mut BTreeMap<u32, Draft>, events: Vec<EventDraft>, lo: usize) {
     for ev in events {
+        // 「`Draft.idx` 恒非空」的守卫在唯一的生产点（`validate` 已拒绝空 `msg_indexes`，
+        // 到这里不可能为假）—— `render` 的 expect、`align` / `orphans` 的裸下标全依赖它。
+        assert!(
+            !ev.msg_indexes.is_empty(),
+            "validate 拒绝空 msg_indexes，到这里恒非空"
+        );
         let r = ev
             .r#ref
             .unwrap_or_else(|| drafts.keys().next_back().copied().unwrap_or(0) + 1);
@@ -81,7 +87,9 @@ pub(super) fn align(drafts: BTreeMap<u32, Draft>, msgs: &[Message]) -> BTreeMap<
 
     let mut pairs = 0usize;
     for m in msgs {
-        let Some(rt) = m.reply_to.as_deref() else { continue };
+        let Some(rt) = m.reply_to.as_deref() else {
+            continue;
+        };
         let Some(&j) = pos.get(rt) else { continue };
         let (Some(&a), Some(&b)) = (where_.get(&pos[m.msg_id.as_str()]), where_.get(&j)) else {
             continue;
@@ -107,7 +115,13 @@ pub(super) fn align(drafts: BTreeMap<u32, Draft>, msgs: &[Message]) -> BTreeMap<
         let mut idx: Vec<usize> = members.iter().flat_map(|r| drafts[r].idx.clone()).collect();
         idx.sort_unstable();
         idx.dedup();
-        out.insert(keep, Draft { idx, ..drafts[&keep].clone() });
+        out.insert(
+            keep,
+            Draft {
+                idx,
+                ..drafts[&keep].clone()
+            },
+        );
     }
     // 静默的合并等于不知道自己的事件在被合 —— 和 [切分] / [便签] 同一条纪律
     if pairs > 0 {
@@ -133,7 +147,10 @@ pub(super) fn assemble(d: &Draft, msgs: &[Message]) -> Result<Event, BoxError> {
         return Err("source_msg_ids 必须非空（承重不变量 6：溯源）".into());
     }
     let src: Vec<&Message> = d.idx.iter().map(|&i| &msgs[i]).collect();
-    let internal: Vec<&&Message> = src.iter().filter(|m| m.sender_role == Role::Internal).collect();
+    let internal: Vec<&&Message> = src
+        .iter()
+        .filter(|m| m.sender_role == Role::Internal)
+        .collect();
     let first_reply = internal.first().copied();
 
     // agents 是**插入序去重**（Python 的 dict.fromkeys），不是排序 —— 顺序即出场顺序。
@@ -190,7 +207,7 @@ pub(super) fn assemble(d: &Draft, msgs: &[Message]) -> Result<Event, BoxError> {
 
 /// 模型分组质量的哨兵。**只打不改**，和 `llm.rs` 那条 `推理没关掉` 同一个位置。
 ///
-/// [`SYSTEM`] 自己规定平台发起只有三种形态（结构化工单推送 /「三方：<单号>」/
+/// `super::prompt::SYSTEM` 自己规定平台发起只有三种形态（结构化工单推送 /「三方：<单号>」/
 /// 「<单号> 催促了」），**三种都带订单号**。所以「`asker_role=INTERNAL` 且全部来源消息
 /// 里一个订单号都没有」不是平台发起的事件，是从商家事件尾巴上被撕下来的「已处理」
 /// 「稍等」—— 由模型的分组失误制造出来的假事件。
@@ -217,4 +234,134 @@ pub(super) fn orphans(drafts: &BTreeMap<u32, Draft>, msgs: &[Message]) -> usize 
         );
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{draft, msgs};
+    use super::*;
+
+    #[test]
+    fn merge_maps_segment_line_numbers_to_global_indexes() {
+        let mk = |r: Option<u32>, ix: Vec<usize>, s: &str, open: bool| EventDraft {
+            r#ref: r,
+            msg_indexes: ix,
+            summary: s.into(),
+            still_open: open,
+        };
+        let mut md = BTreeMap::new();
+        merge(&mut md, vec![mk(None, vec![1, 3], "要求取消", true)], 100);
+        assert_eq!(md[&1].idx, [100, 102], "行号没换算成全局下标");
+
+        merge(
+            &mut md,
+            vec![mk(Some(1), vec![2], "已取消完毕", false)],
+            200,
+        );
+        assert_eq!(md[&1].summary, "要求取消", "summary 该保留首个（诉求）");
+        assert!(!md[&1].still_open, "still_open 是状态标志，必须取最新");
+        assert_eq!(md[&1].idx, [100, 102, 201], "idx 没取并集");
+    }
+
+    #[test]
+    fn align_merges_explicit_replies_and_is_identity_without_them() {
+        let ms = msgs(700);
+        let probe: BTreeMap<u32, Draft> = [
+            (3u32, draft(&[101, 102], "晚", true)),
+            (1u32, draft(&[100], "早", true)),
+            (9u32, draft(&[500], "不相干", true)),
+        ]
+        .into();
+        assert_eq!(
+            align(probe.clone(), &ms).keys().collect::<Vec<_>>(),
+            probe.keys().collect::<Vec<_>>(),
+            "没有 replyTo 时必须是恒等变换"
+        );
+
+        let mut linked = ms.clone();
+        linked[101].reply_to = Some(ms[100].msg_id.clone());
+        let got = align(probe.clone(), &linked);
+        assert_eq!(
+            got.keys().copied().collect::<Vec<_>>(),
+            [1, 9],
+            "该并的没并 / 保留的 ref 不对"
+        );
+        assert_eq!(got[&1].idx, [100, 101, 102], "idx 没取并集");
+        assert_eq!(got[&1].summary, "早", "该保留 idx[0] 最小那个的 summary");
+        assert_eq!(got[&9].idx, [500], "不相干的 draft 被动了");
+
+        // 传递性：#500 再回复 #101，三个 draft 应并成一个
+        linked[500].reply_to = Some(ms[101].msg_id.clone());
+        let chain = align(probe, &linked);
+        assert_eq!(
+            chain.keys().copied().collect::<Vec<_>>(),
+            [1],
+            "传递闭包没闭合"
+        );
+        assert_eq!(chain[&1].idx, [100, 101, 102, 500]);
+    }
+
+    #[test]
+    fn assemble_computes_every_field_from_real_messages() {
+        let ms = msgs(10);
+        // 下标 1(EXTERNAL) 发起，2(INTERNAL) 首响，4(INTERNAL) 也参与
+        let ev = assemble(&draft(&[1, 2, 4], "商家要求加单，平台已受理", false), &ms).unwrap();
+        assert_eq!(ev.source_msg_ids, ["m00001", "m00002", "m00004"]);
+        assert_eq!(ev.asker, ms[1].sender_id);
+        assert_eq!(ev.asker_role, Role::External);
+        assert_eq!(ev.first_msg_time, ms[1].at);
+        assert_eq!(ev.last_msg_time, ms[4].at);
+        assert_eq!(ev.first_agent_reply_time, Some(ms[2].at));
+        assert_eq!(
+            ev.first_responder.as_deref(),
+            Some(ms[2].sender_id.as_str())
+        );
+        assert_eq!(ev.occurred_on, ms[1].at.date());
+        assert!(
+            ev.agents.contains(&ms[2].sender_id),
+            "首响人必须在 agents 里"
+        );
+    }
+
+    #[test]
+    fn assemble_leaves_first_response_null_when_no_platform_replied() {
+        let ms = msgs(10);
+        let ev = assemble(&draft(&[1, 3], "商家提了个要求，没人回", true), &ms).unwrap();
+        assert!(ev.first_agent_reply_time.is_none() && ev.first_responder.is_none());
+        assert!(ev.agents.is_empty(), "没有平台回复就不该有 agents");
+    }
+
+    #[test]
+    fn assemble_refuses_an_empty_provenance() {
+        let e = assemble(&draft(&[], "无来源", true), &msgs(10)).unwrap_err();
+        assert!(e.to_string().contains("承重不变量 6"), "{e}");
+    }
+
+    #[test]
+    fn assemble_refuses_an_overlong_summary() {
+        let e = assemble(&draft(&[1], &"啊".repeat(101), true), &msgs(10)).unwrap_err();
+        assert!(e.to_string().contains("summary 超长"), "{e}");
+    }
+
+    #[test]
+    fn assemble_refuses_inverted_times() {
+        // idx 逆序 -> first > last。正常路径上 idx 恒有序，这条守的是「万一无序」
+        let e = assemble(&draft(&[5, 1], "时间倒挂", true), &msgs(10)).unwrap_err();
+        assert!(e.to_string().contains("时间倒挂"), "{e}");
+    }
+
+    #[test]
+    fn orphans_counts_platform_started_events_without_an_order_number() {
+        let mut ms = msgs(10);
+        ms[0].sender_role = Role::Internal;
+        ms[2].sender_role = Role::Internal;
+        ms[2].text = "工单原因：电话核实 订单号:JDLY202608031734008496".into();
+        let drafts: BTreeMap<u32, Draft> = [
+            (1u32, draft(&[0], "被撕下来的应答尾巴", false)), // INTERNAL 起头、无单号 -> 孤儿
+            (2u32, draft(&[2], "平台推的工单", false)),       // INTERNAL 起头、有单号 -> 不是
+            (3u32, draft(&[1], "商家发起", false)),           // EXTERNAL 起头 -> 不是
+        ]
+        .into();
+        assert_eq!(orphans(&drafts, &ms), 1);
+    }
 }

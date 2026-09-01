@@ -3,12 +3,15 @@
 //! 承重不变量 4（`Ok([])` 与 `Failed` 绝不混淆）和 5（失败的群在 agent 表上整行缺失）
 //! 就靠这几条守着 —— 错了不会报错，只会让报表安静地偏小。
 
-use super::*;
+use super::{compute::*, rows::*};
 use crate::{
     classify::{CURRENT_VERSION, UNTYPED},
+    extract::Event,
     ingest::Role,
+    window::Window,
 };
 use chrono::NaiveDate;
+use std::collections::BTreeMap;
 
 fn d(day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 8, day).unwrap()
@@ -23,7 +26,14 @@ fn counts() -> BTreeMap<NaiveDate, (usize, usize)> {
 }
 
 /// `reply_h = None` 表示未回复。`role` 默认商家发起。
-fn ev(day: u32, h: u32, reply_h: Option<u32>, responder: Option<&str>, agents: &[&str], role: Role) -> Event {
+fn ev(
+    day: u32,
+    h: u32,
+    reply_h: Option<u32>,
+    responder: Option<&str>,
+    agents: &[&str],
+    role: Role,
+) -> Event {
     Event {
         corpid: "C".into(),
         roomid: "R".into(),
@@ -60,7 +70,9 @@ fn types(n: usize) -> Vec<&'static str> {
 fn failed_leaves_every_event_level_column_null_never_zero() {
     let rows = group_rows("C", "R", &days(), &counts(), None, Status::Failed);
     assert_eq!(
-        rows.iter().map(|r| (r.msg_count, r.sender_count)).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|r| (r.msg_count, r.sender_count))
+            .collect::<Vec<_>>(),
         [(100, 5), (40, 3)],
         "失败的群丢了消息级指标 —— 那两个不依赖抽取"
     );
@@ -81,12 +93,15 @@ fn failed_leaves_every_event_level_column_null_never_zero() {
 fn ok_with_no_events_is_zero_not_null() {
     let rows = group_rows("C", "R", &days(), &counts(), Some(&[]), Status::Ok);
     assert!(
-        rows.iter().all(|r| (r.event_count, r.merchant_event_count, r.unreplied_count)
-            == (Some(0), Some(0), Some(0))),
+        rows.iter().all(
+            |r| (r.event_count, r.merchant_event_count, r.unreplied_count)
+                == (Some(0), Some(0), Some(0))
+        ),
         "Ok([]) 该是 0 —— 这天确实没有业务事件，是正常状态"
     );
     assert!(
-        rows.iter().all(|r| r.first_reply_p50_sec.is_none() && r.first_reply_p90_sec.is_none()),
+        rows.iter()
+            .all(|r| r.first_reply_p50_sec.is_none() && r.first_reply_p90_sec.is_none()),
         "没有已回复事件时分位数只能是 NULL"
     );
 }
@@ -99,23 +114,42 @@ fn first_response_stats_count_merchant_started_events_only() {
 
     // 平台发起的那个事件进了 event_count(4)，没进分母(3)/未回复(1)/分位数
     assert_eq!(
-        (by[&d(25)].event_count, by[&d(25)].merchant_event_count, by[&d(25)].unreplied_count),
+        (
+            by[&d(25)].event_count,
+            by[&d(25)].merchant_event_count,
+            by[&d(25)].unreplied_count
+        ),
         (Some(4), Some(3), Some(1))
     );
     assert_eq!(
-        (by[&d(25)].first_reply_p50_sec, by[&d(25)].first_reply_p90_sec),
+        (
+            by[&d(25)].first_reply_p50_sec,
+            by[&d(25)].first_reply_p90_sec
+        ),
         (Some(7200), Some(7200))
     );
     assert_eq!(
-        (by[&d(26)].event_count, by[&d(26)].merchant_event_count, by[&d(26)].unreplied_count,
-         by[&d(26)].first_reply_p50_sec, by[&d(26)].first_reply_p90_sec),
+        (
+            by[&d(26)].event_count,
+            by[&d(26)].merchant_event_count,
+            by[&d(26)].unreplied_count,
+            by[&d(26)].first_reply_p50_sec,
+            by[&d(26)].first_reply_p90_sec
+        ),
         (Some(1), Some(1), Some(0), Some(0), Some(0))
     );
 }
 
 #[test]
 fn every_day_in_the_window_gets_a_row_even_with_no_messages() {
-    let rows = group_rows("C", "R", &days(), &BTreeMap::new(), Some(&sample()), Status::Ok);
+    let rows = group_rows(
+        "C",
+        "R",
+        &days(),
+        &BTreeMap::new(),
+        Some(&sample()),
+        Status::Ok,
+    );
     assert_eq!(rows.iter().map(|r| r.dt).collect::<Vec<_>>(), days().days());
     assert!(rows.iter().all(|r| (r.msg_count, r.sender_count) == (0, 0)));
 }
@@ -126,21 +160,47 @@ fn both_attributions_are_computable_from_the_same_stored_facts() {
     let evs = sample();
     let t = types(evs.len());
     let key = |rows: Vec<AgentRow>| -> BTreeMap<(String, NaiveDate), u32> {
-        rows.into_iter().map(|r| ((r.agent, r.dt), r.event_count)).collect()
+        rows.into_iter()
+            .map(|r| ((r.agent, r.dt), r.event_count))
+            .collect()
     };
 
     // a3 那一行是平台发起的工单推送 —— 首响不算它，但处理量算：推工单也是干活
-    let fr = key(agent_rows("C", "R", &evs, &t, CURRENT_VERSION, Attribution::FirstResponder));
+    let fr = key(agent_rows(
+        "C",
+        "R",
+        &evs,
+        &t,
+        CURRENT_VERSION,
+        Attribution::FirstResponder,
+    ));
     assert_eq!(
         fr,
-        [(("a1".into(), d(25)), 1), (("a2".into(), d(25)), 1),
-         (("a3".into(), d(25)), 1), (("a1".into(), d(26)), 1)].into()
+        [
+            (("a1".into(), d(25)), 1),
+            (("a2".into(), d(25)), 1),
+            (("a3".into(), d(25)), 1),
+            (("a1".into(), d(26)), 1)
+        ]
+        .into()
     );
-    let ap = key(agent_rows("C", "R", &evs, &t, CURRENT_VERSION, Attribution::AllParticipants));
+    let ap = key(agent_rows(
+        "C",
+        "R",
+        &evs,
+        &t,
+        CURRENT_VERSION,
+        Attribution::AllParticipants,
+    ));
     assert_eq!(
         ap,
-        [(("a1".into(), d(25)), 1), (("a2".into(), d(25)), 2),
-         (("a3".into(), d(25)), 1), (("a1".into(), d(26)), 1)].into()
+        [
+            (("a1".into(), d(25)), 1),
+            (("a2".into(), d(25)), 2),
+            (("a3".into(), d(25)), 1),
+            (("a1".into(), d(26)), 1)
+        ]
+        .into()
     );
     // 未回复的事件在 first_responder 口径下不落到任何人头上
     assert_eq!(fr.values().sum::<u32>(), 4);
@@ -150,15 +210,29 @@ fn both_attributions_are_computable_from_the_same_stored_facts() {
 #[test]
 fn agent_rows_carry_the_six_column_semantic_key() {
     let evs = sample();
-    let rows = agent_rows("C", "R", &evs, &types(evs.len()), CURRENT_VERSION, Attribution::default());
+    let rows = agent_rows(
+        "C",
+        "R",
+        &evs,
+        &types(evs.len()),
+        CURRENT_VERSION,
+        Attribution::default(),
+    );
     assert!(rows.iter().all(|r| r.corp == "C"
         && r.room == "R"
         && r.event_type == UNTYPED
-        && r.taxonomy_version == "v0"));
+        && r.taxonomy_version == CURRENT_VERSION));
 }
 
 #[test]
 #[should_panic(expected = "types 必须与 events 一一对应")]
 fn misaligned_types_are_a_bug_not_a_silent_mislabel() {
-    agent_rows("C", "R", &sample(), &types(2), CURRENT_VERSION, Attribution::default());
+    agent_rows(
+        "C",
+        "R",
+        &sample(),
+        &types(2),
+        CURRENT_VERSION,
+        Attribution::default(),
+    );
 }

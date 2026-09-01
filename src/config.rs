@@ -54,11 +54,11 @@ pub struct DailyConfig {
     pub round_deadline_secs: u64,
 }
 
-/// ① 摄取 —— 拉取（`pull.rs`）和读取（`ingest.rs`）共用这一段。
+/// ① 摄取 —— 镜像（`mirror/`）和读取（`ingest/`）共用这一段。
 #[derive(Deserialize)]
 pub struct IngestConfig {
     /// 本地 raw 区 = OSS 的字节级镜像，「已拉到第几字节」= 文件大小。
-    /// 目录布局与理由见 `ingest.rs` 模块头（布局的唯一权威）。
+    /// 目录布局与理由见 `ingest/layout.rs`（布局的唯一权威）。
     pub raw_root: PathBuf,
 
     /// 回看窗口 N：读 `[T-N, T-1]`，这 N 天就是非冻结区。
@@ -74,7 +74,7 @@ pub struct IngestConfig {
 
     /// 同时在飞的月文件下载数。跟 ADR-0004 里 `SEGMENT_MSGS` / `ROOM_CONCURRENCY`
     /// 一个规矩：这类值必须由部署环境明确给出。
-    pub pull_concurrency: usize,
+    pub mirror_concurrency: usize,
 
     /// 同时在处理的群数（ADR-0004 的 `ROOM_CONCURRENCY`）。**段之间仍然串行，
     /// 并行只加在群与群之间。** 无默认值，缺失即报错。
@@ -171,6 +171,16 @@ pub struct MysqlSecrets {
     pub url: String,
 }
 
+/// 配置目录：默认当前目录，第一个命令行参数可覆盖（生产传 /etc/chat2events）。
+/// ADR-0006 把这条约定定为配置契约的一部分，所以它住在这里 ——
+/// `main` 和 `examples/smoke` 共用，曾经两处逐字重复。
+pub fn dir_from_args() -> PathBuf {
+    std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// 从一个目录加载两份配置。生产传 /etc/chat2events，开发传当前目录。
 pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
     let config = load(&dir.join("config.toml"));
@@ -181,8 +191,8 @@ pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
 }
 
 fn load<T: DeserializeOwned>(path: &Path) -> T {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()));
     toml::from_str(&text).unwrap_or_else(|e| panic!("解析失败 {}：{e}", path.display()))
 }
 
@@ -212,8 +222,67 @@ mod tests {
     /// 所以漏一个键就是**进程起不来** —— 让它在 `cargo test` 里炸，别留到跑批那天。
     #[test]
     fn the_shipped_config_toml_fills_every_field() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml"))
-            .unwrap();
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml")).unwrap();
         toml::from_str::<Config>(&text).unwrap();
+    }
+
+    /// 上一条的反面：**缺一个键必须是崩，不是走默认值。**
+    ///
+    /// 「所有键必填」今天靠的是 serde 在字段缺失时报错，没有任何一处显式检查 ——
+    /// 也就是说给某个字段加一个 `#[serde(default)]` 是完全无声的：编译过、
+    /// 上面那条测试照样绿（仓库里那份 config.toml 什么都不缺），只有跑批那天
+    /// 才发现进程拿着一个谁都没写过的值起来了。这条钉住的就是那个无声改动。
+    ///
+    /// 拿 `segment_msgs` 开刀是因为 ADR-0004 点名它「无默认值，缺失即报错」。
+    #[test]
+    #[should_panic(expected = "解析失败")]
+    fn a_missing_key_panics_instead_of_falling_back_to_a_default() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml")).unwrap();
+        let holed: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("segment_msgs"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        // 注释里也写着 segment_msgs，所以只查赋值行还在不在
+        assert!(
+            !holed
+                .lines()
+                .any(|l| l.trim_start().starts_with("segment_msgs")),
+            "样本没挖掉那个键，这条测试就白测了"
+        );
+
+        let dir = crate::testutil::fresh_root("config", "missing-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+        std::fs::write(&p, holed).unwrap();
+        let _: Config = load(&p);
+    }
+
+    /// 密钥文件权限过宽必须**拒绝加载**（照 ssh 对私钥的规矩，ADR-0006）。
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "权限过宽")]
+    fn a_group_readable_secrets_file_is_refused() {
+        require_owner_only(&secrets_with_mode("refused", 0o640));
+    }
+
+    /// 上一条的对照组 —— 没有它，「拒绝」也可能只是因为这个函数恒崩。
+    #[cfg(unix)]
+    #[test]
+    fn owner_only_secrets_are_accepted() {
+        require_owner_only(&secrets_with_mode("accepted", 0o600));
+    }
+
+    #[cfg(unix)]
+    fn secrets_with_mode(name: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::testutil::fresh_root("config", name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("secrets.toml");
+        std::fs::write(&p, "").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
     }
 }

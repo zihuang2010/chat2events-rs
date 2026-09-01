@@ -17,7 +17,10 @@ impl Window {
     /// `lookback = 0` 是配置错误，按「启动期配置直接崩」的规矩 panic ——
     /// 空窗口流进读取层只会静默读出 0 条。
     pub fn new(run_date: NaiveDate, lookback: u32) -> Self {
-        assert!(lookback >= 1, "lookback_days 必须 ≥ 1（0 产生空窗口），改 config.toml");
+        assert!(
+            lookback >= 1,
+            "lookback_days 必须 ≥ 1（0 产生空窗口），改 config.toml"
+        );
         Self::span(
             run_date - chrono::Duration::days(i64::from(lookback)),
             run_date - chrono::Duration::days(1),
@@ -34,11 +37,17 @@ impl Window {
     }
 
     pub fn since(&self) -> NaiveDate {
-        *self.days.first().expect("构造保证非空：new/span 都拒绝空区间")
+        *self
+            .days
+            .first()
+            .expect("构造保证非空：new/span 都拒绝空区间")
     }
 
     pub fn until(&self) -> NaiveDate {
-        *self.days.last().expect("构造保证非空：new/span 都拒绝空区间")
+        *self
+            .days
+            .last()
+            .expect("构造保证非空：new/span 都拒绝空区间")
     }
 
     /// 窗口内的每一天，升序。

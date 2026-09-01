@@ -26,9 +26,9 @@ download_base_url = "https://filet.jdd51.com"
 # 同时在飞的月文件下载数。无默认值，缺失即报错。
 # ⚠️ 它同时是内存旋钮：响应整包进内存，峰值 = 这个数 × 最大月文件
 #    （月末冷启动 8 × 18 MB ≈ 144 MB）。往上调之前先乘一遍。
-# 瞬时失败（连接类 / 超时 / 5xx / 429 / 408）在 pull.rs 里重试 3 次、退避 1s→2s，
+# 瞬时失败（连接类 / 超时 / 5xx / 429 / 408）在 mirror/download.rs 里重试 3 次、退避 1s→2s，
 # 这些是常量不是配置项 —— 没有第二个用例。
-pull_concurrency = 8
+mirror_concurrency = 8
 
 # 同时在处理的群数（ADR-0004 的 ROOM_CONCURRENCY）。无默认值，缺失即报错。
 # 段之间仍然串行，并行只加在群与群之间。

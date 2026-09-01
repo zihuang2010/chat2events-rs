@@ -5,10 +5,10 @@
 //!   ./chat2events-rs /etc/chat2events    # 生产：从指定目录读
 //!
 //! 这个文件只做四件事：读配置 · 起日志 · 建资源 · 调 [`daily::run`]。
-//! **编排不在这里** —— 跑批那一轮干了什么，看 `daily.rs`。
+//! **编排不在这里** —— 跑批那一轮干了什么，看 `daily/`（编排在 `daily/run.rs`）。
 
 use chat2events_rs::{Result, config, daily, llm::Llm};
-use std::{io::IsTerminal, path::Path};
+use std::io::IsTerminal;
 
 /// 日志一律走 stderr。**stdout 全程不写一个字节** —— 抽取结果由 ⑦ 落 MySQL，
 /// 跑批没有「把结果打出来」这条路径。写 stderr 是为了让 `2> run.log` 能单独收日志，
@@ -29,9 +29,7 @@ fn init_logging(cfg: &config::LogConfig) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 配置目录：默认当前目录，第一个命令行参数可覆盖（生产传 /etc/chat2events）
-    let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let (config, secrets) = config::load_from_dir(Path::new(&dir));
+    let (config, secrets) = config::load_from_dir(&config::dir_from_args());
     init_logging(&config.log);
 
     tracing::info!(

@@ -54,7 +54,7 @@ const FAILURE_COLS: &str = "run_date, corpid, roomid, reason";
 /// `(?, ?, …)`，个数**从列名串自己数出来** —— 手写一个数字，加列时忘了改就是一次
 /// 运行期的 `Column count doesn't match`。
 fn values(cols: &str) -> String {
-    format!("({})", vec!["?"; cols.split(',').count()].join(", "))
+    format!("({})", holes(cols.split(',').count()))
 }
 
 /// `?, ?, …`，用于 `IN (…)`。
@@ -66,7 +66,7 @@ fn holes(n: usize) -> String {
 ///
 /// 读窗口保证 `first_msg_time ∈ days` ⇒ `occurred_on ∈ days`，这里守住那个构造前提。
 /// 拆成纯函数是为了让它**离线可测** —— 本模块其余部分要真 MySQL 才跑得动。
-pub fn stray_days(events: &[Event], days: &Window) -> Vec<NaiveDate> {
+fn stray_days(events: &[Event], days: &Window) -> Vec<NaiveDate> {
     let mut out: Vec<NaiveDate> = events
         .iter()
         .map(|e| e.occurred_on)
@@ -79,10 +79,11 @@ pub fn stray_days(events: &[Event], days: &Window) -> Vec<NaiveDate> {
 
 /// 一个群一次运行的**全部**写入，**一个事务**。
 ///
-/// `events = None` 表示这个群没算出来（`Failed`）：`event` 表**一行都不删不写**
+/// `events = None` 表示这个群没算出来：`event` 表**一行都不删不写**
 /// （少一个窗口就重写等于用残缺数据覆盖完整数据）；`agent` 表同理不动（承重不变量 5）；
-/// `group` 表照写 —— 消息级指标不依赖抽取，而它要把 `extraction_status` 这个信号带出去，
-/// 否则没人知道那些数字是残缺的；再记一行 `run_failure`。
+/// `group` 表写不写由调用方给的 `group` 切片决定 —— **抽取失败**时 `daily` 传满窗口的行
+/// （消息级指标不依赖抽取，`extraction_status='failed'` 要把「残缺」带出去），
+/// **拉取失败**时传空（连消息都不全，见模块头那张表）；两种都记一行 `run_failure`。
 ///
 /// `events = Some(_)`（**含空列表** = 这个群这几天确实没有业务事件，正常）：
 /// 按 `(corpid, roomid, occurred_on)` 分片删重写。
@@ -106,7 +107,11 @@ pub async fn write_room(
     agent: &[AgentRow],
 ) -> Result<(), BoxError> {
     if let Some(evs) = events {
-        assert_eq!(evs.len(), types.len(), "types 必须与 events 一一对应（构造保证）");
+        assert_eq!(
+            evs.len(),
+            types.len(),
+            "types 必须与 events 一一对应（构造保证）"
+        );
         // 承重不变量 1：写之前挡住，不是写完再查
         let stray = stray_days(evs, days);
         if !stray.is_empty() {
@@ -129,12 +134,12 @@ pub async fn write_room(
                 values(FAILURE_COLS)
             );
             sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(run_date)
-            .bind(corp)
-            .bind(room)
-            .bind(reason.unwrap_or("未记录原因"))
-            .execute(&mut *tx)
-            .await?;
+                .bind(run_date)
+                .bind(corp)
+                .bind(room)
+                .bind(reason.unwrap_or("未记录原因"))
+                .execute(&mut *tx)
+                .await?;
         }
         Some(evs) => {
             let sql = format!(
@@ -315,8 +320,14 @@ mod tests {
     #[test]
     fn events_outside_the_window_are_reported_not_written() {
         let w = Window::span(d(25), d(26));
-        assert!(stray_days(&[ev(25), ev(26)], &w).is_empty(), "窗口内的不该报");
-        assert_eq!(stray_days(&[ev(25), ev(24), ev(27), ev(24)], &w), [d(24), d(27)]);
+        assert!(
+            stray_days(&[ev(25), ev(26)], &w).is_empty(),
+            "窗口内的不该报"
+        );
+        assert_eq!(
+            stray_days(&[ev(25), ev(24), ev(27), ev(24)], &w),
+            [d(24), d(27)]
+        );
     }
 
     /// 占位符个数从列名串数出来 —— 加列忘了改数字就是一次运行期的列数不匹配。

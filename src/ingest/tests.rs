@@ -1,19 +1,23 @@
 //! `ingest` 的测试 —— `ingest` 的子模块，私有项照常可见。
 //! fixture 在 `crate::testutil`。
 
-use super::*;
+use super::{layout::*, read::*, types::*};
 use crate::{testutil, window::Window};
+use chrono::NaiveDate;
 use serde_json::{Value, json};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 fn day(d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 8, d).unwrap()
 }
 
-/// 本地时间（Asia/Shanghai = UTC+8）转上游的毫秒时间戳。
+/// 本地时间转上游的毫秒时间戳。「本地 = UTC+8」的换算收在 [`testutil::upstream_ms`]，
+/// 不在测试里再手写一份 —— 那是和生产 `TZ` 同一个事实的第二份拷贝。
 fn ms(d: u32, hour: u32, min: u32) -> i64 {
-    (day(d).and_hms_opt(hour, min, 0).unwrap() - chrono::Duration::hours(8))
-        .and_utc()
-        .timestamp_millis()
+    testutil::upstream_ms(day(d).and_hms_opt(hour, min, 0).unwrap())
 }
 
 fn row(id: &str, at_ms: i64, sender: &str) -> Value {
@@ -93,7 +97,11 @@ fn split_no_dupes_no_gaps_ordered_counts_match() {
 
     assert_eq!(conv.msgs.len(), 10);
     assert_eq!(
-        conv.msgs.iter().map(|m| &m.msg_id).collect::<HashSet<_>>().len(),
+        conv.msgs
+            .iter()
+            .map(|m| &m.msg_id)
+            .collect::<HashSet<_>>()
+            .len(),
         10
     );
     // 后续分段 / 切点 / 便签全站在这条上
@@ -105,7 +113,11 @@ fn split_no_dupes_no_gaps_ordered_counts_match() {
         assert_eq!(*n, same_day.len());
         assert_eq!(
             *senders,
-            same_day.iter().map(|m| &m.sender_id).collect::<HashSet<_>>().len()
+            same_day
+                .iter()
+                .map(|m| &m.sender_id)
+                .collect::<HashSet<_>>()
+                .len()
         );
     }
     assert_eq!(conv.msg_counts.values().map(|(n, _)| n).sum::<usize>(), 10);
@@ -117,7 +129,10 @@ fn window_excludes_everything_outside() {
     let win = Window::span(day(26), day(27));
     let msgs = read_room(&root, "C", "R", &win).unwrap().msgs;
     assert_eq!(msgs.len(), 4);
-    assert!(msgs.iter().all(|m| win.since() <= m.at.date() && m.at.date() <= win.until()));
+    assert!(
+        msgs.iter()
+            .all(|m| win.since() <= m.at.date() && m.at.date() <= win.until())
+    );
 }
 
 #[test]
@@ -227,7 +242,11 @@ fn text_never_empty_both_blank_fails_room() {
         let mut rows = sample();
         rows[1]["analysisText"] = json!("");
         rows[1]["content"] = content.clone();
-        let root = raw(&format!("blank-text-{}", content.is_null()), "202608", &rows);
+        let root = raw(
+            &format!("blank-text-{}", content.is_null()),
+            "202608",
+            &rows,
+        );
         let e = read_room(&root, "C", "R", &all()).unwrap_err();
         assert!(matches!(e, IngestError::Room(_)), "{content}: {e}");
         assert!(e.to_string().contains("缺必填字段"), "{content}: {e}");
@@ -269,11 +288,14 @@ fn month_guard_known_blindspot() {
     // **这条测试记录的是守卫拦不住的情况，不是 bug。**
     // 守卫只看窗口过滤后活下来的行：8 月的消息被放进 9 月文件、而窗口整个落在
     // 8 月时，我们根本不会打开 9 月文件，那条消息就是静默漏掉的。
-    // 实际敞口≈0（跨月窗口本来就读两个月），根治要让 pull 认识 messageTime，
+    // 实际敞口≈0（跨月窗口本来就读两个月），根治要让 mirror 认识 messageTime，
     // 那会破坏「上游字段名只出现在 ingest 里」。这里把代价写下来，不假装它不存在。
     let root = raw("blindspot", "202609", &sample());
     let conv = read_room(&root, "C", "R", &Window::span(day(25), day(26))).unwrap();
-    assert!(conv.msgs.is_empty(), "漏掉了，且不会报错 —— 这是已认领的代价");
+    assert!(
+        conv.msgs.is_empty(),
+        "漏掉了，且不会报错 —— 这是已认领的代价"
+    );
 }
 
 // ── 跨月 ─────────────────────────────────────────────────────────────
@@ -293,18 +315,16 @@ fn cross_month_reads_both_files_missing_one_is_ok() {
                 .unwrap()
                 .and_hms_opt(9, 0, 0)
                 .unwrap();
-            row(
-                &format!("s{d}"),
-                (at - chrono::Duration::hours(8)).and_utc().timestamp_millis(),
-                "u1",
-            )
+            row(&format!("s{d}"), testutil::upstream_ms(at), "u1")
         })
         .collect();
     testutil::write_month(&root, "202609", "C", "R", &sep);
 
     let msgs = read_room(&root, "C", "R", &w).unwrap().msgs;
     assert_eq!(
-        msgs.iter().map(|m| m.at.format("%m").to_string()).collect::<HashSet<_>>(),
+        msgs.iter()
+            .map(|m| m.at.format("%m").to_string())
+            .collect::<HashSet<_>>(),
         HashSet::from(["08".to_string(), "09".to_string()])
     );
 }

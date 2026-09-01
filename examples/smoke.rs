@@ -38,27 +38,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
-    let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let (cfg, secrets) = config::load_from_dir(std::path::Path::new(&dir));
+    let (cfg, secrets) = config::load_from_dir(&config::dir_from_args());
     let llm = Llm::new(&cfg.llm, secrets.llm.api_key)?;
     let model = extract::LiveModel::new(llm);
 
     let msgs = vec![
-        msg(1, (10, 2, 0), Role::External, "u1", "5127366458053009229  加14个筒灯"),
+        msg(
+            1,
+            (10, 2, 0),
+            Role::External,
+            "u1",
+            "5127366458053009229  加14个筒灯",
+        ),
         msg(2, (10, 2, 5), Role::External, "u1", "[图片消息]"),
         msg(3, (10, 3, 0), Role::Internal, "u2", "稍等"),
         msg(4, (10, 11, 0), Role::Internal, "u2", "已加单"),
         msg(5, (10, 12, 0), Role::External, "u1", "好的谢谢"),
-        msg(6, (14, 30, 0), Role::External, "u3", "3316977912130066680 客户要求改期到周六，客户电话13581496310"),
+        msg(
+            6,
+            (14, 30, 0),
+            Role::External,
+            "u3",
+            "3316977912130066680 客户要求改期到周六，客户电话13581496310",
+        ),
     ];
 
-    // 走生产的 view -> LiveModel::call（含校验与重灌），只是把 drafts 传空
-    let events = extract::extract(&msgs, &model, 400).await?;
+    // 走生产的 view -> LiveModel::call（含校验与重灌）。段长读配置 ——
+    // 与 dry 同一条「无默认值」规矩，不再硬编码一个和配置无关的数
+    let events = extract::extract(&msgs, &model, cfg.extract.segment_msgs).await?;
     println!("抽出 {} 个事件：", events.len());
     for e in &events {
         println!(
             "  · [{}] {} | 来源 {:?} | 首响 {:?} | asker_role={}",
-            e.occurred_on, e.summary, e.source_msg_ids, e.first_agent_reply_time,
+            e.occurred_on,
+            e.summary,
+            e.source_msg_ids,
+            e.first_agent_reply_time,
             e.asker_role.as_str()
         );
     }
@@ -67,10 +82,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for e in &events {
         assert!(!e.source_msg_ids.is_empty(), "溯源不能为空");
         assert!(
-            e.source_msg_ids.iter().all(|id| known.contains(id.as_str())),
+            e.source_msg_ids
+                .iter()
+                .all(|id| known.contains(id.as_str())),
             "模型编造了 msg_id —— 序号映射坏了"
         );
     }
-    println!("\n溯源校验通过（{} 个事件的来源 ID 全部真实存在）", events.len());
+    println!(
+        "\n溯源校验通过（{} 个事件的来源 ID 全部真实存在）",
+        events.len()
+    );
     Ok(())
 }

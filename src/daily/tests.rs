@@ -4,11 +4,18 @@
 //! 生产的 [`run_room`] 在读完之后才接上抽取与落库（要真端点真库），
 //! 所以这里传一个只读的「一个群干什么」进去。
 
-use super::*;
-use crate::testutil;
+use super::{run::*, tally::*};
+use crate::{
+    ingest::{self, IngestError},
+    testutil,
+    window::Window,
+};
 use chrono::NaiveDate;
 use serde_json::json;
-use std::path::Path;
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// 不设限的预算 —— 只有那条专测 deadline 的用例才给已经到点的值。
 fn forever() -> Instant {
@@ -20,9 +27,7 @@ fn day(d: u32) -> NaiveDate {
 }
 
 fn ms(d: u32) -> i64 {
-    (day(d).and_hms_opt(9, 0, 0).unwrap() - chrono::Duration::hours(8))
-        .and_utc()
-        .timestamp_millis()
+    testutil::upstream_ms(day(d).and_hms_opt(9, 0, 0).unwrap())
 }
 
 /// `bad` 时把 `sourceMessageId` 置空 —— 缺必填字段 = 该群失败（群级，非整轮）。
@@ -51,8 +56,11 @@ fn write_room(root: &Path, room: &str, bad: bool) {
 fn read_only(
     root: &Path,
     w: &Window,
-) -> impl Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Outcome, IngestError>> + Send>>
-{
+) -> impl Fn(
+    String,
+    String,
+)
+    -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Outcome, IngestError>> + Send>> {
     let (root, w) = (root.to_path_buf(), w.clone());
     move |corp, room| {
         let (root, w) = (root.clone(), w.clone());
@@ -64,7 +72,10 @@ fn read_only(
             Ok(if conv.msgs.is_empty() {
                 Outcome::Empty
             } else {
-                Outcome::Ok { msgs: conv.msgs.len(), events: 0 }
+                Outcome::Ok {
+                    msgs: conv.msgs.len(),
+                    events: 0,
+                }
             })
         })
     }
@@ -137,7 +148,10 @@ async fn upstream_version_mismatch_fails_the_whole_round() {
             "semanticPayload": {"replyTo": null}
         })],
     );
-    let rooms = [("C".to_string(), "R0".to_string()), ("C".to_string(), "R1".to_string())];
+    let rooms = [
+        ("C".to_string(), "R0".to_string()),
+        ("C".to_string(), "R1".to_string()),
+    ];
     let w = Window::span(day(25), day(29));
 
     let mut t = Tally::default();

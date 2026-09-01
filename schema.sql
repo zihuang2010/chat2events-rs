@@ -41,7 +41,7 @@ CREATE TABLE b_merchant_group_event (
     asker_role             ENUM('EXTERNAL','INTERNAL') NOT NULL COMMENT '发起方角色=首条来源消息发送方的identityType。EXTERNAL=商家发起，INTERNAL=平台发起（工单推送类，first_agent_reply_time恒等于first_msg_time、首响0秒，算首响指标前要先滤掉）',
     agents                 JSON            NOT NULL COMMENT '涉及的全部INTERNAL成员easyUserId数组，全存。归属口径换了不用重跑LLM',
     first_responder        CHAR(16)        NULL     COMMENT 'first_agent_reply_time那条消息的发送方easyUserId',
-    summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（EventDraft._short校验）',
+    summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（落库前由抽取校验器拦截）',
     event_type             VARCHAR(64)     NOT NULL COMMENT '事件类型。为空时用显式的__untyped__不用NULL；v0+__untyped__=还没有词表（系统状态），vN+__untyped__=归不上去（数据信号）',
     taxonomy_version       VARCHAR(16)     NOT NULL COMMENT '打标所用的词表版本',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',

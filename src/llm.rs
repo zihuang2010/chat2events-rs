@@ -43,7 +43,7 @@ use std::{fmt, time::Duration};
 
 /// TCP keepalive 间隔。长连接空闲久了会被中间设备静默掐断，下次复用就是一个莫名其妙的
 /// connection reset。跑批是连续调用，这个数只在群与群的空档里起作用。
-/// 具名而不内联，跟 `pull.rs` 的 [`crate::pull`] 那几个超时常量一个规矩。
+/// 具名而不内联，跟 `mirror/download.rs` 那几个超时常量一个规矩。
 const TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 
 /// 对话里的一轮。**存在的唯一理由是校验失败要重问一次**（③ 的 `MAX_RETRIES = 1`）：
@@ -157,12 +157,13 @@ impl Llm {
     {
         let (name, schema) = strict_schema::<T>();
 
-        let mut messages: Vec<ChatCompletionRequestMessage> =
-            vec![ChatCompletionRequestSystemMessageArgs::default()
+        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
+            ChatCompletionRequestSystemMessageArgs::default()
                 .content(system)
                 .build()
                 .map_err(LlmError::from)?
-                .into()];
+                .into(),
+        ];
         for t in turns {
             messages.push(match t {
                 Turn::User(s) => ChatCompletionRequestUserMessageArgs::default()
@@ -202,9 +203,10 @@ impl Llm {
         let response = self.client.chat().create(request).await?;
         let elapsed = started.elapsed();
 
-        let choice = response.choices.first().ok_or_else(|| {
-            LlmError::Other("模型没返回任何 choice".into())
-        })?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| LlmError::Other("模型没返回任何 choice".into()))?;
         // **先判截断，再解析。** 顺序反了，截断就会表现成一次 JSON 语法错误。
         if choice.finish_reason == Some(FinishReason::Length) {
             return Err(LlmError::Truncated);
@@ -238,7 +240,9 @@ impl Llm {
 
         Ok(Extracted {
             data: serde_json::from_str(content).map_err(|e| {
-                LlmError::Other(format!("模型输出不是合法的 {}: {e}", std::any::type_name::<T>()).into())
+                LlmError::Other(
+                    format!("模型输出不是合法的 {}: {e}", std::any::type_name::<T>()).into(),
+                )
             })?,
             raw: content.to_string(),
             prompt_tokens: usage.prompt_tokens,
@@ -304,7 +308,10 @@ mod tests {
             .collect();
 
         assert_eq!(name, "Sample");
-        assert!(required.contains(&"optional_field"), "Option 字段漏了就会丢数据");
+        assert!(
+            required.contains(&"optional_field"),
+            "Option 字段漏了就会丢数据"
+        );
         assert_eq!(required.len(), 2);
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert!(schema.get("$schema").is_none());

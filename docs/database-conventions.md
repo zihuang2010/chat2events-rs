@@ -5,7 +5,10 @@
 
 改 `schema.sql` 之前读这里；上游规范改版时回去比对一遍。
 
-⚠️ `schema.sql` 唯一那份在 `../pychat2events/schema.sql`，⑦ 搬过来时一起移过来。
+⚠️ `schema.sql` 权威的那份在**本仓库根目录**（⑦ 在这边，`cargo test` 还钉着它的
+`summary` 列注释与 `SUMMARY_MAX` 一致）。`../pychat2events/schema.sql` 是搬运前的
+原件、此刻逐字节相同 —— 按「移过来不是抄过来」的原计划该删，删除跨仓库，留给人工。
+**改 DDL 只改本仓库这份。**
 
 ---
 

@@ -53,11 +53,30 @@ cargo build --release
 
 ### glibc 版本
 
-同机构建 = 不存在这个问题。分开构建时规矩是**目标机 glibc ≥ 构建机 glibc**，
-反过来会在启动时报 `GLIBC_2.xx not found`。查法：`ldd --version`。
+规矩是**目标机 glibc ≥ 构建机 glibc**，反过来会在启动时报 `GLIBC_2.xx not found`
+（C++ 那半边同理，报 `GLIBCXX_3.4.xx not found` —— DuckDB 是 C++）。
+查法：目标机上 `ldd --version`。同机构建不存在这个问题。
 
-> 明确没做：Docker 构建镜像、`cross` 交叉编译、musl 全静态。
-> 等有了「构建机 ≠ 目标机」的真实需求再折腾 —— 一个用例不值一套构建基础设施。
+**目标机是 CentOS 7：glibc 2.17，libstdc++ 来自 GCC 4.8（最高 `GLIBCXX_3.4.19`）。**
+而 GitHub runner 的 `ubuntu-latest` 是 glibc 2.39 —— 直接在 runner 上
+`cargo build --release`，产物到机器上一行都跑不了。所以 CI 的 release job
+**只把编译这一步丢进 `quay.io/pypa/manylinux2014_x86_64` 容器**
+（CentOS 7 底 + devtoolset-10 的 gcc 10，DuckDB 用 4.8 编不动），并且
+`-static-libstdc++ -static-libgcc` 把新 gcc 的 C++ 符号静态链进去。
+
+> 为什么不用 `jobs.<id>.container` 把整个 job 塞进这个镜像：GitHub Actions 的
+> node20 runtime 要 glibc ≥ 2.28，CentOS 7 里 `checkout` / `rust-toolchain`
+> 全部起不来。job 照常跑在 ubuntu-latest，容器只包住 `cargo build`。
+
+产物实际要求的符号版本由 CI 里的「校验 glibc / libstdc++ 下界」一步断言
+（`objdump -T`，超过 `GLIBC_2.17` 或残留任何 `GLIBCXX_` 就 fail），同时作为
+`glibc-baseline.txt` 随 Release 发出来。换镜像、换 `RUSTFLAGS` 之后二进制悄悄
+要上新 glibc，这条会当场拦住，不必等部署到机器上才发现。
+
+> 明确没做：`cross` 交叉编译、musl 全静态、release job 的构建缓存。
+> 前两条 bundled DuckDB（C++）都要另配一套工具链，容器已经解决问题；
+> 第三条是因为 `CARGO_HOME` 在容器里，跨不过 `rust-cache` 的边界 ——
+> release 只在打 tag 时跑，多花的十几分钟不值得为它维护一套缓存。
 
 ---
 

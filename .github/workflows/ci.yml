@@ -48,14 +48,48 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
-      - run: cargo build --release
+      # ⚠️ 不在 runner 上直接 cargo build：runner 的 glibc(2.39) 会成为部署机的下界，
+      #    而目标机是 CentOS 7（glibc 2.17 / libstdc++ 来自 GCC 4.8，最高 GLIBCXX_3.4.19）。
+      #
+      # ⚠️ 也不用 jobs.<id>.container 把整个 job 塞进这个镜像：GitHub Actions 的 node20
+      #    runtime 要 glibc ≥ 2.28，CentOS 7 里 checkout / rust-toolchain 全部起不来。
+      #    所以 job 照常跑在 ubuntu-latest，只把**编译这一步**丢进容器。
+      #
+      # manylinux2014 = CentOS 7 底 + devtoolset-10（gcc 10，DuckDB 是 C++，4.8 编不动）。
+      # -static-libstdc++/-static-libgcc：新 gcc 的 GLIBCXX 符号静态链进来，
+      # 否则二进制会要 GLIBCXX_3.4.20+，而目标机只有 3.4.19。
+      - name: 在 glibc 2.17 环境里构建
+        run: |
+          docker run --rm -v "$PWD":/w -w /w \
+            -e CARGO_HOME=/w/.cargo-home \
+            -e RUSTUP_HOME=/w/.rustup-home \
+            -e CARGO_TERM_COLOR=always \
+            -e RUSTFLAGS='-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc' \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash -euxo pipefail -c '
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal
+              . "$CARGO_HOME/env"
+              rustc -V && gcc --version | head -1
+              cargo build --release --locked
+            '
+          sudo chown -R "$(id -u):$(id -g)" target .cargo-home .rustup-home
 
-      # 动态链 glibc：runner 的 glibc 版本 = 部署机的下界，见 docs/deploy.md
-      - name: 记录 glibc 下界
-        run: ldd --version | head -1 | tee glibc-baseline.txt
+      # 自检：产物实际要求的符号版本必须落在目标机能给的范围内。
+      # 这条挡的是静默回归 —— 换镜像/换 RUSTFLAGS 之后二进制悄悄要上新 glibc，
+      # 不检查的话要等部署到机器上才发现。
+      - name: 校验 glibc / libstdc++ 下界
+        run: |
+          BIN=target/release/chat2events-rs
+          objdump -T "$BIN" | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
+          MAX_GLIBC=$(grep -o 'GLIBC_[0-9.]*[0-9]' glibc-baseline.txt | sort -V | tail -1)
+          echo "最高 glibc 符号：$MAX_GLIBC"
+          [ "$(printf '%s\nGLIBC_2.17\n' "$MAX_GLIBC" | sort -V | tail -1)" = "GLIBC_2.17" ] \
+            || { echo "::error::二进制要求 $MAX_GLIBC，超出目标机的 glibc 2.17"; exit 1; }
+          ! grep -q 'GLIBCXX_' glibc-baseline.txt \
+            || { echo "::error::libstdc++ 没有静态链进来"; exit 1; }
+          ldd "$BIN"
 
       - name: 打包
         run: |

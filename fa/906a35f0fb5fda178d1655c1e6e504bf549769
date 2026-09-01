@@ -1,0 +1,28 @@
+Cargo.toml
+  s_9de13a31515720::t_a9338daa6bc55a 9-12
+  s_9de13a31515720::t_e975e81a75e88f 3
+docs/deploy.md
+  s_9de13a31515720::t_0d56bdc6bb4a87 135-139
+.github/workflows/ci.yml
+  s_9de13a31515720::t_d6e0e41ef2e245 62-67,75
+  s_9de13a31515720::t_8bb17cd8175b73 6-7,38,40,101-108
+  s_9de13a31515720::t_6232a6283b29a3 109
+Cargo.lock
+  s_9de13a31515720::t_a14d1241f6d63c 404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "fa906a35f0fb5fda178d1655c1e6e504bf549769",
+  "prompts": {},
+  "sessions": {
+    "s_9de13a31515720": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb9240cb-4cf2-4cb4-b96e-4270c4f96da5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -31,11 +31,16 @@ TLS 同理：`sqlx` 走 `tls-rustls-aws-lc-rs`，`reqwest` 走 rustls
 而 bundled DuckDB 是 **C++**，交叉编译要配一套 `x86_64-unknown-linux-gnu` 的
 g++ 工具链 —— 三条路里最疼的一条。
 
-**直接在目标 Linux 机（或同发行版同架构的构建机）上编。**
+**正常路子是从 CI 的 Release 里下产物**（见下面「glibc 版本」）——
+它在 manylinux2014 容器里编，下界压到 glibc 2.17，有 objdump 断言兜着。
+
+要在机器上自己编的话，前提是**那台机器的 g++ 够新**。当前目标机是
+CentOS 7 / gcc 4.8.5 —— C++11 支持不完整，**编不动 bundled DuckDB**，
+这条路在它上面直接堵死。下面这段只适用于 g++ ≥ 8 的构建机：
 
 ```bash
 # 一次性准备
-apt install -y build-essential ca-certificates   # 必须有 g++，DuckDB 是 C++
+apt install -y build-essential ca-certificates   # 必须有 g++ ≥ 8，DuckDB 是 C++
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 rustc -V    # 必须 ≥ 1.85：本仓库是 edition 2024

@@ -1,0 +1,57 @@
+# 调参与端点 —— 进 git，随便谁读
+# 密钥不在这里，见 secrets.toml（0600，不进 git）
+# ⚠️ 所有键必填：代码里没有默认值，缺一个进程起不来（配置错误要在第一秒暴露）
+
+# ① 摄取 —— 本地 raw 区是 OSS 的字节级镜像（ADR-0005）
+[ingest]
+# <raw_root>/<yyyyMM>/<corpId>/<roomId>.ndjson
+# 每天新增约 600 MB（1000 群 × 500 条 × 1.2 KB），一年约 216 GB
+raw_root = "./data/raw"
+
+# 下载根地址（CDN）。拼上索引表的 ndjson_object_key 就是月文件的 URL。
+# 不是密钥 —— 公开域名，所以在这里而不是 secrets.toml。
+# ⚠️ 这条路径配了 30 天 CDN 缓存，Cache-Control 和随机 query 参数都绕不掉。
+#    兜底是字节数校验：拿到旧副本 = 该群本轮失败，数据不会写坏。见 ADR-0005 结尾。
+download_base_url = "https://filet.jdd51.com"
+
+# 同时在飞的月文件下载数。无默认值，缺失即报错。
+pull_concurrency = 8
+
+# 回看窗口 N：读 [T-N, T-1]
+# ⚠️ N=2 时「周五提问、周一回复」永远拼不起来，损失系统性落在周五值班的人头上。
+# 拿到真实数据后按周几分别量，跨 2 天以上才闭合的占比 > 5% 立刻调 4。
+lookback_days = 2
+
+[llm]
+model = "qwen3.8-flash"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# 推理默认关。抽取任务不需要它，实测答一个"2"开着要 45 token、关了 1 token。
+# 可选值：none / minimal / low / medium / high / xhigh
+reasoning_effort = "none"
+
+# 抽取要可复现，不是创作
+temperature = 0.0
+
+# ⚠️ 跟着模型变：qwen3.8-flash 收 64000，qwen-plus 只到 32768（超了直接报 range 错）
+max_tokens = 64000
+
+# 单次调用实测 118~168s，留 2 倍余量
+timeout_secs = 300
+
+# 只管 TCP+TLS 握手：让「端点连不上」几秒内失败，不耗满上面按分钟计的超时
+connect_timeout_secs = 10
+
+[log]
+# error / warn / info / debug / trace
+# ⚠️ async-openai 只埋了 warn 级别的点（429 限流 header、retry-after、5xx），
+#    info 就已经全看得到；调 debug 只会让 reqwest/hyper 变啰嗦，看不到请求体。
+# 环境变量 RUST_LOG 若存在会覆盖这里 —— 临时排障不用改文件。
+level = "info"
+
+[mysql]
+# 连接 URL 带密码，不在这里 —— 见 secrets.toml 的 [mysql]
+# 池上限。跑批是"调一次 LLM、落一次库"，并发度由外层任务数定，几条够用
+max_connections = 5
+# 池子满了、等一条空闲连接的上限。超时报错，不无限挂着
+acquire_timeout_secs = 30

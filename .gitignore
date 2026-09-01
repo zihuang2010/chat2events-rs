@@ -1,0 +1,8 @@
+/target
+
+# 密钥文件，永不进 git
+/secrets.toml
+
+# 本地 raw 区 —— OSS 的字节级镜像。每天约 600 MB、一年约 216 GB，
+# 而且里面全是未脱敏的客户正文。永不进 git，丢了重跑 pull 就有。
+/data

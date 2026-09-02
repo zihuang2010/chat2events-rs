@@ -1,0 +1,31 @@
+src/ingest/read.rs
+  s_57e9f9ea53c065::t_4a7af7300418ba 55,65-72
+  s_57e9f9ea53c065::t_1b4a6865a8f76d 56-64
+  s_57e9f9ea53c065::t_b354fede0a2614 98-100
+  s_57e9f9ea53c065::t_90706a62aafd92 156
+  s_57e9f9ea53c065::t_747306d63cb061 23-32
+src/ingest/tests.rs
+  s_57e9f9ea53c065::t_c9b76105274d5c 18
+Cargo.toml
+  s_57e9f9ea53c065::t_be7462200a6715 3
+docs/deploy.md
+  s_57e9f9ea53c065::t_4e4f4c9c368b1d 140-148
+Cargo.lock
+  s_57e9f9ea53c065::t_9433a842428482 404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "570902c5fdf1b217f634c1f812965b6208e75d4b",
+  "prompts": {},
+  "sessions": {
+    "s_57e9f9ea53c065": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "abde7d57-a290-4b04-97c4-51edcb501d69",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

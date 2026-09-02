@@ -15,7 +15,7 @@ fn day(d: u32) -> NaiveDate {
 }
 
 /// 本地时间转上游的毫秒时间戳。「本地 = UTC+8」的换算收在 [`testutil::upstream_ms`]，
-/// 不在测试里再手写一份 —— 那是和生产 `TZ` 同一个事实的第二份拷贝。
+/// 不在测试里再手写一份 —— 那是和生产 `TZ_OFFSET_MICROS` 同一个事实的第二份拷贝。
 fn ms(d: u32, hour: u32, min: u32) -> i64 {
     testutil::upstream_ms(day(d).and_hms_opt(hour, min, 0).unwrap())
 }

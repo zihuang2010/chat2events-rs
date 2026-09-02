@@ -137,6 +137,15 @@ cargo build --release
 会在第一次 `read_room()` 时按 AUTOINSTALL 默认值联网下载，内网出不去 = 整轮死。CI 的
 「校验 json 扩展已静态链」那步就是挡这个的。
 
+⚠️ **踩过一次（2026-09-02）**：`ingest` 的 SQL 曾用 `AT TIME ZONE 'Asia/Shanghai'`，
+而这是 **ICU 扩展**提供的，ICU 没法像 json 那样静态链（`duckdb` 的 `icu` feature 会把
+整个构建切成 `bundled-cmake`）。CI 在公网跑、平台串是真的 → 自动下到、全绿；
+目标机在内网、平台串又是 `DUCKDB_CUSTOM_PLATFORM` 那个假的 `linux_amd64_gcc4`
+（`extensions.duckdb.org` 上没有这个平台 → HTTP 404）→ **每个群都在 `read_room()` 第一句失败**。
+现已改成 core 的 `make_timestamp(... + 8h)`（Asia/Shanghai 自 1991 年无夏令时，恒 UTC+8），
+并在建 DuckDB 实例时 `SET autoinstall_known_extensions = false` —— 于是「SQL 又需要某个
+扩展」这件事在干净机器（CI runner）上当场报错，不用等部署。
+
 ---
 
 ## 定时跑

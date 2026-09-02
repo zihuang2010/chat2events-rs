@@ -20,7 +20,16 @@ const SCHEMA_VERSION: i64 = 1;
 const PARSER_VERSION: i64 = 1;
 
 /// 归属日按业务本地时区算，不按 UTC。跨零点的归属会差一天。
-pub(super) const TZ: &str = "Asia/Shanghai";
+///
+/// ⚠️ **写成定值偏移，不写 `AT TIME ZONE 'Asia/Shanghai'`** —— 后者是 ICU 扩展提供的，
+/// 而 ICU 没法像 json 那样静态链进来（`duckdb` 的 `icu` feature 会把整个构建切成
+/// `bundled-cmake`）。于是它只能运行时联网下载：CI 在公网上跑、平台串是真的，
+/// 下得到，全绿；跑批机在内网、平台串又是 `DUCKDB_CUSTOM_PLATFORM` 那个假的，
+/// 404，**每个群都在 `read_room()` 第一句就失败**。实测踩过一次。
+///
+/// 换成偏移是无损的：Asia/Shanghai 自 1991 年起无夏令时，恒 UTC+8。
+/// 「+8」这条换算另一处在 `testutil::upstream_ms`（测试侧的反向换算）。
+const TZ_OFFSET_MICROS: i64 = 8 * 3600 * 1_000_000;
 
 /// 样本里出现过的类型。**不做过滤** —— 「什么算业务事件」是 ③ 的活，
 /// 这里只负责把没见过的类型吼一声，好让真实数据自己告诉我们还有什么。
@@ -43,8 +52,24 @@ static SEEN_UNKNOWN: LazyLock<Mutex<HashSet<String>>> =
 ///
 /// 建实例失败 / 锁毒化都不是「某个群的事」：进程内内存数据库都起不来，整轮本来就该死，
 /// 按硬规则用 `expect`。
-static DB: LazyLock<Mutex<duckdb::Connection>> =
-    LazyLock::new(|| Mutex::new(duckdb::Connection::open_in_memory().expect("建 DuckDB 实例")));
+///
+/// 建好就**关掉扩展自动下载**：跑批机在内网，联网取扩展是死路，而 DuckDB 的默认
+/// 行为是静默去 extensions.duckdb.org 取。关掉之后「SQL 用了个需要扩展的函数」
+/// 在**干净机器**上当场报错 —— CI 的 runner 就是干净的，于是这类事故在 CI 就现形，
+/// 不用等部署（ICU 就是这么漏过去的，见 [`TZ_OFFSET_MICROS`]）。
+///
+/// ⚠️ 实测：`autoload_known_extensions = false` **拦不住已经装在 `~/.duckdb/extensions`
+/// 里的那份**（本机开发机上 icu 照样 loaded=true）。真正兑现这条的是
+/// `autoinstall`。所以本地全绿不等于目标机能跑，判据以 CI 为准。
+/// json 是 `STATICALLY_LINKED` 的内建扩展，不走这条路。
+static DB: LazyLock<Mutex<duckdb::Connection>> = LazyLock::new(|| {
+    let con = duckdb::Connection::open_in_memory().expect("建 DuckDB 实例");
+    con.execute_batch(
+        "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
+    )
+    .expect("关闭扩展自动加载");
+    Mutex::new(con)
+});
 
 /// 列名即领域名。上游字段名只允许出现在这里。
 ///
@@ -70,8 +95,9 @@ WITH src AS (
         sourceMessageId                                  AS msg_id,
         officialRoomId                                   AS room,
         corpId                                           AS corp,
-        -- messageTime 是毫秒，/1000 转秒再喂 to_timestamp
-        to_timestamp(messageTime / 1000) AT TIME ZONE '{tz}'  AS "at",
+        -- messageTime 是毫秒，×1000 转微秒、加上本地时区偏移，直接得本地 TIMESTAMP。
+        -- make_timestamp 是 core 函数，不碰 ICU（见 TZ_OFFSET_MICROS）
+        make_timestamp(messageTime * 1000 + {tz_offset})     AS "at",
         sender.easyUserId                                AS sender_id,
         sender.identityType                              AS sender_role,
         COALESCE(NULLIF(analysisText, ''), content)      AS text,
@@ -127,7 +153,7 @@ fn scan(
     };
     let sql = format!(
         select_sql!(),
-        tz = TZ,
+        tz_offset = TZ_OFFSET_MICROS,
         files = quoted,
         since = w.since(),
         until = w.until(),

@@ -60,11 +60,18 @@ jobs:
       # -static-libstdc++/-static-libgcc：新 gcc 的 GLIBCXX 符号静态链进来，
       # 否则二进制会要 GLIBCXX_3.4.20+，而目标机只有 3.4.19。
       #
-      # ⚠️ CXXFLAGS=-D_GLIBCXX_USE_CXX11_ABI=1 必须显式给：devtoolset 为了兼容 CentOS 7
-      #    自带的 libstdc++（GCC 4.8，只有旧 ABI）把这个宏默认成 0，而 DuckDB 的
-      #    `common/platform.hpp` 见到旧 ABI 直接 `#error`（它按平台串下载扩展，旧 ABI 的
-      #    linux_amd64_gcc4 早已不发布）。本机 clang / ubuntu 的 gcc 13 默认就是新 ABI，
-      #    所以只有这个容器里会炸。反正 libstdc++ 是静态链进来的，用新 ABI 无兼容代价。
+      # ⚠️ 这个容器里编 DuckDB 必须给 DUCKDB_CUSTOM_PLATFORM，原因不是"没传对宏"：
+      #    devtoolset-10 为了兼容 CentOS 7 自带的 libstdc++（GCC 4.8，只有旧 ABI）
+      #    是按 gcc4-compatible ABI 构建的，它的 `bits/c++config.h` 会 **#undef 掉**
+      #    命令行给的 `-D_GLIBCXX_USE_CXX11_ABI=1` 再改回 0 —— 实测：那个 -D 确实出现在
+      #    cc-rs 的编译命令行上（cc 1.4.4 把 CXXFLAGS 追加在所有 -D 之后），
+      #    `common/platform.hpp` 照样 `#error`。所以这个宏在这里压根压不住，别再试。
+      #
+      #    DUCKDB_CUSTOM_PLATFORM 是 DuckDB 自己在 `#error` 提示语里给的逃生舱：
+      #    定义之后 `DuckDBPlatform()` 直接返回这个串，整段判据被预处理器跳过。
+      #    平台串只用来**下载**扩展，而 json 是静态链进来的（下面有自检挡着）、
+      #    跑批机也在内网出不去 —— 这个串对本仓库是纯装饰，取 gcc4 是照实写。
+      #    libstdc++ 静态链进二进制，全仓一套 ABI 自洽，旧 ABI 无外部影响。
       - name: 在 glibc 2.17 环境里构建
         run: |
           docker run --rm -v "$PWD":/w -w /w \
@@ -72,13 +79,15 @@ jobs:
             -e RUSTUP_HOME=/w/.rustup-home \
             -e CARGO_TERM_COLOR=always \
             -e RUSTFLAGS='-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc' \
-            -e CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1' \
+            -e CXXFLAGS='-DDUCKDB_CUSTOM_PLATFORM=linux_amd64_gcc4' \
             quay.io/pypa/manylinux2014_x86_64 \
             bash -euxo pipefail -c '
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
                 | sh -s -- -y --default-toolchain stable --profile minimal
               . "$CARGO_HOME/env"
-              rustc -V && gcc --version | head -1
+              rustc -V
+              # 打 c++ 而不是 gcc —— cc-rs 调用的是 c++ 这个名字，上一轮查错就卡在这
+              c++ --version | head -1
               cargo build --release --locked
             '
           sudo chown -R "$(id -u):$(id -g)" target .cargo-home .rustup-home

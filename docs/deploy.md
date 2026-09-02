@@ -74,7 +74,7 @@ cargo build --release
 > 全部起不来。job 照常跑在 ubuntu-latest，容器只包住 `cargo build`。
 
 产物实际要求的符号版本由 CI 里的「校验 glibc / libstdc++ 下界」一步断言
-（`objdump -T`，超过 `GLIBC_2.17` 或残留任何 `GLIBCXX_` 就 fail），同时作为
+（`objdump -T`，最高符号超过 `GLIBC_2.17` 或 `GLIBCXX_3.4.19` 就 fail），同时作为
 `glibc-baseline.txt` 随 Release 发出来。换镜像、换 `RUSTFLAGS` 之后二进制悄悄
 要上新 glibc，这条会当场拦住，不必等部署到机器上才发现。
 

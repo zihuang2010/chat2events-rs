@@ -92,20 +92,28 @@ jobs:
             '
           sudo chown -R "$(id -u):$(id -g)" target .cargo-home .rustup-home
 
-      # 自检：产物实际要求的符号版本必须落在目标机能给的范围内。
-      # 这条挡的是静默回归 —— 换镜像/换 RUSTFLAGS 之后二进制悄悄要上新 glibc，
+      # 自检：产物实际要求的符号版本必须落在目标机（CentOS 7 / gcc 4.8.5）能给的范围内。
+      # 这条挡的是静默回归 —— 换镜像/换 RUSTFLAGS 之后二进制悄悄要上新符号，
       # 不检查的话要等部署到机器上才发现。
+      #
+      # ⚠️ 判据是**上界**，不是「有没有 GLIBCXX_」。`-static-libstdc++` 之后
+      #    objdump -T 里的 GLIBCXX_ 条目不会消失：devtoolset-10 只把 base
+      #    libstdc++.so.6 给不出的新符号静态链进来，旧符号照旧走动态库。
+      #    要命的是「要了目标机给不出的版本」，所以比版本，不比有无。
       - name: 校验 glibc / libstdc++ 下界
         run: |
           BIN=target/release/chat2events-rs
-          objdump -T "$BIN" | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
-          MAX_GLIBC=$(grep -o 'GLIBC_[0-9.]*[0-9]' glibc-baseline.txt | sort -V | tail -1)
-          echo "最高 glibc 符号：$MAX_GLIBC"
-          [ "$(printf '%s\nGLIBC_2.17\n' "$MAX_GLIBC" | sort -V | tail -1)" = "GLIBC_2.17" ] \
-            || { echo "::error::二进制要求 $MAX_GLIBC，超出目标机的 glibc 2.17"; exit 1; }
-          ! grep -q 'GLIBCXX_' glibc-baseline.txt \
-            || { echo "::error::libstdc++ 没有静态链进来"; exit 1; }
           ldd "$BIN"
+          objdump -T "$BIN" | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
+          # ceiling <符号前缀> <目标机能给的最高版本>
+          ceiling() {
+            max=$(grep "^$1" glibc-baseline.txt | sort -V | tail -1) || true
+            echo "最高 $1 符号：${max:-（无）}"
+            [ -z "$max" ] || [ "$(printf '%s\n%s\n' "$max" "$2" | sort -V | tail -1)" = "$2" ] \
+              || { echo "::error::二进制要求 $max，超出目标机的 $2"; exit 1; }
+          }
+          ceiling GLIBC_ GLIBC_2.17
+          ceiling GLIBCXX_ GLIBCXX_3.4.19
 
       # 同一性质的自检：json 扩展必须静态链在二进制里。
       # 掉了的话 DuckDB 会在运行时联网去 extensions.duckdb.org 下载 —— 跑批机在内网，

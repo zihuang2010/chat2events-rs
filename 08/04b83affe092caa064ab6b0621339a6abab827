@@ -1,0 +1,24 @@
+Cargo.toml
+  s_0e712342d21db1::t_2672aadbff67a5 3
+.github/workflows/ci.yml
+  s_0e712342d21db1::t_206214bfa20636 69,71,82,88
+  s_0e712342d21db1::t_61c9040e76b23a 63-68,70,72-74,89-90
+Cargo.lock
+  s_0e712342d21db1::t_9ec069f4e23253 404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "0804b83affe092caa064ab6b0621339a6abab827",
+  "prompts": {},
+  "sessions": {
+    "s_0e712342d21db1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8fba6c2-1c0e-4d5d-a230-d1f9ffd17996",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

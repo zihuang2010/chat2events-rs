@@ -1,0 +1,476 @@
+src/taxonomy/run.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 6
+  s_912223cd33a13d::t_6d930422389583 18
+  s_1a1f9948978415::t_348ba33ff688d0 2,9-13,16-17,20-30,34-61
+  s_6db21af08edf1e::t_96ab953317c3d4 31-33
+  s_200aeef2cc5dfb::t_b30b36a0913a4d 5,14-15,19
+  s_f2d4179e56096d::t_7666dfd5b11b85 1,3-4,7-8
+src/mirror/mod.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 1
+  s_912223cd33a13d::t_243a6adf45fd0c 27
+examples/smoke.rs
+  s_3ee27c8f1157cb::t_305525dafa1e9d 38
+src/lib.rs
+  s_1a1f9948978415::t_d8e703cb8094c8 27,30-39,48,50
+  s_ee6372c5b5a90b::t_828113719c34af 47
+src/extract/tests.rs
+  s_ee6372c5b5a90b::t_dc4846c54efb85 260,263,272,282,290,306
+  s_a7da7c364dc0d2::t_ecafc99251b3c3 147-148
+  s_912223cd33a13d::t_d57f7ed53b188b 9-11
+  s_ee6372c5b5a90b::t_cfe83a97bf6619 138
+  s_912223cd33a13d::t_a9a282e74dc8f4 251
+probe/intent-head/Cargo.toml
+  s_eb111c50596ae4::t_58f215f842d78f 19
+  s_eb111c50596ae4::t_e90ad57fd8e0fb 1-18,20-23
+src/extract/model.rs
+  s_a7da7c364dc0d2::t_cd03bbd9026639 226
+  s_a7da7c364dc0d2::t_924ed0763bcffd 19-23
+  s_a7da7c364dc0d2::t_628609f157792e 234-238
+  s_a7da7c364dc0d2::t_a8357617c02301 315-317,319,322-323,328,330
+  s_a7da7c364dc0d2::t_1bd1a7c49ad967 255-259,264-270
+  s_ee6372c5b5a90b::t_cfe83a97bf6619 347,434-436
+  s_912223cd33a13d::t_a9a282e74dc8f4 37,303
+  s_a7da7c364dc0d2::t_9c84de1444dbde 204,368-373,375-378,381-386,420-425
+  s_a7da7c364dc0d2::t_6d4f803673206d 390-419,426-431
+  s_912223cd33a13d::t_796f032fc7ffd5 140
+  s_a7da7c364dc0d2::t_056f0ea92d938c 158-160,174,182-184,192-195,198-200,207-213
+  s_a7da7c364dc0d2::t_add8941f23b38e 73-137,142
+  s_a7da7c364dc0d2::t_8c41695dd9b092 476-477
+  s_a7da7c364dc0d2::t_0a89befce322c6 365,447,453,459
+  s_ee6372c5b5a90b::t_c0da4d58a555c4 11,31,147-150,155,161-162,188,216-221,224,227-233,239-254,260-263,271-273
+  s_ee6372c5b5a90b::t_dc4846c54efb85 457,463,466-475,478-482
+  s_a7da7c364dc0d2::t_3c418df7a4348e 189
+examples/recompute.rs
+  s_ee6372c5b5a90b::t_3820f22aad372f 8-11,16,21,67
+  s_ee6372c5b5a90b::t_08828b35edc2a0 39
+  s_ee6372c5b5a90b::t_6f29334f11c1a7 5,12-15,17-20
+  s_ee6372c5b5a90b::t_50d8b1a1af0668 3,7,22-26,40-42,51-66,68-69
+  s_ee6372c5b5a90b::t_e83bfb024aa7da 43-45
+  s_3ee27c8f1157cb::t_305525dafa1e9d 48
+  s_ee6372c5b5a90b::t_637aed5a70776b 1-2,4,6,27-38,46-47,49-50,70
+Cargo.toml
+  s_912223cd33a13d::t_014a2b45f4e0fc 22
+  s_1a1f9948978415::t_6d24c0df868858 21,23-25
+  s_3ee27c8f1157cb::t_6dc43ea70f8dd6 30
+probe/intent-head/src/main.rs
+  s_eb111c50596ae4::t_614c6e4ba2fee1 1-34,36-47,49-126,130,135-381
+  s_eb111c50596ae4::t_ced0bc59ad979d 35
+  s_eb111c50596ae4::t_fb09130a8a1e5b 48,127-129,131-134
+src/ingest/types.rs
+  s_a7da7c364dc0d2::t_9774357f76f106 76-78
+  s_1a1f9948978415::t_d21a03f8ddf51a 27,32-37
+CONTEXT.md
+  s_1a1f9948978415::t_88f46af68d74cd 256
+  s_912223cd33a13d::t_2ac0f52bcd7fb9 59,85,183,224
+schema.sql
+  s_200aeef2cc5dfb::t_7224c2ec51dde6 137,144-153,158-160
+  s_aeb11cf1e98765::t_8e2fb830a0bd14 26-34,52-53
+  s_200aeef2cc5dfb::t_cd7dd0fb9bf73c 134,138-143,161
+src/extract/segment.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 1,12
+  s_912223cd33a13d::t_796f032fc7ffd5 34-35,129-130
+src/extract/render.rs
+  s_912223cd33a13d::t_308b51cbd16dbd 399,404-405,414,416-418,425,428-453,458-460
+  s_912223cd33a13d::t_e1860ef7c284f2 266-268,270-282
+  s_912223cd33a13d::t_243a6adf45fd0c 90
+  s_912223cd33a13d::t_68ef6320155896 61-62
+  s_912223cd33a13d::t_1142c53bcbabb0 112,118,130-134
+  s_912223cd33a13d::t_ffb72073c8c0c0 113-117,135,454-457,461
+  s_912223cd33a13d::t_aa4561dc7aa4d6 233-237,239
+  s_912223cd33a13d::t_cdea75a071635e 73-83
+docs/deploy.md
+  s_a7da7c364dc0d2::t_1bcd9b90c23205 127-141
+src/metrics/compute.rs
+  s_912223cd33a13d::t_ee8cdc2f97d20e 41
+  s_912223cd33a13d::t_796f032fc7ffd5 16
+.gitignore
+  s_eb111c50596ae4::t_ba6d79d56506e3 39-43
+  s_6db21af08edf1e::t_75ca47e7bf3a1e 13-18
+  s_1a1f9948978415::t_6623ea21d88e29 27-38
+examples/backfill.rs
+  s_3ee27c8f1157cb::t_305525dafa1e9d 30
+  s_3ee27c8f1157cb::t_9a7d36135fdd67 1-29,31-53
+src/extract/types.rs
+  s_ee6372c5b5a90b::t_b50cd7acef7e02 19,22-28,30-50,52,54
+src/main.rs
+  s_3ee27c8f1157cb::t_305525dafa1e9d 15
+src/taxonomy/review.rs
+  s_1a1f9948978415::t_fdd7d193ef4994 1-6,9-41,46-68,73-76,79,81-107,110-116,118-144,146,151-169,171-172,175-212,214-237,240-241
+  s_aeb11cf1e98765::t_7d79b917c48b0d 77-78,80
+  s_6db21af08edf1e::t_61ee098594e490 42-45
+  s_6db21af08edf1e::t_f7114414cbd1ad 170,173-174
+  s_912223cd33a13d::t_ee8cdc2f97d20e 145
+  s_6db21af08edf1e::t_8cda031bdd6ae4 69-72
+  s_6db21af08edf1e::t_bfba76be7751fd 147-150
+  s_6db21af08edf1e::t_aa294a48658049 213
+  s_6db21af08edf1e::t_bdfc5eb76647d2 238-239
+  s_6db21af08edf1e::t_96ab953317c3d4 7-8
+  s_6db21af08edf1e::t_e044d9a1ef3a37 117
+  s_1a1f9948978415::t_9e64e75f950c9a 108-109
+src/recompute.rs
+  s_f2d4179e56096d::t_8237cf278c0bdb 227
+  s_ee6372c5b5a90b::t_96936e22726c28 28,31,135-140,174
+  s_1a1f9948978415::t_ca0003d25a1a2e 1-12,26-27,30,32-33,35-38,41-43,53-59,62,64-86,101-103,107,109-112,159,164,167-168,170-172,176-181,183-187,190-193,197-203,205-212,216-218
+  s_a7da7c364dc0d2::t_aeb2767bedb255 188-189
+  s_ee6372c5b5a90b::t_e83bfb024aa7da 240-244,247,295-301
+  s_ee6372c5b5a90b::t_d83b973743fc04 14-25,40,44,60,63,98,108,113-123,125-134,141-158,160-163,165-166,169,173,175
+  s_ee6372c5b5a90b::t_828113719c34af 47,52,61
+  s_ee6372c5b5a90b::t_c9138bc3ece162 34
+  s_a7da7c364dc0d2::t_b500ccad189706 282
+  s_ee6372c5b5a90b::t_6f29334f11c1a7 39,45-46,48-51,87-97,99-100,104-106,124,182,194,204,215
+  s_ee6372c5b5a90b::t_a309e9ceb807dc 219-226,228-239,245-246,248-276,285-286,289,291-294,302-309
+  s_aeb11cf1e98765::t_7d79b917c48b0d 29,195-196,214
+  s_912223cd33a13d::t_243a6adf45fd0c 13
+  s_a7da7c364dc0d2::t_8f065e64ef5197 277-281,283-284,287-288,290
+  s_a7da7c364dc0d2::t_36f141c1a3be70 213
+src/llm.rs
+  s_b24017fd5435ec::t_b43c41e9b0066e 197-200
+  s_912223cd33a13d::t_243a6adf45fd0c 27,75,180
+  s_b24017fd5435ec::t_6b8993a7d9cd32 52-63
+  s_df7161912801e2::t_3496468350e6e4 158-171
+  s_b24017fd5435ec::t_34fdbef241e82c 172-179,181-196,201-210
+config.toml
+  s_912223cd33a13d::t_d57f7ed53b188b 62
+  s_1a1f9948978415::t_d8e703cb8094c8 67-74,79-80
+  s_912223cd33a13d::t_a9a282e74dc8f4 14,24
+  s_ee6372c5b5a90b::t_6f29334f11c1a7 81-89,93
+  s_912223cd33a13d::t_243a6adf45fd0c 31,41,55
+  s_a7da7c364dc0d2::t_55ece77217f262 75-78
+  s_ee6372c5b5a90b::t_6f5c551eeaf007 124-126
+  s_f0896dca7577d3::t_07cd5a84c0142b 90-92,129-130
+src/ingest/tests.rs
+  s_a7da7c364dc0d2::t_b395979f025618 256-279
+CLAUDE.md
+  s_a7da7c364dc0d2::t_148a18b910f6b3 80,83-86
+  s_f2d4179e56096d::t_0a4d31ff7b0efc 27
+  s_aeb11cf1e98765::t_6792004d28998f 93
+  s_912223cd33a13d::t_014a2b45f4e0fc 18,25-26,32,40-41,43-45,57,63,76,87
+  s_aeb11cf1e98765::t_dafb073508057e 3,5-6,8,10,12-17,19-20,22,24,28,34-39,47,49,51-56,58,62,64-67,71-74,82,88,91,95-97,99-101
+docs/architecture.md
+  s_aeb11cf1e98765::t_00d1122c26ea1c 312-317,319-321
+  s_912223cd33a13d::t_fad243359a9251 114-117
+  s_912223cd33a13d::t_2ac0f52bcd7fb9 32,88,91,127,168,195,211,228,318
+  s_200aeef2cc5dfb::t_42b85154bd99d8 192
+  s_aeb11cf1e98765::t_b0b9c0bdaa891c 248,260-265
+  s_200aeef2cc5dfb::t_2117b28efd3157 141-149
+  s_200aeef2cc5dfb::t_de5d1e91f18efe 186,196,207-210,290-293
+  s_1a1f9948978415::t_d875a2b6e18c3c 136-140,150-158,161-167,169-179,182-185,187-191,193-194,197-206,231,238,251,289,295-296
+  s_912223cd33a13d::t_8005c9a06c6dd4 294
+src/taxonomy/draft.rs
+  s_6db21af08edf1e::t_6430a2135852dd 263-271,277-279,283-317
+  s_df7161912801e2::t_334854e6dc924e 141-142
+  s_6db21af08edf1e::t_b126349c42e867 147-153,156-168
+  s_200aeef2cc5dfb::t_4f9a13574be454 79,81-83,89-90,137-138
+  s_912223cd33a13d::t_a9a282e74dc8f4 4
+  s_aeb11cf1e98765::t_a1468eb790f92c 16-21
+  s_aeb11cf1e98765::t_4669b4327d69b2 136,140,143,145
+  s_6db21af08edf1e::t_7841bfa1535200 272-276,280-282
+  s_200aeef2cc5dfb::t_7c808c608b5ee2 118-135,196,204,207,225
+  s_6db21af08edf1e::t_0189c56b0ea02c 80,85
+  s_1a1f9948978415::t_9e64e75f950c9a 9-12
+  s_aeb11cf1e98765::t_089e114e9d8957 327-332
+  s_200aeef2cc5dfb::t_48c24e95492109 341-357,386-389
+  s_aeb11cf1e98765::t_c15b5dce8c9fe3 318-326,333-340
+  s_1a1f9948978415::t_ae0ab8d034472a 1-3,5-8,13-15,28-33,59-78,84,86-88,92-94,96,98-106,108-109,111-112,114-115,117,146,154,169,173-195,197-203,205-206,208-224,226-262,379-385,390-399
+  s_6db21af08edf1e::t_06efd7cbf81b1a 22-27,34-58
+  s_df7161912801e2::t_dd6852dce69210 358-378
+  s_df7161912801e2::t_7bc614ed2961cd 91,95,97,107,110,113,116,139,144,155,170-172
+docs/invariants.md
+  s_aeb11cf1e98765::t_00d1122c26ea1c 1-56,58-67
+  s_912223cd33a13d::t_2ac0f52bcd7fb9 57,68
+src/ingest/read.rs
+  s_a7da7c364dc0d2::t_7395d070e35e6d 127-133
+  s_a7da7c364dc0d2::t_b406a040db8ee4 242-247,250-251
+src/extract/redact.rs
+  s_912223cd33a13d::t_243a6adf45fd0c 3,262,269
+  s_912223cd33a13d::t_a9a282e74dc8f4 95,154
+  s_912223cd33a13d::t_796f032fc7ffd5 102,118,172-173
+taxonomy_v1.toml
+  s_912223cd33a13d::t_014a2b45f4e0fc 20
+  s_200aeef2cc5dfb::t_0ff73e01bfdbfa 3-19,21-308
+  s_912223cd33a13d::t_f68aff52eb35af 1-2
+src/metrics/tests.rs
+  s_912223cd33a13d::t_796f032fc7ffd5 1
+src/store.rs
+  s_a7da7c364dc0d2::t_61ec933697d7a0 167-171,174,176-182
+  s_aeb11cf1e98765::t_b5d3f416a1c266 206-208
+  s_aeb11cf1e98765::t_2c1e292218db81 126
+  s_a7da7c364dc0d2::t_9f2ccd046c52db 452,458,463-464,466-467,472-477,481
+  s_aeb11cf1e98765::t_d12d3e5430647e 60-63
+  s_1a1f9948978415::t_6d950970d4d111 23,27,38-40,45,532-536,547
+  s_aeb11cf1e98765::t_e2fb2bcdc76d50 453,462,479,485-486
+  s_912223cd33a13d::t_796f032fc7ffd5 538
+  s_200aeef2cc5dfb::t_6f559cfda52774 69-72,303-305,622
+  s_aeb11cf1e98765::t_10a7802bc8762d 21
+  s_aeb11cf1e98765::t_c18b7161002a66 47-49,52
+  s_a7da7c364dc0d2::t_21e2b4efeea132 90-92,96
+  s_1a1f9948978415::t_581f51214f9766 366-371,634-637
+  s_a7da7c364dc0d2::t_c90b9593f900fd 221-222
+  s_aeb11cf1e98765::t_9c96ef7b61d30c 30-31,618,632
+  s_a7da7c364dc0d2::t_261ae9ca45b4a8 220,223-229
+  s_a7da7c364dc0d2::t_5a1d9f5bd9aff4 394
+  s_1a1f9948978415::t_10dc516ed10d8a 64-68,282-291,293-302,306-364,379,381-393,414,417-428,442-451,454-457,459-461,465,468-471,478,480,482-484,487-500,502-530,537,623-631,633
+  s_1a1f9948978415::t_9e64e75f950c9a 292,501
+  s_a7da7c364dc0d2::t_82d9ab03057bd9 395-413
+  s_a7da7c364dc0d2::t_c4353abfa3acd1 415-416
+  s_a7da7c364dc0d2::t_decf01b1353af8 429-433,435-438,440-441
+  s_a7da7c364dc0d2::t_d739655f8c8122 365,372-378,380
+  s_a7da7c364dc0d2::t_7ae77df31982d6 531
+src/ingest/layout.rs
+  s_a7da7c364dc0d2::t_56771f77e78ff7 113-117
+  s_912223cd33a13d::t_a9a282e74dc8f4 3
+  s_a7da7c364dc0d2::t_a293239d2957fb 47-52
+src/nearest.rs
+  s_ee6372c5b5a90b::t_977813f0fd18c8 39-40,43-44,46-47,72-73,75-76,80-89,161,163-175,184,190,196-228,230-236
+  s_912223cd33a13d::t_243a6adf45fd0c 12
+  s_ee6372c5b5a90b::t_83be998a496ab2 378-410
+  s_ee6372c5b5a90b::t_1f8d791c58581e 28-33,130,140-143,145,155-156,304-305,307-310
+  s_a7da7c364dc0d2::t_726e35c4de8a88 41-42,45
+  s_ee6372c5b5a90b::t_e83bfb024aa7da 306
+  s_ee6372c5b5a90b::t_302e351863cf97 1-11,13-27,34-38,48-54,59-60,62-71,74,77-79,90-129,131-133,137-139,144,146-154,157-160,162,229,237-246,250,253-255,257-295,297-301,318-326,329-342,344-365,367-377,411-416,422-423
+  s_ee6372c5b5a90b::t_3820f22aad372f 55-58,61,417-421
+  s_ee6372c5b5a90b::t_3eaf7201318e4e 134-136,247-249,251-252,256,296,302-303,311-317,327-328,343,366
+  s_a7da7c364dc0d2::t_4457f3d0fe047c 176-183,185-189,191-195
+src/taxonomy/mod.rs
+  s_1a1f9948978415::t_581f51214f9766 39
+  s_1a1f9948978415::t_348ba33ff688d0 36
+  s_1a1f9948978415::t_ca0003d25a1a2e 1-2,4-5,8-10,17-18,25-28,30,32-35,37-38
+  s_912223cd33a13d::t_243a6adf45fd0c 3,22
+  s_200aeef2cc5dfb::t_b30b36a0913a4d 6-7,11-16,19-21,23
+  s_f2d4179e56096d::t_7666dfd5b11b85 24,29,31,40
+src/config.rs
+  s_ee6372c5b5a90b::t_6f29334f11c1a7 161-171
+  s_6db21af08edf1e::t_98a9e15e36808e 290,293-304,307-317
+  s_912223cd33a13d::t_a9a282e74dc8f4 100,141
+  s_a7da7c364dc0d2::t_68253e29f34ff7 275-286
+  s_1a1f9948978415::t_a2cc6e3fb8a813 27,149-160,172
+  s_3ee27c8f1157cb::t_6dc43ea70f8dd6 42-68
+  s_912223cd33a13d::t_243a6adf45fd0c 109-110,116-117,120,146,264,358,415
+  s_6db21af08edf1e::t_5f5d60fa9f5371 381-394,398-407,411-412
+  s_6db21af08edf1e::t_7841bfa1535200 395-397,408-410
+examples/taxonomy.rs
+  s_3ee27c8f1157cb::t_305525dafa1e9d 49
+  s_912223cd33a13d::t_243a6adf45fd0c 2,5
+  s_200aeef2cc5dfb::t_bf8c1e1e009a59 3-4,6-7,9,11-25,36
+  s_f2d4179e56096d::t_8237cf278c0bdb 8
+  s_200aeef2cc5dfb::t_618dbfe635e8d4 10,33-35,52-73,78-79
+  s_6db21af08edf1e::t_95d080eb4f6bd4 40-48
+  s_912223cd33a13d::t_cce67d2ae983ba 1,26-32,37-39,50-51,74-77,80-82
+src/daily/run.rs
+  s_aeb11cf1e98765::t_efa71811279e27 374-376
+  s_a7da7c364dc0d2::t_b95ee9af7e9cbc 379,426,429
+  s_912223cd33a13d::t_796f032fc7ffd5 49
+  s_a7da7c364dc0d2::t_24b667f53a8a1c 328-335
+  s_ee6372c5b5a90b::t_4fd64caa99c071 57,62-76,80-81
+  s_a7da7c364dc0d2::t_9c64653f7dffc2 346
+  s_aeb11cf1e98765::t_c31acfdf7b5e1f 9,408
+  s_912223cd33a13d::t_243a6adf45fd0c 259
+  s_1a1f9948978415::t_e76059ae29bf5b 11,53-56,58-61,77-79,82-89,175-181,187,302,337,339-345,347-356,367,372-373,407,409,424-425
+  s_1a1f9948978415::t_88fbd332848ec7 96-98
+  s_912223cd33a13d::t_a9a282e74dc8f4 255
+  s_1a1f9948978415::t_5d73c73a04cdc7 26-29,31-48
+  s_a7da7c364dc0d2::t_34d0cacf24989e 362-366
+src/mirror/download.rs
+  s_912223cd33a13d::t_243a6adf45fd0c 1,66
+  s_a7da7c364dc0d2::t_a86bf475d1b289 195-201,203-207,212-216
+  s_912223cd33a13d::t_a9a282e74dc8f4 178
+  s_a7da7c364dc0d2::t_4269f13d941677 283-295
+  s_a7da7c364dc0d2::t_dd99b45ba705d3 14-15
+examples/dry.rs
+  s_912223cd33a13d::t_d57f7ed53b188b 13-15
+src/classify.rs
+  s_aeb11cf1e98765::t_b0b9c0bdaa891c 1,3-4,9,62
+  s_aeb11cf1e98765::t_51b2be96aa02fc 551-552,556,560
+  s_1a1f9948978415::t_9e64e75f950c9a 379-383,391,413-416,508-510,858-864
+  s_912223cd33a13d::t_a9a282e74dc8f4 51
+  s_200aeef2cc5dfb::t_b30b36a0913a4d 75,97-101
+  s_912223cd33a13d::t_243a6adf45fd0c 63,526
+  s_ee6372c5b5a90b::t_83be998a496ab2 874-913
+  s_aeb11cf1e98765::t_db0ccb2162b6f4 120-122
+  s_aeb11cf1e98765::t_57380daefd62ad 421,426-434
+  s_aeb11cf1e98765::t_247e7439bc4cd6 82-85
+  s_aeb11cf1e98765::t_f51f3472254027 601,604,607
+  s_200aeef2cc5dfb::t_627cfa97380768 619,622-628
+  s_b24017fd5435ec::t_faa7ffde6dd9ad 66-74,76
+  s_b24017fd5435ec::t_340b5e42d84efe 224-225
+  s_aeb11cf1e98765::t_cac24ef1cd8311 111-119,123-134,149-150,161-162
+  s_200aeef2cc5dfb::t_4f9a13574be454 105
+  s_b24017fd5435ec::t_6b8a85b59dbaa3 358-365,368-369
+  s_1a1f9948978415::t_348ba33ff688d0 185,187-192,217-218,840-848
+  s_200aeef2cc5dfb::t_7224c2ec51dde6 86,88-92,104,106
+  s_aeb11cf1e98765::t_bf9adf16d7ce50 638-639,642,644,649-657,731-732,735,740,745,748-752,754-772,774,776,784-789,803,813-815,868-871,921-923
+  s_aeb11cf1e98765::t_4267d9e93c7950 448-451,456,458,465,467,471-493
+  s_a7da7c364dc0d2::t_1f810362319453 527-530
+  s_6db21af08edf1e::t_ba00e8e17fad3a 198,202-207
+  s_200aeef2cc5dfb::t_ea000db237ef83 208-209,400-405,407,411-412,419,424-425
+  s_6db21af08edf1e::t_0967f723fa1f71 658-685,719,723-724
+  s_1a1f9948978415::t_fdd7d193ef4994 257-261
+  s_200aeef2cc5dfb::t_fdc5f627b894a0 408-410
+  s_ee6372c5b5a90b::t_3eaf7201318e4e 135,144-148
+  s_aeb11cf1e98765::t_85438afce9da35 349
+  s_200aeef2cc5dfb::t_48c24e95492109 210
+  s_1a1f9948978415::t_6d24c0df868858 5,10-13,15-19,21-26,28-47,50,59-61,64-65,77-81,87,93-95,102-103,107-110,151-160,163-174,182-184,186,193-197,199-201,211-216,219-223,226,232,238-239,248-256,262-266,268-269,271-273,275-279,284-291,296-298,315-348,350-357,366-367,370-378,384-390,392-399,406,417-418,420,422-423,435-447,452-455,457,459-464,466,468-470,494-507,511-525,531-550,553-555,557-559,561-578,581-600,602-603,605-606,608-618,620-621,629-637,640-641,643,645-648,725-730,733-734,736-739,741-744,746-747,753,773,775,777-783,790-802,804-812,816-823,828,834,838,849-857,865-867,872-873,914-920,924
+  s_aeb11cf1e98765::t_c0005652b648dc 267,270,274
+  s_200aeef2cc5dfb::t_f20f000b8136cb 686-718,720-722
+  s_ee6372c5b5a90b::t_5472c963663ef5 136-143,175-181,227-231,233-237,240-247,299-314,579-580
+  s_912223cd33a13d::t_c3f90950821b34 52
+  s_1a1f9948978415::t_3ff84b69248b50 280-283
+  s_1a1f9948978415::t_6240062cb43a57 292-295
+  s_1a1f9948978415::t_d64d1f2373c027 824-827
+  s_1a1f9948978415::t_2107e682ea025a 829-833
+  s_1a1f9948978415::t_361a58cc73ece8 835-837
+  s_1a1f9948978415::t_e51931bd23b556 839
+src/extract/assemble.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 62
+  s_912223cd33a13d::t_243a6adf45fd0c 7
+  s_912223cd33a13d::t_796f032fc7ffd5 142,156
+src/extract/pipeline.rs
+  s_912223cd33a13d::t_a81994bb068a5f 101-107
+  s_912223cd33a13d::t_a9a282e74dc8f4 3,36
+docs/database-conventions.md
+  s_912223cd33a13d::t_fad243359a9251 9
+src/ingest/mod.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 30
+src/extract/mod.rs
+  s_912223cd33a13d::t_a9a282e74dc8f4 35,38
+src/extract/prompt.rs
+  s_912223cd33a13d::t_5e23cab2635fe7 7-10,12
+  s_ee6372c5b5a90b::t_b50cd7acef7e02 14-18,60,71,86-87
+  s_912223cd33a13d::t_7ade36023792d2 77-84
+  s_912223cd33a13d::t_d57f7ed53b188b 1,3,6,11,13,23
+  s_912223cd33a13d::t_f53f461f15a3a1 43
+  s_912223cd33a13d::t_86bb6083dc4d47 65-68
+src/daily/mod.rs
+  s_1a1f9948978415::t_88fbd332848ec7 18,21-23,28
+examples/tzcheck.rs
+  s_c748f87ea9d0a8::t_a5938e6a8b3a6f 1-111
+probe/intent-head/Cargo.lock
+  s_eb111c50596ae4::t_c8f7317e2813ff 1-2334
+Cargo.lock
+  s_200aeef2cc5dfb::t_8a333513a66746 414,3005
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "9aaaf3426a06380ee3b25310f0b326397b28ec39",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_1a1f9948978415": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a34a1e-345b-4bdb-b251-80818b24c81f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_200aeef2cc5dfb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "04d6dfc2-fee5-4f33-837c-bbf6a043d81a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_3ee27c8f1157cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "765ea4ef-1543-454f-b542-588c7bb935d3",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_6db21af08edf1e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ac8630ff-c445-4717-ba4e-1e23ae9a8f08",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_912223cd33a13d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cae5a35-295b-4d3d-9b88-e0b729b9c41b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_a7da7c364dc0d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85e6d64b-e36f-40a3-a816-58d48b60251b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_aeb11cf1e98765": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "102bc6a9-b926-4d10-af55-4878408ae6c2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_b24017fd5435ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad62ec04-bcf5-490e-b39d-751960ce5090",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_c748f87ea9d0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7bf59029-b762-48b3-82ec-d96d3656a8f2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_df7161912801e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce59df7f-dc8e-43e3-961a-8db885c91a09",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_eb111c50596ae4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43534637-cdf5-4aac-b2d4-36f20bbb2a38",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_ee6372c5b5a90b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7d7c123-58e3-41f2-bb32-8e67379f8109",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_f0896dca7577d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "844dc01a-03df-4933-bd25-2e47e0da50a6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_f2d4179e56096d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c6f112e-f3d6-4baa-8c35-847bcae6de7d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

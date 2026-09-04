@@ -16,23 +16,44 @@ pub(super) const SUMMARY_MAX: usize = 100;
 // 领域类型
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 模型**被允许输出的全部东西**，就这四样：两个内容 + 两个控制。
+/// 模型**被允许输出的全部东西**，就这四样：两个内容 + 两个控制。**线上形态。**
 ///
 /// 其余 11 个字段由 ④ `assemble::assemble` 从真实消息算出，**一个都不采信模型**。
+///
+/// ⚠️ **`ref` 是字符串 `"E2"`，不是整数 2 —— 这是根治一个真实故障的类型选择。**
+/// 曾经它是 `Option<u32>`，而 prompt 明说「如 E2 就填 2」：唯一能区分
+/// 「便签编号」和「段内行号」的那个 `E` 被主动剥掉之后，`ref: 360` 和
+/// `msg_indexes: [360]` 在 schema 上完全同型。实测后果是模型把行号当 ref 填
+/// （一段 391 行、便签最大编号 102，它给了 E360 / E258 / E240）。
+/// 现在行号在 ref 这个位置上**根本无法表达** —— 模型只能照抄一个 `E` 开头的记号。
 #[derive(JsonSchema, Deserialize, Debug, Clone)]
-pub struct EventDraft {
-    /// 接【进行中的事件】的编号；新事件填 null。
-    ///
-    /// `r#ref` 是原始标识符 —— `ref` 是 Rust 关键字，但 serde / schemars 都按 `ref`
-    /// 出面，与 Python 版的字段名一致。
-    #[schemars(description = "接【进行中的事件】的编号；新事件填 null")]
-    pub r#ref: Option<u32>,
-    /// 本段内构成该事件的消息行号 `#N`。
+pub(super) struct WireDraft {
+    #[schemars(
+        description = "接【进行中的事件】的编号，照抄 E 开头的整个记号（如 \"E2\"）；本段新出现的事件填 null。行号 #N 不是 ref"
+    )]
+    pub(super) r#ref: Option<String>,
     #[schemars(description = "本段内构成该事件的消息行号 #N")]
-    pub msg_indexes: Vec<usize>,
+    pub(super) msg_indexes: Vec<usize>,
     #[schemars(description = "中文一句话摘要，≤100 字")]
-    pub summary: String,
+    pub(super) summary: String,
     #[schemars(description = "这件事还没了结 = true")]
+    pub(super) still_open: bool,
+}
+
+/// 校验**通过之后**的形态 —— `ref` 已经从 `"E2"` 解析成 `2`。
+///
+/// 线上形态与领域形态分开，是为了让「行号不能当 ref」这条由**类型**保证，
+/// 而不是由一条事后校验保证。解析只发生在 `model::validate` 一处，
+/// ④ `assemble` 拿到的永远是已经解析好的编号，不需要认识线上格式。
+///
+/// `r#ref` 是原始标识符 —— `ref` 是 Rust 关键字。
+#[derive(Debug, Clone)]
+pub struct EventDraft {
+    /// 接【进行中的事件】的编号；新事件是 `None`。
+    pub r#ref: Option<u32>,
+    /// 本段内构成该事件的消息行号 `#N`，已去重升序。
+    pub msg_indexes: Vec<usize>,
+    pub summary: String,
     pub still_open: bool,
 }
 

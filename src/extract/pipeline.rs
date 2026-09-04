@@ -1,6 +1,6 @@
 //! 调用链 —— 分段 → 段调用 → 自适应二分。
 //!
-//! **段之间必须串行**（后一段要看前一段的便签），并行只加在群与群之间（ADR-0004）。
+//! **段之间必须串行**（后一段要看前一段的便签），并行只加在群与群之间。
 //! 「是否切分」看运行时信号，**没有阈值参数**；两半共用同一份 `drafts` 且串行 ——
 //! **二分不产生接缝**。
 
@@ -33,7 +33,7 @@ pub(super) async fn one_call<M: SegmentModel + Sync>(
 
 /// 整段先试；模型吃不下就对半切，两半**按时间顺序、串行**跑。切不动了就抛出去。
 ///
-/// 「是否切分」是运行时看信号决定的，**没有阈值参数**（ADR-0004）。两半共用同一份
+/// 「是否切分」是运行时看信号决定的，**没有阈值参数**。两半共用同一份
 /// `drafts` 且串行 —— **二分不产生接缝**。
 ///
 /// 递归的 async 要装箱：Rust 的 `async fn` 不能直接自递归（future 大小无法确定）。
@@ -98,7 +98,13 @@ pub async fn extract<M: SegmentModel + Sync>(
     // 最后统一对齐：便签已经跑完，这里只修最终输出，不回头影响段内流程。
     // （不需要清空 draft —— `Draft.idx` 恒非空由 `merge` 在生产点断言。）
     let drafts = align(drafts, msgs);
-    orphans(&drafts, msgs);
+    // 分子和分母印在同一行 —— `orphans` 自己那条 warn 只有分子，没有事件总数就没法说
+    // 「改完变好了没有」，而它正是判 prompt / 便签改动有没有效的那个数。
+    tracing::info!(
+        events = drafts.len(),
+        orphans = orphans(&drafts, msgs),
+        "[抽取] 全群完成"
+    );
     drafts.values().map(|d| assemble(d, msgs)).collect()
 }
 

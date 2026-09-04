@@ -10,10 +10,9 @@
 //!
 //! 走的是和生产同一条 `view` —— 便签为空（它只有跑过模型才有内容，第一段本来就是空的）。
 //!
-//! 用途是**跟 Python 版逐字节对拍**（`../pychat2events` 的 `src.extract.preview`）：
-//! 那边的 `_body` / `_labels` / `render` / `_segments` / `_cut` 被真实样本校准过，
-//! 搬运是否等价，diff 一次就知道。实测 823 条样本双方 **59664 字节逐字节相同**、
-//! 分段边界同为 `(0,277) (277,535) (535,823)`。
+//! 用途是**离线看模型到底会读到什么**：脱敏干不干净、便签和箭头渲染对不对、
+//! 分段切在哪。改 `body` / `render` / `segment` 之后 diff 前后两份输出，
+//! 改动的影响面一眼可见 —— 不花 token，也不碰库。
 use chat2events_rs::{extract, ingest, window::Window};
 
 fn main() {

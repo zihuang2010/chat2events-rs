@@ -6,12 +6,9 @@
 //! `super::super::tests::{msgs, draft, …}`）。留在这里的是跨文件的性质测试
 //! （划分 / 便签流动 / 占位符与上限一致性 / 端到端）和 [`BisectStub`]。
 //!
-//! 断言集**逐条搬自 Python 版的 `_self_check`**（`../pychat2events/src/extract.py:943`）。
-//! 那 293 行是这条链上唯一一套被真实样本验证过的断言，不重新发明。
-//!
-//! 与 Python 的一处不同：那边的自检吃真实样本（`RAW_ROOT` 里的 3742 条），这边多数
-//! 用例自己造消息 —— 造的比借的快，且不依赖另一个仓库的样本文件（那个文件**会被就地
-//! 替换**，3742 → 823 已经发生过）。**逐字节对拍另有其人**：`examples/dry.rs`（实测 823 条样本双方 59664 字节相同）。
+//! **多数用例自己造消息，不吃真实样本** —— 造的比借的快，且不依赖任何会被就地替换的
+//! 样本文件（样本从 3742 换成 823 已经发生过，带条数的断言会当场变成假红）。
+//! 要看真实样本上的渲染产出，走 `examples/dry.rs`（不花 token）。
 
 use super::{model::*, pipeline::*, prompt::*, redact::*, types::*, *};
 use crate::{
@@ -138,7 +135,7 @@ impl SegmentModel for BisectStub {
         self.entering.lock().unwrap().push(open_refs.clone());
         // 走真实的 validate —— 桩也要过校验，否则测的就不是生产那条路
         validate(
-            vec![EventDraft {
+            vec![WireDraft {
                 r#ref: None,
                 msg_indexes: vec![1, segment_size],
                 summary: "自检桩".into(),
@@ -147,7 +144,8 @@ impl SegmentModel for BisectStub {
             segment_size,
             open_refs,
         )
-        .map_err(|e| SegError::Failed(e.into()))
+        // `to_string()` 走 `Display` = 运维版。桩不该是逐字证据的第三个出口。
+        .map_err(|e| SegError::Failed(e.to_string().into()))
     }
 }
 
@@ -250,7 +248,7 @@ fn the_prompt_and_the_masks_agree() {
     }
     // 反向：body 真的产出这三个（不是只在文档里一致）。
     // ⚠️ 手机号必须放在**字段锚点之外** —— `客户电话:138…` 会被 FIELD 整段掩成
-    //    `<略>`，`<手机号>` 根本轮不到出场（顺序是承重的，见 ADR-0001）。
+    //    `<略>`，`<手机号>` 根本轮不到出场（顺序是承重的）。
     let mut m = msgs(1).remove(0);
     m.text = "@李培尚 打不通 13581496310 / 客户姓名：张三".into();
     let s = body(&m);
@@ -259,10 +257,10 @@ fn the_prompt_and_the_masks_agree() {
     }
 }
 
-/// prompt 教模型输出的四样，必须**恰好**是 [`EventDraft`] 声明的四个字段。
+/// prompt 教模型输出的四样，必须**恰好**是 [`WireDraft`] 声明的四个字段。
 ///
 /// 这两处是同一件事的两份说法：schema 决定模型能输出什么，prompt 决定它以为该输出
-/// 什么。给 `EventDraft` 加一个字段而忘了改 prompt，模型不会知道要填它；从 prompt
+/// 什么。给 `WireDraft` 加一个字段而忘了改 prompt，模型不会知道要填它；从 prompt
 /// 里删掉一样而 schema 还留着，strict 模式会要求一个模型没被教过的键。两个方向都
 /// 编译得过、都不报错，只是抽取质量安静地掉下来。
 ///
@@ -271,7 +269,7 @@ fn the_prompt_and_the_masks_agree() {
 /// 钉住它只会制造每改一次 prompt 就要更新一次的噪声。
 #[test]
 fn the_prompt_teaches_exactly_the_fields_the_schema_declares() {
-    let schema = serde_json::to_value(schemars::schema_for!(EventDraft)).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(WireDraft)).unwrap();
     let fields: BTreeSet<&str> = schema["properties"]
         .as_object()
         .unwrap()
@@ -281,7 +279,7 @@ fn the_prompt_teaches_exactly_the_fields_the_schema_declares() {
     assert_eq!(
         fields,
         BTreeSet::from(["ref", "msg_indexes", "summary", "still_open"]),
-        "EventDraft 的字段变了 —— 先确认 prompt 那份清单跟着改了，再改这条断言"
+        "WireDraft 的字段变了 —— 先确认 prompt 那份清单跟着改了，再改这条断言"
     );
     for f in &fields {
         assert!(
@@ -289,7 +287,7 @@ fn the_prompt_teaches_exactly_the_fields_the_schema_declares() {
             "prompt 没教模型输出「{f}」"
         );
     }
-    // 反向由上面那条集合相等兜着：给 EventDraft 加字段会当场红，逼人去看 prompt。
+    // 反向由上面那条集合相等兜着：给 WireDraft 加字段会当场红，逼人去看 prompt。
     // **不去数 prompt 里的条目总数** —— 那会把「群里的两方」「回复箭头的三种含义」
     // 这些散文条目也算进来，改一句话就红一次，正是这条注释开头说的噪声。
 }
@@ -305,7 +303,7 @@ fn the_prompt_the_schema_and_summary_max_agree() {
         SYSTEM.contains(&format!("不超过 {SUMMARY_MAX} 字")),
         "prompt 教的上限跟 SUMMARY_MAX 不一致"
     );
-    let schema = serde_json::to_value(schemars::schema_for!(EventDraft)).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(WireDraft)).unwrap();
     let desc = schema["properties"]["summary"]["description"]
         .as_str()
         .unwrap();

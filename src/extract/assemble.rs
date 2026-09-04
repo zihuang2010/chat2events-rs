@@ -4,7 +4,7 @@
 //!
 //! 四件事按调用顺序住在这里：
 //!   * [`merge`] —— 段内行号 → 全局下标的换算，**唯一发生地**（承重不变量 6）；
-//!   * [`align`] —— 显式 `replyTo` 跨 draft 就并（**ADR-0002**，钥匙只有 `replyTo`）；
+//!   * [`align`] —— 显式 `replyTo` 跨 draft 就并（钥匙只有 `replyTo`）；
 //!   * [`assemble`] —— 除 `summary` 外每个字段都从真实消息算，承重校验就在那里；
 //!   * [`orphans`] —— 模型分组质量的哨兵，**只打不改**。
 
@@ -59,7 +59,7 @@ pub(super) fn merge(drafts: &mut BTreeMap<u32, Draft>, events: Vec<EventDraft>, 
 ///
 /// ⚠️ **钥匙只有 `replyTo`，绝不是订单号。** 同一个单号下可以有好几件互不相干的事
 /// （实测同单号且间隔 0 行的两个事件，一个「加同款保护拆」一个「加灯具维修」）——
-/// 订单号是「工单」的钥匙不是「事件」的钥匙（ADR-0002）。
+/// 订单号是「工单」的钥匙不是「事件」的钥匙。
 ///
 /// 全群跑一次，不逐段跑：**断开在段内，不在段边界**（便签已经把跨段那几个接住了）。
 pub(super) fn align(drafts: BTreeMap<u32, Draft>, msgs: &[Message]) -> BTreeMap<u32, Draft> {
@@ -139,7 +139,7 @@ pub(super) fn align(drafts: BTreeMap<u32, Draft>, msgs: &[Message]) -> BTreeMap<
 /// 承重不变量住在这里，**不在调用方** —— 「模型输出必须先校验再落库」，而调用方会忘记调。
 /// 只留承重的几条：`occurred_on` 的定义在本函数里构造上恒真，不重复校验。
 ///
-/// ⚠️ **一律 `Result` 不用 `panic!`**（`CLAUDE.md` 的 Rust 规矩，和 Python 版理由不同）：
+/// ⚠️ **一律 `Result` 不用 `panic!`**（`CLAUDE.md` 的 Rust 规矩）：
 /// `assert!` 在 release 下不会消失，但它会掀掉整轮 —— 而承重不变量 3 要求「某个群失败
 /// → 该群跳过一行不写，**整轮继续**」。所以群级失败一律走 `Result`。
 pub(super) fn assemble(d: &Draft, msgs: &[Message]) -> Result<Event, BoxError> {
@@ -153,7 +153,7 @@ pub(super) fn assemble(d: &Draft, msgs: &[Message]) -> Result<Event, BoxError> {
         .collect();
     let first_reply = internal.first().copied();
 
-    // agents 是**插入序去重**（Python 的 dict.fromkeys），不是排序 —— 顺序即出场顺序。
+    // agents 是**插入序去重**，不是排序 —— 顺序即出场顺序。
     let mut agents: Vec<String> = Vec::new();
     for m in &internal {
         if !agents.iter().any(|a| a == &m.sender_id) {

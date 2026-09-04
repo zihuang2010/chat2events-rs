@@ -58,7 +58,8 @@ pub(super) fn labels(msgs: &[Message]) -> BTreeMap<String, String> {
 // 渲染链 —— `view` 是「模型这一段看到什么」的唯一出口
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 便签：还开着**且还可能被接着说**的事件，每条 = `(编号, 摘要, 最后一条来源消息的原话)`。
+/// 便签：**还可能被接着说**的事件，每条 = `(编号, 摘要, 最后一条来源消息的原话)`。
+/// 包括还开着的，也包括刚闭合、还可能收到一句收尾的（摘要行尾标「（已了结）」）。
 ///
 /// 摘要是压缩过的（「等师傅上门」），而下一段开头的灰消息（「好了谢谢」）要跟原话对齐
 /// 才好判断归属 —— 所以带上原话。这就是「只读的重叠」。
@@ -69,13 +70,24 @@ pub(super) fn labels(msgs: &[Message]) -> BTreeMap<String, String> {
 ///
 /// **例外：本段有人显式 `replyTo` 它就捞回来，多远都捞**（实测最远回指 947 条）。
 ///
+/// **已闭合的事件也留，但只留「刚闭合」的那一段窗口**，行尾标「（已了结）」。
+/// 早先这里是 `if !d.still_open { continue }` 硬跳过，而平台的「已安排」一旦把事件闭合，
+/// 下一段开头的「好的 / 稍等 / 一个表情」就**没有 E 号可接** —— 模型只剩「新开一个事件」
+/// 或「丢弃」两条路，而 prompt 又在推它选前者。产出就是 `assemble::orphans` 那个哨兵
+/// 一直在喊的假事件（`asker_role=INTERNAL` 且全程无订单号的「应答尾巴」）。
+/// 留一段窗口给它接，是把这条路补上。
+///
+/// **闭合的不吃 `replyTo` 救回** —— 「显式回复就重开一件已经了结的事」正对着
+/// [`view`] 那条注释里的「一条群公告被回 20 次」的过度合并风险。看得见（可以主动接尾巴）
+/// 但捞不回来（stale 之后就是没了），两件事分开。
+///
 /// **撤下便签 ≠ 丢掉事件** —— draft 还在 `drafts` 里照样被 `super::assemble` 输出，撤的只是
 /// 「拿给模型看的那一份」。这是注意力问题，不是存储问题。
 ///
 /// **便签上必须带订单号**：`summary` 按契约不含 ID，可订单号正是这个群唯一可靠的关联键
 /// （误合并率 0.1%，而人员 33%、时间 ±30min 26%）。不带的话模型看到「E7: 客户要求加急」，
 /// 根本无从判断本段那条同单号的消息是不是接着它。**只是摆给模型看，关联仍由模型做** ——
-/// 代码不替它 join（同一单号下常有好几件互不相干的事，ADR-0004）。
+/// 代码不替它 join（同一单号下常有好几件互不相干的事）。
 pub(super) fn note(
     drafts: &BTreeMap<u32, Draft>,
     msgs: &[Message],
@@ -89,9 +101,6 @@ pub(super) fn note(
         .collect();
     let mut out = Vec::new();
     for (&r, d) in drafts {
-        if !d.still_open {
-            continue;
-        }
         let last_idx = *d.idx.last().expect("drafts 里不存 idx 为空的 draft");
         // saturating：二分时后一半的 lo 恒 > 前一半 draft 的 idx，正常不会倒过来；
         // 真倒过来说明这个 draft 刚被本段碰过，语义上就是「有动静」，不该撤。
@@ -100,7 +109,13 @@ pub(super) fn note(
             .idx
             .iter()
             .any(|&i| replied_to.contains(msgs[i].msg_id.as_str()));
-        if stale && !replied {
+        // 还开着的：stale 也能被本段显式 replyTo 捞回来。已闭合的：只看 stale。
+        let keep_row = if d.still_open {
+            !stale || replied
+        } else {
+            !stale
+        };
+        if !keep_row {
             continue;
         }
         let head = d.idx.iter().find_map(|&i| {
@@ -111,6 +126,12 @@ pub(super) fn note(
         let summary = match head {
             Some(h) => format!("{h} · {}", d.summary),
             None => d.summary.clone(),
+        };
+        // 标记拼进 summary，不进签名 —— `render` / `view` / `open_refs` 因此一行不用改。
+        let summary = if d.still_open {
+            summary
+        } else {
+            format!("{summary}（已了结）")
         };
         out.push((
             r,
@@ -209,8 +230,13 @@ pub(super) fn view(
     // 挂在便签上的给 E<ref>（模型可以接上去），其余的给一句原话。**不给 ref 是有意的** ——
     // 便签上没有的 ref 会被 validator 当成编造，而「显式回复就重开已闭合的事」正对着
     // 「一条群公告被回 20 次」的过度合并风险，宁可让它开一个新事件。
+    //
+    // ⚠️ **闭合的便签行不进 `on_note`**：`note` 现在把「刚闭合」的事件也摆上便签
+    // （给应答尾巴一个可接的去处），但那只是让模型**主动**判断要不要接。箭头是另一回事 ——
+    // 给它 `E<ref>` 就等于代替模型宣布「这条回复就是接着那件已了结的事」，正是上面那条
+    // 过度合并风险。摆着看得见、箭头只给原话，两件事分开。
     let mut on_note: BTreeMap<&str, String> = BTreeMap::new();
-    for (r, _, _) in &note_rows {
+    for (r, _, _) in note_rows.iter().filter(|(r, _, _)| drafts[r].still_open) {
         for &i in &drafts[r].idx {
             on_note.insert(msgs[i].msg_id.as_str(), format!("E{r}"));
         }
@@ -237,10 +263,23 @@ pub(super) fn view(
         let lost = want.len() - outside.len();
         tracing::info!(lo, hi, want = want.len(), linkable, lost, "[段外引用]");
     }
-    // 带进去 / 还开着。差额就是「上一整段没动静」被撤下的 —— 撤多撤少都不能是静默的。
+    // 带进去 / 还开着 / 其中刚闭合的。`carried - closed` 与 `open` 的差额就是
+    // 「上一整段没动静」被撤下的 —— 撤多撤少都不能是静默的。`closed` 单独一列，
+    // 因为它是新加的那一批（应答尾巴的去处），涨多少要看得见。
     let open_now = drafts.values().filter(|d| d.still_open).count();
-    if open_now > 0 {
-        tracing::info!(lo, hi, carried = note_rows.len(), open = open_now, "[便签]");
+    let closed = note_rows
+        .iter()
+        .filter(|(r, _, _)| !drafts[r].still_open)
+        .count();
+    if open_now > 0 || closed > 0 {
+        tracing::info!(
+            lo,
+            hi,
+            carried = note_rows.len(),
+            open = open_now,
+            closed,
+            "[便签]"
+        );
     }
 
     let refs = note_rows.iter().map(|(r, _, _)| *r).collect();
@@ -357,12 +396,13 @@ mod tests {
     }
 
     #[test]
-    fn note_evicts_the_stale_rescues_explicit_replies_and_skips_the_closed() {
+    fn note_evicts_the_stale_rescues_explicit_replies_and_keeps_the_recently_closed() {
         let ms = msgs(700);
         let probe: BTreeMap<u32, Draft> = [
             (1u32, draft(&[500], "近", true)),
             (2u32, draft(&[10], "远", true)),
-            (3u32, draft(&[505], "闭", false)),
+            (3u32, draft(&[505], "刚闭", false)),
+            (4u32, draft(&[20], "早就闭", false)),
         ]
         .into();
         let kept = |m: &[Message], keep: usize| -> Vec<u32> {
@@ -371,19 +411,53 @@ mod tests {
                 .map(|(r, _, _)| r)
                 .collect()
         };
+        assert_eq!(kept(&ms, 1000), [1, 2, 3, 4], "窗口够大时一个都不该撤");
         assert_eq!(
-            kept(&ms, 1000),
-            [1, 2],
-            "窗口够大时不该撤，闭合的本来就不该进"
+            kept(&ms, 200),
+            [1, 3],
+            "窗口外的没撤下去；刚闭合的要留着给应答尾巴接"
         );
-        assert_eq!(kept(&ms, 200), [1], "窗口外的没撤下去");
 
         let mut pulled = ms.clone();
         pulled[650].reply_to = Some(ms[10].msg_id.clone()); // 本段显式引用那件远事
         assert_eq!(
             kept(&pulled, 200),
-            [1, 2],
+            [1, 2, 3],
             "被 replyTo 指到的必须捞回来，多远都捞"
+        );
+
+        let mut pulled_closed = ms.clone();
+        pulled_closed[650].reply_to = Some(ms[20].msg_id.clone()); // 指向早就闭合的 E4
+        assert_eq!(
+            kept(&pulled_closed, 200),
+            [1, 3],
+            "闭合的不吃 replyTo 救回 —— 「回一句就重开已了结的事」是过度合并"
+        );
+    }
+
+    #[test]
+    fn closed_notes_are_marked_and_get_no_linkable_ref() {
+        let ms = msgs(700);
+        let probe: BTreeMap<u32, Draft> = [
+            (1u32, draft(&[500], "还在等师傅", true)),
+            (2u32, draft(&[505], "已安排", false)),
+        ]
+        .into();
+        let rows = note(&probe, &ms, 600, 700, 10_000);
+        assert_eq!(rows[0].1, "还在等师傅", "还开着的不该带标记");
+        assert_eq!(rows[1].1, "已安排（已了结）", "闭合的便签行没标出来");
+
+        // 段外 replyTo 指向闭合事件的来源消息：便签上看得见，箭头却只能给原话
+        let mut ms2 = ms.clone();
+        ms2[650].reply_to = Some(ms[505].msg_id.clone());
+        let (text, refs) = view(&ms2, 600, 700, &probe, SEG);
+        assert!(
+            refs.contains(&2),
+            "闭合的便签行仍要进 open_refs（模型可以主动接）"
+        );
+        assert!(
+            !text.contains("↩回复 E2"),
+            "闭合事件不该给可接的 E 号箭头 —— 那是替模型宣布归属"
         );
     }
 

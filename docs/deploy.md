@@ -124,6 +124,21 @@ cargo build --release
 
 ⚠️ 这个目录同时是 webUI 下钻的可见范围 —— 超出保留期的事件取不到原文。
 
+### ⚠️ raw 区是未脱敏的客户正文，权限跟 `secrets.toml` 同级
+
+这 36 GB 里有客户手机号、门牌号级住址、真实姓名（实测 1850 条：193 / 88 / 101）。
+`mirror` 现在**建目录 0700、建文件 0600**，不再依赖部署时的 umask。
+同理 `<cache_dir>/*-nearest.json`（类心模型，`vocab` 是字符 bigram，
+姓名片段可读回来）也是 0600 —— 它和同目录那份只存 `sha256` 的打标缓存**不是一个密级**。
+
+⚠️ **`mode()` 只在创建时生效，已经落地的旧文件保持原权限。**
+从 0.1.5 之前的版本升上来时，在目标机上执行一次：
+
+```bash
+chmod -R go-rwx /var/lib/chat2events/data/raw
+find /var/lib/chat2events -name '*-nearest.json' -exec chmod 600 {} +
+```
+
 ### 出网白名单
 
 | 目标 | 用途 |

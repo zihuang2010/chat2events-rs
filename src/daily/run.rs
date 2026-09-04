@@ -6,9 +6,9 @@
 use super::tally::{Outcome, Tally};
 use crate::{
     Result,
-    classify::{self, CURRENT_VERSION},
+    classify::{CURRENT_VERSION, Classifier, Labels},
     config::Config,
-    extract::{self, LiveModel},
+    extract::{self, Event, LiveModel},
     ingest::{self, IngestError},
     join,
     llm::Llm,
@@ -23,26 +23,84 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 跑一轮。
+/// 跑一轮 —— 日常跑批。窗口是 `[T-N, T-1]`，`T` = 今天。
+///
+/// 补跑历史走 [`run_span`]：**不要**拿这个函数循环喂过去的日期，那样窗口两两重叠，
+/// 同一天会被抽两遍，白烧一倍 token。
 pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
-    // DDL 漂移要在第一秒暴露。Python 版踩过：改了 schema.sql 但库没迁移，
+    let run_date = chrono::Local::now().date_naive();
+    let w = Window::new(run_date, config.ingest.lookback_days);
+    run_span(config, llm, pool, run_date, w).await
+}
+
+/// 跑一轮，窗口由调用方给。
+///
+/// ⚠️ **宽窗口会写穿冻结区（承重不变量 1）。** `store::stray_days` 校验的是
+/// 「事件落在**传进来的**窗口内」—— 窗口一宽，那道守卫就跟着一起放宽了。
+/// 这是补跑该有的样子（人工授权的整体删重写），但调用方有义务把这件事喊出来，
+/// 别让补跑在日志上跟日常跑批长得一模一样。见 `examples/backfill.rs`。
+pub async fn run_span(
+    config: &Config,
+    llm: &Llm,
+    pool: &MySqlPool,
+    run_date: NaiveDate,
+    w: Window,
+) -> Result<()> {
+    // DDL 漂移要在第一秒暴露。踩过一次：改了 schema.sql 但库没迁移，
     // **抽取跑完 23 分钟才在落库那步炸掉**。跑批是无人值守的。
     store::check_schema(pool).await?;
 
-    let run_date = chrono::Local::now().date_naive();
-    let w = Window::new(run_date, config.ingest.lookback_days);
+    // ⑤ 的词表和打标缓存 —— **整轮构造一次**，跟 `Llm` / 连接池一个待遇。
+    // 读不到词表 / 缓存目录写不了 = 整轮死（启动期资源，本来就该整轮死），
+    // 不是某个群的事：那样每个群都会各失败一次，账记一千遍原因是同一个。
+    // 空词表 = v0（还没有词表），是正常状态不是错误。
+    let mut classifier = Classifier::new(
+        CURRENT_VERSION,
+        store::read_taxonomy(pool, CURRENT_VERSION).await?,
+        llm.clone(),
+        &config.classify.cache_dir,
+    )?;
+    // 本地类心，由 `recompute` 训练并写出（`src/nearest.rs`）。
+    // **文件不存在 = 还没训练过，退回全部问模型** —— v0 和首次重打标之前的正常状态。
+    // 文件在但坏了才是整轮死：静默当没有会让跑批悄悄多烧几万次调用。
+    // 挂上它是**口径一致**的手段：重打标和这里用同一个模型、同一个 margin，
+    // 否则冻结区和 `[T-2, T-1]` 会在边界上给同类事件不同的标签（承重不变量 1）。
+    let centroids = match crate::nearest::Nearest::load(classifier.model_path())? {
+        Some(m) => {
+            let n = m.class_count();
+            classifier.attach(m, config.classify.margin);
+            n
+        }
+        None => 0,
+    };
+    let classifier = std::sync::Arc::new(classifier);
+    tracing::info!(
+        taxonomy_version = CURRENT_VERSION,
+        types = classifier.type_count(),
+        centroids,
+        margin = config.classify.margin,
+        "词表就绪{}",
+        if classifier.type_count() == 0 {
+            "（空 = v0，全部 __untyped__，不发打标请求）"
+        } else {
+            ""
+        }
+    );
+
     // **整轮**预算，各阶段共用同一份 —— 每个阶段各给一份就不叫整轮预算了。
     let deadline = Instant::now() + Duration::from_secs(config.daily.round_deadline_secs);
 
     // **开轮第一行就是窗口。** 「跑完了但库里没数据」最常见的原因是窗口和数据错开
     // （样本停更、lookback 配小了），而那条信息此前只出现在收尾那行日志里 ——
     // 排查的人得先读完一整轮日志才看得到自己读的是哪两天。
+    //
+    // 不打 `lookback_days`：日常跑批里它恒等于 `days`（那才是它的直接后果），
+    // 补跑时窗口根本不由它定 —— 打出来只会是一个和实际窗口对不上的数。
     tracing::info!(
         run_date = %run_date,
         since = %w.since(),
         until = %w.until(),
         days = w.days().len(),
-        lookback_days = config.ingest.lookback_days,
         deadline_secs = config.daily.round_deadline_secs,
         "开始跑批"
     );
@@ -114,12 +172,19 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
         deadline,
         &mut t,
         |corp, room| {
-            let (root, pool, model, w) = (root.clone(), pool.clone(), model.clone(), w.clone());
+            let (root, pool, model, w, classifier) = (
+                root.clone(),
+                pool.clone(),
+                model.clone(),
+                w.clone(),
+                classifier.clone(),
+            );
             async move {
                 run_room(
                     &root,
                     &pool,
                     &model,
+                    &classifier,
                     run_date,
                     &corp,
                     &room,
@@ -187,11 +252,11 @@ pub async fn run(config: &Config, llm: &Llm, pool: &MySqlPool) -> Result<()> {
 /// **这不是给 ⑦ 开接缝** —— `CLAUDE.md` 明确不建存储层抽象接口，`run_room` 里那句
 /// `store::write_room` 是写死的。
 ///
-/// **并行只加在群与群之间**（ADR-0004）—— 段之间必须串行（后一段要看前一段的便签）。
+/// **并行只加在群与群之间**—— 段之间必须串行（后一段要看前一段的便签）。
 /// 在飞的最多 `concurrency` 个，背压靠 `JoinSet` 自己，跟 `mirror` 一个写法，不用信号量。
 ///
 /// ⚠️ **`room_concurrency` 今天量的是读取（本机核数），③ 接上之后约束变成端点 TPM，
-/// 必须重新量**（ADR-0004 给了公式 `N ≈ TPM额度 / 14000`）。
+/// 必须重新量**（公式 `N ≈ TPM额度 / 14000`）。
 ///
 /// `deadline` 是**整轮**的预算（`mirror` 已经花掉一部分）。到点之后不再开新的群，
 /// 在飞的跑完 —— 那是事务边界，砍在半路会让一个群只写进去一半（承重不变量 2）。
@@ -234,6 +299,7 @@ pub(super) async fn run_room(
     raw_root: &std::path::Path,
     pool: &MySqlPool,
     model: &LiveModel,
+    classifier: &Classifier,
     run_date: NaiveDate,
     corp: &str,
     room: &str,
@@ -259,30 +325,58 @@ pub(super) async fn run_room(
         tracing::debug!(corp = %corp, room = %room, "窗口内没有消息，不写任何行");
         return Ok(Outcome::Empty);
     }
-    let msgs = conv.msgs.len();
+    // ⚠️ **拆开 `Conversation`，让明文正文能在 ③ 返回时就地释放。**
+    // 两个字段被绑在一个结构里，但消费时刻是错开的：`msgs` 到 ③ 为止，`msg_counts`
+    // 要到下面 ⑥ 才读。不拆的话整群**未脱敏正文**被 `msg_counts` 拖着，横跨全部
+    // 模型调用（一个群十来段 × 118~168 s）一直活到落库之后 —— 而 `redact::body`
+    // 的脱敏副本同一时刻也在内存里，同一份内容存了两遍。
+    // 拆开之后明文的驻留窗口从「分钟级 × `room_concurrency`」缩到段级。
+    let ingest::Conversation { msgs, msg_counts } = conv;
+    let n_msgs = msgs.len();
 
-    // ③④ 抽取装配。`Ok(vec![])` 是合法结果（这几天确实没有业务事件），
+    // ③④ 抽取装配 ＋ ⑤ 打标。`Ok(vec![])` 是合法结果（这几天确实没有业务事件），
     // 与 `Err` **绝不混淆**（承重不变量 4）。
-    let (events, reason) = match extract::extract(&conv.msgs, model, segment_msgs).await {
-        Ok(evs) => (Some(evs), None),
+    //
+    // ⑤ 在**事务外**：在 store 里逐个调，缓存未命中就是持锁发 N 次模型请求，
+    // 而且会让 store 反向依赖 classify。
+    //
+    // ⚠️ **打标失败和抽取失败同一个待遇**（该群本轮 failed、一行不写）。
+    //    降级成全 `__untyped__` 是拿「归不上去」冒充「没算出来」—— 承重不变量 4
+    //    禁止，而且会污染「`vN` + `__untyped__` 占比」这个升版判据。
+    let (tagged, reason) = match extract::extract(&msgs, model, segment_msgs).await {
+        Ok(evs) => {
+            let sums: Vec<&str> = evs.iter().map(|e| e.summary.as_str()).collect();
+            match classifier.classify(&sums).await {
+                Ok(types) => (Some((evs, types)), None),
+                Err(e) => {
+                    tracing::error!(corp = %corp, room = %room, "打标失败，该群本轮 failed：{e}");
+                    (None, Some(format!("打标失败：{e}")))
+                }
+            }
+        }
         Err(e) => {
             tracing::error!(corp = %corp, room = %room, "抽取失败，该群本轮 failed：{e}");
             (None, Some(e.to_string()))
         }
     };
-    let status = if events.is_some() {
+    // **明文正文到此为止。** 下面 ⑥⑦ 只碰 `msg_counts` 和 ④ 装配出来的事实
+    // （`Event.summary` 是模型写的，不是原文）。显式 drop 而不是等作用域结束 ——
+    // 落库那几步在等 MySQL，没必要让整群客户消息陪着等。
+    drop(msgs);
+
+    let status = if tagged.is_some() {
         Status::Ok
     } else {
         Status::Failed
     };
-    let evs = events.as_deref().unwrap_or(&[]);
-
-    // ⑤ 打标 —— **在事务外**算好传给 ⑥ 和 ⑦：在 store 里逐个调，v1 缓存未命中就是
-    // 持锁发 N 次 embedding 请求，而且会让 store 反向依赖 classify。
-    let types: Vec<&str> = evs.iter().map(|e| classify::classify(&e.summary)).collect();
+    let events: Option<&[Event]> = tagged.as_ref().map(|(e, _)| e.as_slice());
+    let evs = events.unwrap_or(&[]);
+    let labels: &[Labels] = tagged.as_ref().map(|(_, t)| t.as_slice()).unwrap_or(&[]);
+    // ⑥ 只吃主类 —— 副类不进任何指标（见 `classify::Labels`），只随 ⑦ 落 `event_types`。
+    let types: Vec<&str> = labels.iter().map(Labels::primary).collect();
 
     // ⑥ 指标：消息级搭 ① 的车（不依赖抽取，失败的群照样有），事件级读刚抽出来的事实。
-    let group = metrics::group_rows(corp, room, w, &conv.msg_counts, events.as_deref(), status);
+    let group = metrics::group_rows(corp, room, w, &msg_counts, events, status);
     let agent = metrics::agent_rows(
         corp,
         room,
@@ -310,9 +404,9 @@ pub(super) async fn run_room(
             corp,
             room,
             w,
-            events.as_deref(),
-            &types,
-            CURRENT_VERSION,
+            events,
+            labels,
+            classifier.version(),
             reason.as_deref(),
             &group,
             &agent,
@@ -327,11 +421,11 @@ pub(super) async fn run_room(
     }
     wrote.map_err(|e| IngestError::Room(format!("落库失败：{e}")))?;
 
-    Ok(match events {
-        Some(evs) => Outcome::Ok {
-            msgs,
+    Ok(match tagged {
+        Some((evs, _)) => Outcome::Ok {
+            msgs: n_msgs,
             events: evs.len(),
         },
-        None => Outcome::Failed { msgs },
+        None => Outcome::Failed { msgs: n_msgs },
     })
 }

@@ -1,4 +1,4 @@
-//! 分段 —— 把一个群一天切成 `ceil(n / segment_msgs)` 段（**ADR-0004**）。
+//! 分段 —— 把一个群一天切成 `ceil(n / segment_msgs)` 段。
 //!
 //! 这里只管「切在哪」。「要不要再切」是运行时看模型信号决定的，在 [`super::pipeline::run`] 里，
 //! **没有阈值参数**。
@@ -9,7 +9,7 @@
 use crate::ingest::Message;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 分段与自适应二分（ADR-0004）
+// 分段与自适应二分
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 把切点从 `target` 挪到附近**相邻消息时间间隔最大**的那一处。返回值恒在 `(lo, hi)`。
@@ -31,8 +31,8 @@ pub(super) fn cut(msgs: &[Message], lo: usize, hi: usize, target: usize, span: u
         start < end,
         "cut 窗口空了：lo={lo} hi={hi} target={target} span={span}"
     );
-    // ⚠️ **平局取最小下标**（Python `max(win, key=...)` 的行为）。Rust 的 `max_by_key`
-    // 取**最后一个**最大值，直接用会让分段边界与 Python 版不一致。
+    // ⚠️ **平局取最小下标是契约**，由 `ties_pick_the_lowest_index` 钉住。`max_by_key`
+    // 取**最后一个**最大值，直接用会静默挪动分段边界 —— 全平手时尤其明显。
     let mut best = start;
     let mut best_gap = msgs[start].at - msgs[start - 1].at;
     for i in (start + 1)..end {
@@ -126,8 +126,8 @@ mod tests {
 
     #[test]
     fn cut_breaks_ties_on_the_lowest_index() {
-        // 全是 30s，处处平手 —— Python 的 max(win, key=...) 取第一个，
-        // Rust 的 max_by_key 取最后一个，反了分段边界就跟 Python 版不一致
+        // 全是 30s，处处平手 —— 契约是取第一个（最小下标）；
+        // max_by_key 取最后一个，反了分段边界就静默挪位
         let ms = msgs(200);
         let target = 100usize;
         let r = 200 / 20;

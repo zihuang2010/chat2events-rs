@@ -1,6 +1,6 @@
 //! 路径布局 —— **只有这个文件知道**。`mirror` 写文件时也问这里要路径，两边必须同一个函数。
 //!
-//! 本地布局是 OSS 的字节级镜像（ADR-0005）：
+//! 本地布局是 OSS 的字节级镜像：
 //! `<raw_root>/<yyyyMM>/<corpId>/<officialRoomId>.ndjson`。
 
 use crate::window::Window;
@@ -44,6 +44,12 @@ pub fn room_path(raw_root: &Path, month: &str, corp: &str, room: &str) -> PathBu
 ///
 /// ⚠️ 「有文件」不等于「窗口内有消息」—— 判断后者要读文件，那是 [`super::read_room`]
 /// 的活。窗口内一条消息都没有的群，[`super::read_room`] 返回空 `msgs`，由调用方跳过。
+///
+/// ⚠️ **同步阻塞，`daily::run_span` 里没有 `spawn_blocking` 包它** ——
+/// 2 个月 × N 个 corp × 上千文件的嵌套 `read_dir`。今天成立是因为**阶段顺序**：
+/// 它跑在 ① 拉取之后、`run_rooms` 之前，此刻 runtime 上没有在飞的模型调用。
+/// 跟 `mirror::download` 的 `sync_all` 同一条论证（那儿写在
+/// `write_and_verify` 的注释里）。**改阶段顺序之前先回来看这一段。**
 pub fn list_rooms(raw_root: &Path, w: &Window) -> Vec<(String, String)> {
     // BTreeSet 顺便排序：调用方按固定顺序跑批，日志和失败列表才可比。
     let mut found = BTreeSet::new();
@@ -104,6 +110,11 @@ pub(super) fn files(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Vec<
 /// [`super::read_by_ids`] 会显式报「取不到这些 msg_id」，不会静默少给。
 ///
 /// 删不掉只是磁盘继续涨，不是数据错 —— 记 warn，不掀翻这一轮。
+///
+/// ⚠️ **同步阻塞，没有 `spawn_blocking`。** `remove_dir_all` 一个月目录最大约
+/// 18 GB / 上千文件，每月轮转触发一次。跟 [`list_rooms`] 同一条论证：它跑在
+/// ① 拉取之后、`run_rooms` 之前，此刻 runtime 上没有在飞的模型调用。
+/// **这个前提住在 `daily::run_span` 的阶段顺序里，代码本身拦不住它被改。**
 pub fn prune(raw_root: &Path, w: &Window, retention: u32) -> usize {
     assert!(
         retention >= 1,

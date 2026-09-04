@@ -23,9 +23,6 @@
 //! 代码映射回 `msg_id`（唯一发生地是 `assemble::merge`）。序号越界直接是校验失败 ——
 //! 这从根本上消灭了「模型编造 msgid」这个失败模式。
 //!
-//! 论证与实测数字在 **ADR-0001**（正文脱敏）· **ADR-0002**（`replyTo` 对齐）·
-//! **ADR-0004**（串行链传便签、自适应二分）。搬运自 `../pychat2events/src/extract.py`。
-//!
 //!
 //! **文件布局**（`mod.rs` 只装模块文档、声明和导出，生产代码一律在兄弟文件里；
 //! 拆成目录只为导航 —— 接口一字未动，对外仍然只有上面那三样）：
@@ -35,10 +32,10 @@
 //!   types.rs     EventDraft · Draft · Event · SUMMARY_MAX —— 领域类型
 //!   pipeline.rs  调用链：分段 → 段调用 → 自适应二分
 //!   model.rs     端口 SegmentModel · 校验 · LiveModel（端点知识只在这里）
-//!   redact.rs    正文脱敏与订单号正则（ADR-0001）
+//!   redact.rs    正文脱敏与订单号正则
 //!   prompt.rs    SYSTEM —— 逐字搬运，改一个字所有实测结论作废
 //!   render.rs    便签 · 匿名标签 · 行号箭头，view 是唯一出口
-//!   segment.rs   分段与切点选择（ADR-0004）
+//!   segment.rs   分段与切点选择
 //!   assemble.rs  ④ merge / align / assemble / orphans
 //! ```
 

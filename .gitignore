@@ -10,6 +10,12 @@
 # 跑批日志（main.rs 的 `2> run.log`）—— 里面有群 ID 和失败明细
 /*.log
 
+# 词表审阅报告（taxonomy 的 out_dir 默认就是仓库根）—— 里面是**逐字的 summary**：
+# 40 条未分类样例 + 每类 3 条代表样例。按 ADR-0001 姓名和自由文本地址一概不掩，
+# 所以这份文件里有客户 PII，一次 `git add .` 就进仓库了。
+# ⚠️ taxonomy_*.toml 故意不忽略：那是词表真相，值得留在仓库里让人自己决定。
+/review_*.md
+
 # 开发机上的本地覆盖，因人而异。
 # ⚠️ 之前只靠 ~/.config/git/ignore 挡着 —— 那是这台机器的私事，
 #    换台机器 clone 下来就没人拦了，所以写进仓库。
@@ -18,7 +24,20 @@
 # macOS
 .DS_Store
 
-# 本地一次性排查用的 example。
-# ⚠️ dry.rs / smoke.rs 已被跟踪，不受此规则影响（gitignore 管不到已跟踪文件），
-#    它们是 CLAUDE.md 里写明的验证路径，本来就该留在仓库里。
-/examples
+# 本地一次性排查用的 example **默认忽略**，写进仓库的那几个逐个放行。
+# ⚠️ 用 `/examples/*` 不是 `/examples`：目录本身被排除时，里面的文件**再也否定不回来**
+#    （git 不会下降到被排除的目录里），`!` 那几行会全部失效。
+# 放行的判据是「有没有文档指着它」—— 下面这些在 CLAUDE.md / docs/ / ADR 里都是
+# 写明的验证路径或运维入口，不是排查用的草稿。
+/examples/*
+!/examples/dry.rs
+!/examples/smoke.rs
+!/examples/tzcheck.rs
+!/examples/backfill.rs
+!/examples/taxonomy.rs
+!/examples/recompute.rs
+
+# 离线实验（probe/）：构建产物和模型权重不进 git。
+# 代码本身进 —— 它是独立 crate，父仓库的 cargo / CI 看不见它。
+/probe/*/target
+/probe/*/models

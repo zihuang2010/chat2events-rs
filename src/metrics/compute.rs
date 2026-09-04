@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 // 两张表的行 + 两个口径枚举 —— 只有形状
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 抽取状态。**用枚举不用字符串** —— Python 那边要在函数口上手写
+/// 抽取状态。**用枚举不用字符串** —— 裸字符串要在函数口上手写
 /// `if status not in ("ok","failed"): raise`，这里由类型兜住。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -38,7 +38,7 @@ impl Status {
 pub enum Attribution {
     #[default]
     FirstResponder,
-    /// 生产今天恒走默认口径 —— 切换入口（手动重算 CLI）还没搬（见 `docs/status.md` ⑥ 行）。
+    /// 生产今天恒走默认口径 —— 切换入口（手动重算 CLI）还没做。
     /// 这个变体由测试钉着「事实全存、口径可换、不重跑 LLM」，允许 dead_code 而不是删掉它。
     #[allow(dead_code)]
     AllParticipants,

@@ -1,4 +1,4 @@
-//! 一个月文件怎么下 —— **ADR-0005 那三条承重规则就在这个文件里**：
+//! 一个月文件怎么下 —— **三条承重规则就在这个文件里**：
 //! 严格只读到 `ndjson_position` 为止 · 本地字节数必须等于它 · 本地更长就作废重拉。
 //!
 //! 瞬时失败共尝试 [`ATTEMPTS`] 次；**三道校验一次都不重**，那是旧副本，再要还是它。
@@ -11,6 +11,8 @@ use super::{
     index::MonthFile,
 };
 use crate::ingest;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{fs, io::Write, path::Path, time::Duration};
 
 /// 单个月文件的下载超时。月末一个群 18 MB，两分钟绰绰有余。
@@ -61,7 +63,7 @@ fn http_status_error(status: reqwest::StatusCode, url: &str) -> MirrorError {
 }
 
 /// 瞬时失败重试。**只有 [`MirrorError::Transient`] 会重来** —— 三道校验失败一次都不重，
-/// 那是 CDN 给了旧副本，再要一次还是同一份（ADR-0005 结尾）。
+/// 那是 CDN 给了旧副本，再要一次还是同一份。
 ///
 /// 重来时 [`download_one`] 会重新读一次本地文件大小，所以「上一次写到哪」不需要在这里
 /// 传递 —— 本地是字节级镜像，那个状态本来就存在磁盘上。
@@ -173,7 +175,7 @@ fn write_and_verify(
     if body.len() as u64 != want {
         return Err(format!(
             "CDN 只给了 {} 字节，期望 {want}（本地 {have} → 上游 {position}）。\
-             多半是命中了陈旧缓存，见 ADR-0005 结尾",
+             多半是命中了陈旧缓存",
             body.len()
         )
         .into());
@@ -190,16 +192,28 @@ fn write_and_verify(
         .into());
     }
 
+    // raw 区是**未脱敏的客户正文**（实测 1850 条里 193 条带手机号、88 条带门牌号级
+    // 住址、101 处真实姓名），保留两个月约 36 GB。跟 `secrets.toml` 一个待遇：
+    // **只有属主能读**，不指望部署时的 umask —— 默认给出的是 0755 / 0644，
+    // 也就是整个跑批机上任何账号都能翻客户资料。
+    // `mirror` 是 raw 区唯一写入方，所以模式位设在这一处就覆盖全部。
+    // ⚠️ `mode()` 只在**创建**时生效。已经落地的旧文件保持原权限，
+    //    升级到这一版时要在目标机上手工 `chmod` 一次，见 `docs/deploy.md`。
     if let Some(dir) = local.parent() {
-        fs::create_dir_all(dir)?;
+        let mut b = fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        b.mode(0o700);
+        b.create(dir)?;
     }
     // 追加 + fsync。**这里不 spawn_blocking**：拉取是跑批的第一步，跑完才进抽取，
     // 此刻 runtime 上没有在飞的模型调用会被卡住 —— 跟硬规则点名的 `read_room`
     // （DuckDB，与 N 个模型调用同时在飞）不是一回事。
-    let mut fh = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(local)?;
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut fh = opts.open(local)?;
     fh.write_all(body)?;
     fh.sync_all()?;
 
@@ -264,6 +278,19 @@ mod tests {
         let p = tmp("cold");
         write_and_verify(&p, A, 0, 8, 1).unwrap();
         assert_eq!(fs::read(&p).unwrap(), A);
+    }
+
+    /// raw 区放的是未脱敏的客户正文，权限跟 `secrets.toml` 同级。
+    /// 靠默认 umask 的话跑批机上任何账号都能翻 —— 这条钉住的是「不靠 umask」。
+    #[cfg(unix)]
+    #[test]
+    fn raw_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = tmp("mode");
+        write_and_verify(&p, A, 0, 8, 1).unwrap();
+        let mode = |q: &Path| fs::metadata(q).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&p), 0o600, "月文件权限过宽");
+        assert_eq!(mode(p.parent().unwrap()), 0o700, "月目录权限过宽");
     }
 
     #[test]

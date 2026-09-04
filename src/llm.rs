@@ -24,7 +24,7 @@
 //!
 //! 4. **超时不被那一层重试** —— 读过源码确认，不是推测：`retry/openai.rs:239` 的
 //!    `is_connection_error` 只认 `reqwest::Error::is_connect()`，超时走
-//!    `Err(error) => return Err(error)` 当场返回。这一条是承重的：超时是 ADR-0004
+//!    `Err(error) => return Err(error)` 当场返回。这一条是承重的：超时是自适应
 //!    二分的触发信号之一，若被重试 3 次吃掉，`timeout_secs=300` 会变成最坏 20 分钟
 //!    才浮出一个本该立刻切分的信号。**换 async-openai 版本时要重新确认这一条。**
 
@@ -49,6 +49,18 @@ use std::{fmt, time::Duration};
 /// 具名而不内联，跟 `mirror/download.rs` 那几个超时常量一个规矩。
 const TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 
+/// [`Llm::extract_retry`] 跑飞重发几次。跑飞是随机的、与输入规模无关，单次概率
+/// 实测约三分之一（2026-09-02，十余次调用）：重发 4 次后仍全中约 0.4%。
+/// 曾经是 2（单点 3.7%）—— 归纳 + 试打是几十次串行调用的长流程，单点 3.7% 摊到
+/// 八九次调用上就是约四分之一的概率掀翻整趟，正是「特别不稳」的主因之一。
+/// 每次代价 = 生成满输出上限的时间（4000 token 约半分钟），封顶可承受。
+const RUNAWAY_RETRIES: u32 = 4;
+
+/// [`Llm::extract_retry`] 超时重发几次。超时一次要吃满 `timeout_secs`（分钟级），
+/// 预算给小：偶发的端点抽风一次重发就能过，连着两次超时更可能是端点真出事了，
+/// 该报出来让人看，不该再安静地挂几分钟。
+const TIMEOUT_RETRIES: u32 = 1;
+
 /// 对话里的一轮。**存在的唯一理由是校验失败要重问一次**（③ 的 `MAX_RETRIES = 1`）：
 /// 把模型上一次的原始输出放回 `Assistant`、把校验报错放进新的 `User`，它才知道要改什么。
 /// 只发一条 `User` 的话，模型看不见自己错在哪。
@@ -60,7 +72,7 @@ pub enum Turn {
 
 /// 调用失败的三类，**处置方式不同所以必须在类型上分开**（跟 `IngestError` 一个规矩）。
 ///
-/// 前两个是 ADR-0004 说的「模型吃不下这一段」的两种表现，要翻译成同一个切分信号；
+/// 前两个是「模型吃不下这一段」的两种表现，要翻译成同一个切分信号；
 /// `Other` 一律不切。这条分界错一边的代价不对称：把连接错误当成「太大」，
 /// 会把一次网络故障放大成一整棵二分调用树（切成两半，两半照样断，再各切两半……）。
 #[derive(Debug)]
@@ -141,6 +153,59 @@ impl Llm {
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
         })
+    }
+
+    /// 复制一个 `max_tokens` 更小的自己 —— 给**输出规模已知很小**的调用点用。
+    ///
+    /// 配置里那个 64000 是「模型收得下的最大值」，不是任何一处的真实需求。它对 ③ 是
+    /// 对的（`Truncated` / `Timeout` 正是那边对半切的信号，压小会改掉切分行为），
+    /// 但对一次只吐十来个类的定稿，它意味着**跑飞时唯一会喊停的是 `timeout_secs`** ——
+    /// 实测三趟中两趟栽在这里，报出来是一个无从下手的 `Timeout`。
+    /// 上限贴着实际需求给，跑飞就秒撞 `Truncated`：同样是失败，但那句话有信息量。
+    pub fn with_max_tokens(&self, max_tokens: u32) -> Self {
+        Self {
+            max_tokens,
+            ..self.clone()
+        }
+    }
+
+    /// [`extract`](Self::extract) 外面包一层**坏运气重发**：跑飞（`Truncated`）和
+    /// 超时各自有限次重发（[`RUNAWAY_RETRIES`] / [`TIMEOUT_RETRIES`]），其余错误原样返回。
+    ///
+    /// 给 ⑤ 打标和 taxonomy 归纳用。这两条线的输出上限都贴着实际需求给（几千 token，
+    /// 正常输出只用几百），撞上 `Truncated` 只可能是模型陷入重复生成 ——
+    /// qwen3.8-flash 在 strict JSON schema 下随机中招，与输入规模无关（2026-09-02
+    /// 实测约三分之一）—— 重发就是正确处置，静默等死才是错的。
+    ///
+    /// ⚠️ **③ 抽取不许用这个。** 那边 `Truncated` / `Timeout` 是「这段太大、
+    /// 对半切」的信号，包上重发会掩盖真正的切分需求。所以重发是独立方法，
+    /// 不是 `extract` 的默认行为 —— ③ 继续裸调 `extract`。
+    pub async fn extract_retry<T>(
+        &self,
+        system: &str,
+        turns: &[Turn],
+    ) -> std::result::Result<Extracted<T>, LlmError>
+    where
+        T: JsonSchema + DeserializeOwned,
+    {
+        let (mut runaways, mut timeouts) = (0u32, 0u32);
+        loop {
+            match self.extract(system, turns).await {
+                // 静默重发等于不知道模型在跑飞。这两条 warn 是唯一的信号。
+                Err(LlmError::Truncated) if runaways < RUNAWAY_RETRIES => {
+                    runaways += 1;
+                    tracing::warn!(
+                        attempt = runaways,
+                        "模型跑飞（输出撞 max_tokens 上限），重发"
+                    );
+                }
+                Err(LlmError::Timeout) if timeouts < TIMEOUT_RETRIES => {
+                    timeouts += 1;
+                    tracing::warn!(attempt = timeouts, "请求超时，重发");
+                }
+                other => return other,
+            }
+        }
     }
 
     /// 按 T 的 schema 抽一个结构化结果出来。

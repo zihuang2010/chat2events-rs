@@ -18,8 +18,13 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] 
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# ⑤ 打标结果缓存的键。**存 hash 不存原文**：summary 里有客户姓名和地址
+# （脱敏明确不掩它们），而缓存只增不减 —— 原文一旦进去就是永久的。
+# 「sha256」是 CONTEXT.md / schema.sql 写死的契约，不换成 DefaultHasher（它的
+# 种子每进程随机，缓存键跨运行就不稳定了 —— 那等于没有缓存）。
+sha2 = "0.10.9"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "mysql", "chrono"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "1.1.4"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "chrono"] }

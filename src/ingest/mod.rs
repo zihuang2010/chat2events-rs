@@ -27,7 +27,7 @@
 //! 在 `read.rs`（camelCase 字段名只允许出现在那条 `SELECT ... AS ...` 里），
 //! 路径布局在 `layout.rs`（只被拼一次，没有第二处再去拆它）。
 //!
-//! 本地布局是 OSS 的**字节级镜像**（一个群一个月一个文件，见 ADR-0005）：
+//! 本地布局是 OSS 的**字节级镜像**（一个群一个月一个文件）：
 //!
 //! ```text
 //! <raw_root>/<yyyyMM>/<corpId>/<officialRoomId>.ndjson

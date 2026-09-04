@@ -24,12 +24,17 @@ pub enum Role {
 }
 
 impl Role {
-    /// 上游 `identityType` -> 领域角色。**唯一的解析点**（`read::message_from_row` 的取值处）。
+    /// 上游 `identityType` -> 领域角色。**唯一的解析点**。
     ///
     /// 认不出就是 `None`，由调用方判该群失败 —— **不能兜底成任意一边**：
     /// 判成 `Internal` 会把商家算进 `agents`，判成 `External` 会让平台的回复不再算首响，
     /// 两个方向都是静默把指标写歪。
-    pub(super) fn parse(s: &str) -> Option<Self> {
+    ///
+    /// 两个调用点：`read::message_from_row`（读上游 NDJSON）和 `store::read_events`
+    /// （从 MySQL 读回 `asker_role` 列）。后者读的正是 [`Role::as_str`] 写下去的字面量，
+    /// 所以走同一个 `match` —— 让 `store` 自己再写一遍 `== "INTERNAL"`，就等于把
+    /// 「上游只有这两个值」这条契约复制到第二处，而它错法是静默的。
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "INTERNAL" => Some(Self::Internal),
             "EXTERNAL" => Some(Self::External),
@@ -68,7 +73,9 @@ pub struct Message {
 /// ⚠️ **没有 `corp` / `room` 字段**：全项目零读取点 —— `daily::run_room` 一路带着自己的
 /// 那两个参数（它得先有 corp/room 才调得动 `read_room`），`Event` 的那两列来自
 /// `Message`。照 `CONTEXT.md`「已删除的字段」那张表的先例删掉：**删的是税，不是功能**。
-#[derive(Debug, Clone)]
+/// ⚠️ **不 derive `Clone`**：零使用点，而它是一个能静默复制整群未脱敏正文的口子。
+/// 真需要第二份的那天再加，顺便说明为什么需要。
+#[derive(Debug)]
 pub struct Conversation {
     pub msgs: Vec<Message>,
     /// 每天 (消息条数, 去重发言人数)。搭 `msgs` 的同一趟车算出来 ——

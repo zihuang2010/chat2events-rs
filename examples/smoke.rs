@@ -34,11 +34,8 @@ fn msg(i: usize, at: (u32, u32, u32), role: Role, who: &str, text: &str) -> Mess
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .init();
     let (cfg, secrets) = config::load_from_dir(&config::dir_from_args());
+    config::init_logging(&cfg.log);
     let llm = Llm::new(&cfg.llm, secrets.llm.api_key)?;
     let model = extract::LiveModel::new(llm);
 

@@ -24,10 +24,19 @@
 // 「这个模块对外的承诺」之间的分界，写在可见性上而不是靠自觉。
 //
 // **`pub` 的模块 = crate 外有真实读者的那几个**（`main` / `examples`）。
-// `classify` / `metrics` / `mirror` / `store` 只被 `daily` 消费，收 `pub(crate)` ——
+// `metrics` / `mirror` / `store` 只被编排层消费，收 `pub(crate)` ——
 // 「写库 SQL 一条不许外流」从口头约定变成可见性声明。集成测试的入口是
 // `daily::run`（pub），不受影响；哪天 `tests/` 要直接驱动 store / mirror 再放开。
-pub(crate) mod classify;
+//
+// ⚠️ `classify` 在 v1 之后转成 `pub`：`taxonomy` 的归纳与审阅、`recompute` 的重打标
+// 都拿 `Classifier` 和 `TaxonomyType` 说话，而 `examples/` 里那几个人工工具是它们的
+// 入口。转 `pub` 不破坏上面那条规矩 —— `classify` 里没有一行 SQL，读词表是 `store`
+// 的事，词表由调用方读好传进来（那同时也是「classify 不 import store」的由来）。
+//
+// **编排住在 lib 里，不住在 example**（跟 `main` / `daily` 同一条规矩）：
+// `taxonomy` 和 `recompute` 是两个人工触发的进程，`examples/*.rs` 只负责
+// 读配置、建资源、调它们。
+pub mod classify;
 pub mod config;
 pub mod daily;
 pub mod extract;
@@ -35,7 +44,10 @@ pub mod ingest;
 pub mod llm;
 pub(crate) mod metrics;
 pub(crate) mod mirror;
+pub(crate) mod nearest;
+pub mod recompute;
 pub(crate) mod store;
+pub mod taxonomy;
 pub mod window;
 
 #[cfg(test)]

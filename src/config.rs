@@ -24,6 +24,7 @@ pub struct Config {
     pub daily: DailyConfig,
     pub ingest: IngestConfig,
     pub extract: ExtractConfig,
+    pub classify: ClassifyConfig,
     pub llm: LlmConfig,
     pub mysql: MysqlConfig,
     pub log: LogConfig,
@@ -36,6 +37,33 @@ pub struct LogConfig {
     /// 端点侧的埋点情况见 `llm.rs` 里 create 调用处的注释。
     /// 环境变量 RUST_LOG 若存在会覆盖它 —— 临时排障不用改配置文件。
     pub level: String,
+}
+
+/// 起日志 —— **`main` 和所有 `examples/` 共用这一处**。
+///
+/// 日志一律走 stderr。**stdout 全程不写一个字节** —— 抽取结果由 ⑦ 落 MySQL，
+/// 跑批没有「把结果打出来」这条路径。写 stderr 是为了让 `2> run.log` 能单独收日志，
+/// 且重定向到文件/journald 时不掺 ANSI 颜色码。
+///
+/// ⚠️ **时间戳必须是本地时间**：`tracing_subscriber` 默认的 `SystemTime` 打的是 UTC，
+/// 在 UTC+8 上每一行都比墙钟少 8 小时 —— 排障时拿日志时间去对 `ps` / MySQL 的
+/// `NOW()` 会整整差一个时区。`ChronoLocal::rfc_3339()` 带 `+08:00` 后缀，
+/// 换台机器也不用猜它是哪个时区的。
+/// （库里时间列的时区问题是另一回事，见 `examples/tzcheck.rs`。）
+pub fn init_logging(cfg: &LogConfig) {
+    use std::io::IsTerminal;
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    // RUST_LOG 存在就听它的（临时排障不用改文件），否则走 config.toml
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.level));
+
+    fmt()
+        .with_env_filter(filter)
+        .with_timer(fmt::time::ChronoLocal::rfc_3339())
+        .with_writer(std::io::stderr)
+        // 重定向到文件或 journald 时别写 ANSI 颜色码，那是噪声
+        .with_ansi(std::io::stderr().is_terminal())
+        .init();
 }
 
 /// 跑批那一轮本身的参数 —— 不属于任何单个阶段，所以不塞进 `[ingest]`。
@@ -69,7 +97,7 @@ pub struct IngestConfig {
 
     /// 下载根地址（CDN）。拼上索引表的 `ndjson_object_key` 就是月文件的 URL。
     /// **不是密钥** —— 是个公开域名，所以在 config.toml 而不是 secrets.toml。
-    /// ⚠️ 这条路径配了 30 天 CDN 缓存且客户端绕不掉，见 ADR-0005 结尾。
+    /// ⚠️ 这条路径配了 30 天 CDN 缓存且客户端绕不掉。
     pub download_base_url: String,
 
     /// 本地 raw 区保留几个月，更老的月目录整个删掉（[`crate::ingest::prune`]）。
@@ -78,18 +106,18 @@ pub struct IngestConfig {
     /// 所以 `lookback_days` 配多大都不会把本轮要读的月份删掉。
     ///
     /// ⚠️ **它同时是 webUI 下钻的可见范围。** 超出保留期的事件，`read_by_ids`
-    /// 会显式报「取不到这些 msg_id」——「本地没有就回 OSS 取」的兜底还没做，
-    /// 见 ADR-0005 结尾。调小它之前先想清楚主管要能往回看多久。
+    /// 会显式报「取不到这些 msg_id」——「本地没有就回 OSS 取」的兜底还没做。
+    /// 调小它之前先想清楚主管要能往回看多久。
     ///
     /// N=2 时磁盘上界 ≈ 2 个月（1000 群约 36 GB）。此前**没有任何清理**，
     /// 一年约 216 GB 且永不回落。
     pub raw_retention_months: u32,
 
-    /// 同时在飞的月文件下载数。跟 ADR-0004 里 `SEGMENT_MSGS` / `ROOM_CONCURRENCY`
-    /// 一个规矩：这类值必须由部署环境明确给出。
+    /// 同时在飞的月文件下载数。跟 `segment_msgs` / `room_concurrency`
+    /// 一个规矩：这类值必须由部署环境明确给出，代码里没有默认值。
     pub mirror_concurrency: usize,
 
-    /// 同时在处理的群数（ADR-0004 的 `ROOM_CONCURRENCY`）。**段之间仍然串行，
+    /// 同时在处理的群数。**段之间仍然串行，
     /// 并行只加在群与群之间。** 无默认值，缺失即报错。
     ///
     /// 它同时是两件事：
@@ -110,13 +138,37 @@ pub struct IngestConfig {
 #[derive(Deserialize)]
 pub struct ExtractConfig {
     /// 一个群一天切成 `ceil(n / segment_msgs)` 段。**省钱旋钮，不是质量旋钮**
-    /// （ADR-0004）：切几段都不产生接缝（段之间串行传便签），它只是省掉
+    /// ：切几段都不产生接缝（段之间串行传便签），它只是省掉
     /// 「拿整群去试、注定被截断」那一次调用。无默认值，缺失即报错。
     ///
     /// 它还兼着**便签的保留窗口**：「上一整段都没动静就撤下」复用的就是这个数，
     /// 不另发明一个。两者眼下量级相同才合用 —— 换了输出预算大得多的模型、
-    /// 段长跳到几千时要拆成独立常量（ADR-0004 结尾）。
+    /// 段长跳到几千时要拆成独立常量。
     pub segment_msgs: usize,
+}
+/// ⑤ 分类 —— 打标结果缓存落在哪。
+#[derive(Deserialize)]
+pub struct ClassifyConfig {
+    /// `<cache_dir>/<taxonomy_version>.ndjson`，内容寻址、只增不减。
+    ///
+    /// **这是承重件不是优化**：模型打标不保证同输入同输出，而非冻结区每天重写
+    /// `[T-2, T-1]`、同一批 event 会被反复打标 —— 没有跨运行的持久缓存，报表就会
+    /// 抖动而非修正（承重不变量 1）。目录建不出来时进程在启动期就崩，不等到第一次打标。
+    ///
+    /// **一个版本一个文件**：v0 的答案绝不能当 v1 的答案，文件名带版本是让这件事
+    /// 不可能发生的最省事的办法。
+    pub cache_dir: PathBuf,
+
+    /// 本地类心敢不敢用的门槛：最近类心与次近之差要达到它，否则回落去问模型。
+    ///
+    /// **两条路必须用同一个值**（`daily` 和 `recompute`），否则冻结区和
+    /// `[T-2, T-1]` 用两套口径，边界上同类事件标签不同 —— 承重不变量 1 要防的抖动。
+    /// 所以它在配置里，不在命令行。
+    ///
+    /// **没有能抄的默认值**：跑一次 `examples/recompute.rs`，看日志里那张
+    /// 「留出集（margin / 覆盖率 / 一致率）」的表现场定。设成很大的数（如 `1.0`）
+    /// 等于关掉本地类心、全部问模型。
+    pub margin: f32,
 }
 
 #[derive(Deserialize)]
@@ -209,7 +261,7 @@ pub struct MysqlSecrets {
 }
 
 /// 配置目录：默认当前目录，第一个命令行参数可覆盖（生产传 /etc/chat2events）。
-/// ADR-0006 把这条约定定为配置契约的一部分，所以它住在这里 ——
+/// 这条约定是配置契约的一部分，所以它住在这里 ——
 /// `main` 和 `examples/smoke` 共用，曾经两处逐字重复。
 pub fn dir_from_args() -> PathBuf {
     std::env::args()
@@ -220,17 +272,49 @@ pub fn dir_from_args() -> PathBuf {
 
 /// 从一个目录加载两份配置。生产传 /etc/chat2events，开发传当前目录。
 pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
-    let config = load(&dir.join("config.toml"));
+    let config: Config = load(&dir.join("config.toml"), false);
+    // **跨节的约束，`serde` 查不到** —— 缺字段它拦得住，两节之间的关系拦不住。
+    // 小于 `room_concurrency` 就会有群在落库那几毫秒里排队等连接，
+    // `acquire_timeout_secs` 一到，报出来的是「落库失败」—— 那个群整轮作废，
+    // 而它的 token 已经烧完了。此前这条只写在 `config.toml` 的注释里，没人拦着。
+    assert!(
+        config.mysql.max_connections as usize >= config.ingest.room_concurrency,
+        "mysql.max_connections（{}）必须 ≥ ingest.room_concurrency（{}）—— \
+         否则会有群在落库时等不到连接，白烧一整轮的 token。改 config.toml",
+        config.mysql.max_connections,
+        config.ingest.room_concurrency
+    );
     let secrets_path = dir.join("secrets.toml");
     #[cfg(unix)]
     require_owner_only(&secrets_path);
-    (config, load(&secrets_path))
+    (config, load(&secrets_path, true))
 }
 
-fn load<T: DeserializeOwned>(path: &Path) -> T {
+/// `redact` = 这个文件里有密钥，**解析报错不许原样打出来**。
+///
+/// `toml` 的解析错误会回显出错那一行的源文本：
+/// ```text
+/// TOML parse error at line 2, column 33
+/// 2 | api_key = "sk-SUPERSECRET-abc123
+/// ```
+/// 而唯一会有人碰 `secrets.toml` 的场合正是轮换密钥、粘歪一个引号的时候。
+/// 0600 权限检查挡不住 stderr —— 它会落进 `run.log`、journald、cron 邮件、
+/// CI 输出和终端 scrollback。`Secrets` 本身没有 `Debug` / `Serialize`，
+/// `Llm` 也没有 `Debug`，这条路是仅剩的泄漏点。
+fn load<T: DeserializeOwned>(path: &Path, redact: bool) -> T {
     let text =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()));
-    toml::from_str(&text).unwrap_or_else(|e| panic!("解析失败 {}：{e}", path.display()))
+    toml::from_str(&text).unwrap_or_else(|e| {
+        if redact {
+            panic!(
+                "解析失败 {}：详情已省略 —— toml 的报错会连同出错那一行的密钥原文一起打印。\
+                 自己打开文件看第 {} 行附近",
+                path.display(),
+                e.span().map_or(0, |s| text[..s.start].lines().count()),
+            )
+        }
+        panic!("解析失败 {}：{e}", path.display())
+    })
 }
 
 /// 密钥文件必须 0600 —— 组或其他人有任何一位权限就拒绝加载（照 ssh 对私钥的规矩）。
@@ -271,7 +355,7 @@ mod tests {
     /// 上面那条测试照样绿（仓库里那份 config.toml 什么都不缺），只有跑批那天
     /// 才发现进程拿着一个谁都没写过的值起来了。这条钉住的就是那个无声改动。
     ///
-    /// 拿 `segment_msgs` 开刀是因为 ADR-0004 点名它「无默认值，缺失即报错」。
+    /// 拿 `segment_msgs` 开刀是因为它明确「无默认值，缺失即报错」。
     #[test]
     #[should_panic(expected = "解析失败")]
     fn a_missing_key_panics_instead_of_falling_back_to_a_default() {
@@ -294,10 +378,41 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.toml");
         std::fs::write(&p, holed).unwrap();
-        let _: Config = load(&p);
+        let _: Config = load(&p, false);
     }
 
-    /// 密钥文件权限过宽必须**拒绝加载**（照 ssh 对私钥的规矩，ADR-0006）。
+    /// **密钥文件的解析报错不许带原文。** `toml` 的错误会回显出错那一行，而唯一
+    /// 会有人碰 secrets.toml 的场合正是轮换密钥、粘歪一个引号的时候 ——
+    /// 那一行原样进 stderr 就等于进 run.log / journald / cron 邮件 / CI 输出。
+    #[test]
+    fn a_broken_secrets_file_never_echoes_the_key_into_the_error() {
+        let dir = crate::testutil::fresh_root("config", "redact");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("secrets.toml");
+        // 少一个右引号 —— 粘歪密钥最常见的形态
+        std::fs::write(&p, "[llm]\napi_key = \"sk-SUPERSECRET-abc123\n").unwrap();
+
+        let err = std::panic::catch_unwind(|| load::<Secrets>(&p, true))
+            .err()
+            .unwrap();
+        let msg = err
+            .downcast_ref::<String>()
+            .map_or("", String::as_str)
+            .to_string();
+        assert!(!msg.contains("SUPERSECRET"), "密钥泄漏进报错了：{msg}");
+        assert!(msg.contains("详情已省略"), "{msg}");
+
+        // 反过来钉住 config.toml 那条路仍然打全文 —— 它没有密钥，省掉只会难查
+        let c = dir.join("config.toml");
+        std::fs::write(&c, "[llm]\nmodel = \"m\n").unwrap();
+        let err = std::panic::catch_unwind(|| load::<Config>(&c, false))
+            .err()
+            .unwrap();
+        let msg = err.downcast_ref::<String>().map_or("", String::as_str);
+        assert!(msg.contains("TOML parse error"), "{msg}");
+    }
+
+    /// 密钥文件权限过宽必须**拒绝加载**（照 ssh 对私钥的规矩）。
     #[cfg(unix)]
     #[test]
     #[should_panic(expected = "权限过宽")]

@@ -15,14 +15,17 @@
 //!
 //! ```text
 //! daily/
-//!   run.rs    一轮怎么跑（run）· 群与群之间的并发和背压（run_rooms）· 一个群的全程（run_room）
+//!   run.rs    一轮怎么跑（run / run_span）· 群与群之间的并发和背压（run_rooms）· 一个群的全程（run_room）
 //!   tally.rs  一个群跑完了的结局（Outcome）和那一行日志的记账（Tally）
 //! ```
+//!
+//! [`run`] 是日常跑批（窗口 `[T-N, T-1]`）；[`run_span`] 让调用方自己给窗口，
+//! 补跑历史走它（`examples/backfill.rs`）。
 
 mod run;
 mod tally;
 
-pub use run::run;
+pub use run::{run, run_span};
 
 #[cfg(test)]
 mod tests;

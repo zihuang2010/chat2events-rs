@@ -124,6 +124,13 @@ ORDER BY "at", msg_id
 ///
 /// 过滤、投影、排序全下推给 DuckDB；这里只做「行 → 领域对象」和守卫，
 /// **不把整表拉进内存再筛**。
+///
+/// ⚠️ **「不筛」是真的，「流式」不是。** `Statement::query` 走的是
+/// `duckdb_execute_prepared`（**物化**入口，不是 `execute_streaming`），所以
+/// `rows.next()` 吐第一行之前，过滤+排序后的**整个结果集**已经在 DuckDB 内存里了 ——
+/// 本函数内的峰值实为两份（DuckDB 那份 ＋ 正在长的 `out`），都在返回时释放。
+/// 换流式 API 也救不了：`ORDER BY "at", msg_id` 本身就是阻塞算子，排完才有第一行。
+/// 谓词确实下推了（窗口外的行根本不进结果集），那才是硬规则要的东西。
 fn scan(
     files: &[(String, PathBuf)],
     w: &Window,
@@ -232,9 +239,16 @@ fn message_from_row(
     // 而不是 NULL，只判 NULL 漏得掉。
     let Some(at) = at.filter(|_| !msg_id.is_empty() && !sender_id.is_empty() && !text.is_empty())
     else {
+        // ⚠️ **正文只报有无，不报内容。** 这条错误的去处是
+        //    `daily::tally` 的 `tracing::error!` → `run.log`，而**这条路径上
+        //    `redact::body` 根本没跑过** —— 照抄 `text` 等于把未脱敏的客户消息
+        //    （手机号 / 门牌号 / 姓名）写进日志。而它的触发条件恰好是「上游字段
+        //    形状变了」，最可能真发生的那一种。
+        //    诊断要的是**缺了哪个字段**，那几个都是标识符，不是正文。
         return Err(IngestError::Room(format!(
             "{src_file}: 有消息缺必填字段 \
-             (msg_id={msg_id:?} sender_id={sender_id:?} text={text:?} at={at:?})"
+             (msg_id={msg_id:?} sender_id={sender_id:?} at={at:?} text={})",
+            if text.is_empty() { "<空>" } else { "<非空>" }
         )));
     };
 

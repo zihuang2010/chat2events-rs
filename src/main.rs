@@ -8,29 +8,11 @@
 //! **编排不在这里** —— 跑批那一轮干了什么，看 `daily/`（编排在 `daily/run.rs`）。
 
 use chat2events_rs::{Result, config, daily, llm::Llm};
-use std::io::IsTerminal;
-
-/// 日志一律走 stderr。**stdout 全程不写一个字节** —— 抽取结果由 ⑦ 落 MySQL，
-/// 跑批没有「把结果打出来」这条路径。写 stderr 是为了让 `2> run.log` 能单独收日志，
-/// 且重定向到文件/journald 时不掺 ANSI 颜色码。
-fn init_logging(cfg: &config::LogConfig) {
-    use tracing_subscriber::{EnvFilter, fmt};
-
-    // RUST_LOG 存在就听它的（临时排障不用改文件），否则走 config.toml
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.level));
-
-    fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        // 重定向到文件或 journald 时别写 ANSI 颜色码，那是噪声
-        .with_ansi(std::io::stderr().is_terminal())
-        .init();
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let (config, secrets) = config::load_from_dir(&config::dir_from_args());
-    init_logging(&config.log);
+    config::init_logging(&config.log);
 
     tracing::info!(
         model = %config.llm.model,

@@ -23,8 +23,15 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_event —— 按 (corpid, roomid, occurred_on) 分片删重写
 --
--- 事实列（冻结区 occurred_on < T-N 不可写）：除 event_type / taxonomy_version 外的全部。
--- 标注列（任何时候可写，但只有词表升版这一个原因）：event_type / taxonomy_version。
+-- 事实列（冻结区 occurred_on < T-N 不可写）：除 event_type / event_types / taxonomy_version 外的全部。
+-- 标注列（任何时候可写，但只有词表升版这一个原因）：event_type / event_types / taxonomy_version。
+--
+-- 已建过表的库补这一列（event_types 是后加的）：
+--   ALTER TABLE b_merchant_group_event
+--     ADD COLUMN event_types JSON NOT NULL AFTER event_type;
+--   UPDATE b_merchant_group_event SET event_types = JSON_ARRAY(event_type);
+-- 第二条不能省：JSON NOT NULL 没有默认值，存量行补不上就再也过不了「第一个恒等于
+-- event_type」这条约定，而 webUI 的下钻会读到空。
 -- summary 归**事实列** —— 它由抽取那一次的模型决定，而冻结区本来就不再跑抽取。
 -- 这保证冻结区的 sha256(summary) 缓存永远命中。
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -42,7 +49,8 @@ CREATE TABLE b_merchant_group_event (
     agents                 JSON            NOT NULL COMMENT '涉及的全部INTERNAL成员easyUserId数组，全存。归属口径换了不用重跑LLM',
     first_responder        CHAR(16)        NULL     COMMENT 'first_agent_reply_time那条消息的发送方easyUserId',
     summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（落库前由抽取校验器拦截）',
-    event_type             VARCHAR(64)     NOT NULL COMMENT '事件类型。为空时用显式的__untyped__不用NULL；v0+__untyped__=还没有词表（系统状态），vN+__untyped__=归不上去（数据信号）',
+    event_type             VARCHAR(64)     NOT NULL COMMENT '事件类型**主类**。指标只按它统计（uk_agent_daily的一列）。为空时用显式的__untyped__不用NULL；v0+__untyped__=还没有词表（系统状态），vN+__untyped__=归不上去（数据信号）',
+    event_types            JSON            NOT NULL COMMENT '事件类型**全集**数组，第一个恒等于event_type。一个事件确实可能同时属于两件事。**副类不进任何指标**——一个事件计进N行会让SUM(event_count)>事件数，客服主管拿它当处理量会虚高。只给webUI下钻用，不建索引',
     taxonomy_version       VARCHAR(16)     NOT NULL COMMENT '打标所用的词表版本',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -123,18 +131,34 @@ CREATE TABLE b_merchant_group_agent_metric_daily (
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_taxonomy —— 版本化的类型词表。人工执行插入，不做管理界面。
 --
--- 要同时容纳两种类：LLM 归纳产出的类**没有 centroid**，人工加的类同理。
--- 所以 description 必填 —— 让 classify 不依赖向量也能工作；有 centroid 就多一条路径。
+-- description 必填 —— classify 就靠它认类，**不依赖任何向量**。
 -- **人工加类只能通过升版**：不做「给现有版本热加一个类」，那会让同一个版本号
 -- 在不同时间对应两套词表，taxonomy_version 就失去意义。
+--
+-- ⚠️ 曾经有一列 `centroid JSON NULL`（类中心向量，「有就多一条分类路径」）。
+-- 2026-09-03 删掉：机器归纳舍弃之后，**没有任何路径能产出它**，也没有任何代码
+-- 读写它 —— 它只会是一列永远为 NULL 的承诺。真要走向量路径时再加回来，
+-- 那时它的产出方和读取方会一起进来。已建过表的库：
+--   ALTER TABLE b_merchant_group_taxonomy DROP COLUMN centroid;
+--
+-- 词表是**两级**的，但只有二级进 event_type：parent_name 是一级分类名，
+-- type_id / name 是二级（叶子）。一级不单独建行、不做自引用 —— 它是叶子的一个属性列。
+-- 这样 event_type 存的仍是叶子，uk_agent_daily 六列语义键和全部指标一个字不动；
+-- 报表要一级维度就 JOIN 这张表按 (version, type_id) 取 parent_name 再 GROUP BY。
+-- 不给 parent_name 建索引：词表一共几十行，全表扫比维护索引便宜。
+--
+-- 已建过表的库补这一列（parent_name 是后加的）：
+--   ALTER TABLE b_merchant_group_taxonomy
+--     ADD COLUMN parent_name VARCHAR(64) NOT NULL AFTER type_id;
+-- 补完必须逐行填上真实的一级分类名 —— 空串过不了 Draft::check，且它会逐字进分类 prompt。
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE b_merchant_group_taxonomy (
     id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     version           VARCHAR(16)     NOT NULL COMMENT '词表版本。人工加类只能通过升版，不做热加',
-    type_id           VARCHAR(64)     NOT NULL COMMENT '类型ID',
-    name              VARCHAR(128)    NOT NULL COMMENT '类型名，人工审阅后确定',
-    description       TEXT            NOT NULL COMMENT '类型描述。必填——LLM归纳和人工加的类都没有centroid，靠它让classify不依赖向量也能工作',
-    centroid          JSON            NULL     COMMENT '类中心向量，可空。有就多一条分类路径',
+    type_id           VARCHAR(64)     NOT NULL COMMENT '类型ID（二级/叶子）。event_type 存的就是它',
+    parent_name       VARCHAR(64)     NOT NULL COMMENT '一级分类名。只用于分组——不进event_type、不进任何语义键；报表要一级维度靠JOIN本表取它',
+    name              VARCHAR(128)    NOT NULL COMMENT '二级类型名，人工审阅后确定',
+    description       TEXT            NOT NULL COMMENT '类型描述。必填——classify靠它认类，逐字进分类prompt',
     gmt_created_time  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),

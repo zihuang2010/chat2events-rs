@@ -253,6 +253,30 @@ fn text_never_empty_both_blank_fails_room() {
     }
 }
 
+/// 必填字段守卫的报错**不许带正文**。
+///
+/// 这条错误一路走到 `daily::tally` 的 `tracing::error!` 进 `run.log`，而
+/// **这条路径上 `redact::body` 根本没跑过** —— 照抄 `text` 就是把未脱敏的客户消息
+/// 写进日志。触发条件恰好是「上游字段形状变了」，最可能真发生的那一种。
+#[test]
+fn the_required_field_guard_never_logs_the_body() {
+    const PII: &str = "客户张伟 13812345678 朝阳区xx路5号楼302";
+    let mut rows = sample();
+    // 正文在场、msg_id 缺失 —— 守卫会因为 msg_id 触发，而正文正好摆在手边
+    rows[1]["sourceMessageId"] = json!("");
+    rows[1]["analysisText"] = json!(PII);
+    rows[1]["content"] = json!(PII);
+    let root = raw("guard-no-body", "202608", &rows);
+    let e = read_room(&root, "C", "R", &all()).unwrap_err().to_string();
+
+    assert!(e.contains("缺必填字段"), "{e}");
+    assert!(!e.contains("13812345678"), "报错漏了手机号：{e}");
+    assert!(!e.contains("张伟"), "报错漏了姓名：{e}");
+    assert!(!e.contains("朝阳区"), "报错漏了地址：{e}");
+    // 但「正文在不在」是有用的诊断，要留着
+    assert!(e.contains("text=<非空>"), "丢了正文有无这个诊断位：{e}");
+}
+
 #[test]
 fn upstream_version_mismatch_fails_run() {
     let mut rows = sample();

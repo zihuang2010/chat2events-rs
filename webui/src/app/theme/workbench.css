@@ -1,0 +1,40 @@
+/* 工作台公共外壳，令牌由 Workbench 注入。 */
+.pv {
+  background: var(--pv-paper);
+  color: var(--pv-ink);
+  font-family: var(--pv-font-body);
+  min-height: calc(100vh - 52px);
+  padding-bottom: 64px;
+}
+
+/* AntD 的组件把 fontFamily 写进了自己的 CSS-in-JS，0,2,0 强制继承回来 */
+.pv [class^="ant-"],
+.pv [class*=" ant-"] {
+  font-family: inherit;
+}
+
+/* 筛选条和上下文条沿用 D 工作台令牌。 */
+.pv .c2e-contextbar {
+  max-width: 1600px;
+  padding: 14px 28px 0;
+}
+
+.pv .ant-table-cell-align-right {
+  font-family: var(--pv-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.pv .ant-table-thead > tr > th {
+  background: var(--pv-raised);
+  color: var(--pv-ink2);
+  font-weight: 600;
+}
+.pv .ant-tag {
+  border-radius: 4px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  letter-spacing: 0;
+}

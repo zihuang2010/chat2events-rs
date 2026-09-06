@@ -22,6 +22,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  webui:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm install --global pnpm@11.21.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+
   check:
     runs-on: ubuntu-latest
     steps:

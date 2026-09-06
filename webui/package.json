@@ -1,0 +1,59 @@
+{
+  "name": "chat2events-webui",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "群聊事件与客服效率分析工作台。只读旁路：只从 MySQL 和摄取端口取数，不写表、不调模型、不参与跑批。",
+  "engines": {
+    "node": "^22.19.0 || ^24.0.0 || >=26.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty",
+    "lint": "eslint .",
+    "format": "prettier --check \"src/**/*.{ts,tsx,css}\"",
+    "format:write": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm run lint && pnpm run format && tsc -b && pnpm run test"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.3.4",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/noto-sans-sc": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@tanstack/react-query": "^5.102.8",
+    "antd": "^6.6.2",
+    "dayjs": "^1.11.23",
+    "echarts": "^6.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.6",
+    "globals": "^17.12.0",
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

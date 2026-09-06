@@ -1,0 +1,145 @@
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { buildMockDataset } from "@/api/mock/generator";
+import { useFilters } from "@/features/filters/useFilters";
+import { RoomFilters } from "./RoomFilters";
+
+const { meta } = buildMockDataset();
+afterEach(cleanup);
+
+beforeAll(() => {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  });
+});
+
+function Harness() {
+  const api = useFilters();
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <RoomFilters meta={meta} api={api} />
+      <output data-testid="url">{location.search}</output>
+      <button onClick={() => void navigate(-1)}>返回</button>
+    </>
+  );
+}
+
+function mount(search = "") {
+  return render(
+    <MemoryRouter initialEntries={[`/rooms${search}`]}>
+      <Harness />
+    </MemoryRouter>,
+  );
+}
+
+function params() {
+  return new URLSearchParams(screen.getByTestId("url").textContent);
+}
+
+describe("群聊分析筛选", () => {
+  it("重置筛选保留明确选择的数据源", async () => {
+    mount("?source=api&q=关键词&page=2");
+    await userEvent.setup().click(screen.getByRole("button", { name: "重置" }));
+    expect(params().toString()).toBe("source=api");
+  });
+  it("日期预设即时更新 URL，同时保留群与排行，复位页码", async () => {
+    const user = userEvent.setup();
+    const view = mount("?room=R-test&rank=p90&page=3");
+    await user.click(screen.getByText("近 3 天", { exact: true }));
+    await waitFor(() => expect(params().get("from")).toBe(meta.days.at(-3)));
+    expect(params().get("to")).toBe(meta.days.at(-1));
+    expect(params().get("room")).toBe("R-test");
+    expect(params().get("rank")).toBe("p90");
+    expect(params().has("page")).toBe(false);
+    await user.click(screen.getByText(`全部 ${meta.days.length} 天`, { exact: true }));
+    expect(params().get("from")).toBe(meta.days[0]);
+    view.unmount();
+  });
+
+  it("折叠保留有效条件，false 超时条件也计数；修改一级分类清除二级", async () => {
+    const user = userEvent.setup();
+    const view = mount(`?l2=${encodeURIComponent(meta.taxonomy[0]!.type_id)}&overdue=0`);
+    const more = screen.getByRole("button", { name: "更多筛选（2）" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "一级分类" })).toBeNull();
+    await user.click(more);
+    await user.click(screen.getByRole("combobox", { name: "一级分类" }));
+    await user.click(
+      screen.getByText(meta.taxonomy[0]!.parent_name, {
+        exact: true,
+        selector: ".ant-select-item-option-content",
+      }),
+    );
+    await waitFor(() => expect(params().get("l1")).toBe(meta.taxonomy[0]!.parent_name));
+    expect(params().has("l2")).toBe(false);
+    expect(params().get("overdue")).toBe("0");
+    await user.click(screen.getByRole("button", { name: "更多筛选（2）" }));
+    expect(params().get("overdue")).toBe("0");
+    view.unmount();
+  });
+
+  it("关键词保持回车提交，重置与浏览器返回同步输入框", async () => {
+    const user = userEvent.setup();
+    const view = mount("?q=原关键词&status=unreplied");
+    const input = screen.getByLabelText("关键词");
+    await user.clear(input);
+    await user.type(input, "空调");
+    expect(params().get("q")).toBe("原关键词");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(params().get("q")).toBe("空调"));
+    expect(params().get("status")).toBe("unreplied");
+    await user.click(screen.getByRole("button", { name: "重置" }));
+    await waitFor(() => expect(params().toString()).toBe(""));
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("button", { name: "重置" })).toHaveAttribute("data-active", "false");
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    await waitFor(() => expect(input).toHaveValue("空调"));
+    expect(screen.getByRole("button", { name: "更多筛选（1）" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("客服选择同时更新 agent 和 focus，保留其他条件", async () => {
+    const user = userEvent.setup();
+    const view = mount("?overdue=1");
+    const agent = meta.agents[0]!;
+    await user.click(screen.getByRole("combobox", { name: "客服" }));
+    await user.click(screen.getByText(agent.alias ?? agent.agent, { exact: true }));
+    await waitFor(() => expect(params().get("agent")).toBe(agent.agent));
+    expect(params().get("focus")).toBe(agent.agent);
+    expect(params().get("overdue")).toBe("1");
+    view.unmount();
+  });
+
+  it("搜索按钮提交草稿，清除关键词时保留其他筛选", async () => {
+    const user = userEvent.setup();
+    const view = mount("?room=R-test&page=3");
+    const input = screen.getByLabelText("关键词");
+    await user.type(input, "空调");
+    expect(params().has("q")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await waitFor(() => expect(params().get("q")).toBe("空调"));
+    expect(params().get("room")).toBe("R-test");
+    expect(params().has("page")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "清除" }));
+    await waitFor(() => expect(params().has("q")).toBe(false));
+    expect(input).toHaveValue("");
+    expect(params().get("room")).toBe("R-test");
+    view.unmount();
+  });
+});

@@ -1,0 +1,267 @@
+/* 全局样式。AntD 负责组件，这里只管：底板、密度微调、以及少数 AntD 没有的形态
+   （NULL 长横线、待补数据斜纹标记、热力格、迷你趋势）。
+   所有颜色走 tokens.ts 刷出来的 CSS 变量，不写字面色值。 */
+
+/* AntD 的 reset 只覆盖它自己的组件。自有布局类用了 width:100% 搭 padding，
+   没有这条就会稳定多出一个 padding 的宽度，整页横向滚动。 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--c2e-plane);
+  color: var(--c2e-ink);
+  font-family: var(--c2e-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 数字一律等宽对齐：分析工作台里列与列之间要能竖着扫 */
+.c2e-num,
+.ant-table-cell-align-right,
+.ant-statistic-content-value {
+  font-family: var(--c2e-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.c2e-mono {
+  font-family: var(--c2e-font-mono);
+  font-size: 0.92em;
+  letter-spacing: 0;
+}
+
+/* NULL 的统一形态。**绝不显示成 0**：0 是「确实没有」，长横线是「没算出来」 */
+.c2e-null {
+  color: var(--c2e-ink-muted);
+  font-family: var(--c2e-font-mono);
+  cursor: help;
+}
+
+/* 待补数据：斜纹 + 虚线框，一眼区别于真实取值 */
+.c2e-gap {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--c2e-ink-muted);
+  border: 1px dashed var(--c2e-axis);
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 5px,
+    var(--c2e-hairline-soft) 5px 6px
+  );
+  white-space: nowrap;
+}
+
+/* 页面骨架 */
+.c2e-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px 40px;
+  max-width: 1760px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.c2e-grid {
+  display: grid;
+  gap: 12px;
+}
+.c2e-contextbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  max-width: 1760px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (min-width: 1180px) {
+  .c2e-grid.c2e-wide-left {
+    grid-template-columns: 1.6fr 1fr;
+  }
+}
+
+/* 指标条：发丝线分隔的密排数据行，不是一排投影卡片 */
+.c2e-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 1px;
+  background: var(--c2e-hairline-soft);
+}
+
+.c2e-kpi {
+  background: var(--c2e-surface);
+  padding: 11px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 2px solid transparent;
+  text-align: left;
+  min-width: 0;
+}
+
+/* 行内迷你趋势。NULL 断成缺口并画竖虚线，绝不连成 0 */
+.c2e-spark {
+  display: block;
+  width: 82px;
+  height: 22px;
+  overflow: visible;
+}
+
+/* 表格密度与长文本 */
+
+.ant-table-tbody > tr.c2e-row-clickable {
+  cursor: pointer;
+}
+
+/* 次级标识（roomid / easyUserId）永远另起一行。
+   父容器可能是 flex（AntD Descriptions 就是），只给 display:block 不够，
+   还要 flex-basis:100% 才会真的换行。 */
+.c2e-sub {
+  display: block;
+  width: 100%;
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--c2e-ink-muted);
+  font-family: var(--c2e-font-mono);
+  line-height: 1.4;
+  margin-top: 1px;
+}
+
+/* 图表容器：给一个明确高度，避免首帧塌成 0 再跳一次 */
+.c2e-chart {
+  width: 100%;
+}
+
+/* 时间线 */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+@media (max-width: 760px) {
+  .c2e-page {
+    padding: 10px 12px 32px;
+  }
+  .c2e-kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.c2e-page > *,
+.c2e-grid > *,
+.c2e-page .ant-table-wrapper {
+  min-width: 0;
+}
+
+/* 导航状态只改变颜色和下划线，不改变尺寸，避免切换时跳动。 */
+.c2e-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 16px;
+  background: var(--c2e-surface);
+  border-bottom: 1px solid var(--c2e-hairline);
+  min-width: 0;
+  letter-spacing: 0;
+}
+.c2e-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.c2e-brand b {
+  font-size: 14px;
+  white-space: nowrap;
+}
+.c2e-nav {
+  display: flex;
+  align-self: stretch;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+.c2e-nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--c2e-ink-secondary);
+}
+.c2e-nav-link::after {
+  content: "";
+  position: absolute;
+  inset: auto 12px 0;
+  height: 2px;
+  background: transparent;
+}
+.c2e-nav-link:hover {
+  color: var(--c2e-ink);
+  background: var(--c2e-hairline-soft);
+}
+.c2e-nav-link[aria-current="page"] {
+  color: var(--c2e-ink);
+}
+.c2e-nav-link[aria-current="page"]::after {
+  background: currentColor;
+}
+.c2e-nav-link:focus-visible {
+  outline: 2px solid var(--c2e-accent);
+  outline-offset: -4px;
+}
+@media (max-width: 760px) {
+  .c2e-topbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 0;
+    padding: 4px 12px 0;
+  }
+  .c2e-brand {
+    flex-basis: 100%;
+    min-height: 32px;
+  }
+  .c2e-nav {
+    flex-basis: 100%;
+    min-height: 40px;
+    gap: 2px;
+  }
+  .c2e-nav-link {
+    padding-inline: 8px;
+    font-size: 12px;
+  }
+  .c2e-nav-link::after {
+    inset-inline: 8px;
+  }
+}

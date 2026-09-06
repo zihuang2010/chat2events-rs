@@ -1,0 +1,40 @@
+/* 工作台语义令牌，覆盖页面和 Portal 抽屉。 */
+.od-overview,
+.ri-drawer,
+.ia-agent-drawer,
+.ia-event-drawer {
+  --color-paper: var(--pv-surface);
+  --color-ink: var(--pv-ink);
+  --color-secondary: var(--pv-ink2);
+  --color-muted: oklch(49% 0.025 275);
+  --color-rule: var(--pv-rule);
+  --color-soft: var(--pv-raised);
+  --color-accent: var(--pv-accent);
+  --color-focus: var(--pv-accent);
+  --color-good: oklch(43% 0.09 165);
+  --color-warn: oklch(49% 0.12 65);
+  --color-risk: oklch(49% 0.17 25);
+  --color-bar: var(--pv-barSoft);
+  --color-wash: var(--pv-accentWash);
+  --color-heat-1: oklch(95% 0.023 275);
+  --color-heat-2: oklch(88% 0.05 275);
+  --color-heat-3: oklch(77% 0.08 275);
+  --color-heat-4: oklch(55% 0.12 275);
+  --font-display: var(--pv-font-display);
+  --font-body: var(--pv-font-body);
+  --font-mono: var(--pv-font-mono);
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 40px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-body: 13px;
+  --text-section: 16px;
+  --text-title: 24px;
+  --text-metric: 34px;
+  --radius-control: 4px;
+}

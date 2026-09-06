@@ -1,0 +1,180 @@
+/* Hallmark · pre-emit critique: P4 H4 E4 S5 R5 V4
+ * genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app
+ * theme: existing Signal D · tone: utilitarian · nav/footer: existing app shell
+ * audience: service managers · use: classification, service comparison, event tracing
+ */
+.ia-workbench {
+  min-height: 70vh;
+}
+.ia-workbench .ia-context {
+  grid-template-columns: 170px minmax(0, 1fr) auto;
+}
+.ia-section {
+  min-width: 0;
+  padding-block: var(--space-lg);
+  border-bottom: 1px solid var(--color-rule);
+}
+.ia-section .od-section-head h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+.ia-section-subtitle {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2xs);
+}
+.ia-section-subtitle .c2e-contextbar {
+  padding: 0;
+}
+.ia-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 0;
+}
+.ia-metrics .od-metric-value {
+  font-size: var(--text-metric);
+}
+.ia-metrics .od-metric p {
+  min-height: 20px;
+}
+.ia-workbench > .ia-metrics {
+  padding-block: var(--space-sm);
+}
+.ia-workbench > .ia-metrics .od-metric {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(min-content, 1fr);
+  align-items: center;
+  column-gap: var(--space-xs);
+}
+.ia-workbench > .ia-metrics .od-metric-value {
+  font-size: var(--text-title);
+  line-height: 1.2;
+  gap: var(--space-2xs);
+}
+.ia-workbench > .ia-metrics .od-metric p {
+  grid-column: 1 / -1;
+  min-height: 0;
+}
+.ia-workbench > .ia-metrics + .ia-section {
+  padding-top: var(--space-sm);
+}
+.ia-table-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-weight: 600 !important;
+  text-align: left;
+  max-width: 100%;
+}
+.ia-table-link:hover {
+  color: var(--color-accent);
+}
+.ia-chart {
+  max-width: 1040px;
+  margin-inline: auto;
+}
+.ia-workbench .ant-table-wrapper {
+  min-width: 0;
+}
+.ia-workbench .ant-table-pagination {
+  flex-wrap: wrap;
+  row-gap: var(--space-xs);
+}
+.ia-workbench .ant-pagination-total-text {
+  white-space: nowrap;
+}
+.ia-workbench .ant-tag {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ia-workbench .ant-segmented-item-label {
+  white-space: nowrap;
+}
+.ia-summary-link {
+  display: block;
+  text-align: left;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  width: 100%;
+}
+.ia-summary-link:hover {
+  color: var(--color-accent);
+}
+.ia-drawer .ant-drawer-body {
+  padding: var(--space-lg);
+  overscroll-behavior: contain;
+}
+.ia-drawer .ant-drawer-title {
+  font-size: var(--text-section);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ia-drawer .ant-drawer-content {
+  color: var(--color-ink);
+  background: var(--color-paper);
+}
+.ia-drawer .od-metrics {
+  padding-block: var(--space-md);
+}
+.ia-drawer .od-metric-value {
+  font-size: 26px;
+}
+.ia-workbench .c2e-null,
+.ia-workbench .c2e-sub {
+  color: var(--color-muted);
+}
+.ia-workbench .c2e-sub {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1100px) {
+  .ia-metrics .od-metric-value {
+    font-size: 28px;
+  }
+}
+@media (max-width: 800px) {
+  .ia-workbench .ia-context {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ia-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-md) 0;
+  }
+  .ia-metrics .od-metric:nth-child(n) {
+    padding: 0 var(--space-sm);
+    border-left: 1px solid var(--color-rule);
+  }
+  .ia-metrics .od-metric:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .ia-metrics .od-metric:last-child {
+    grid-column: auto;
+    border-top: 0;
+  }
+  .ia-drawer .ant-drawer-body {
+    padding: var(--space-md);
+  }
+}
+@media (max-width: 560px) {
+  .ia-workbench > .ia-metrics .od-metric {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-2xs);
+  }
+  .ia-workbench .ra-filter-search {
+    width: 100%;
+    flex-basis: 100%;
+  }
+  .ia-drawer .ant-drawer-header {
+    padding: var(--space-sm);
+  }
+  .ia-drawer .ant-drawer-extra {
+    margin-left: var(--space-xs);
+  }
+}

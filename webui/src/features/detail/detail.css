@@ -1,0 +1,138 @@
+/* Hallmark · macrostructure: Workbench · theme: existing Signal D · tone: utilitarian
+ * scope: event tracing table · design-system: design.md
+ * audience: service managers · use: verify events and source messages
+ * pre-emit critique: P4 H5 E4 S5 R5 V4
+ */
+.ia-trace-table {
+  --text-body: 14px;
+  --text-sm: 13px;
+  --text-xs: 12px;
+}
+.ia-workbench .ia-trace-table .ant-table.ant-table-small .ant-table-tbody > tr > td {
+  height: 52px;
+  padding: var(--space-sm) var(--space-xs);
+  font-size: var(--text-body);
+  vertical-align: middle;
+  line-height: 24px;
+  white-space: nowrap;
+}
+.ia-workbench .ia-trace-table .ant-table-thead > tr > th {
+  padding: var(--space-sm) var(--space-xs);
+  font-size: var(--text-sm);
+}
+.ia-trace-table .ant-table-sticky-holder {
+  top: 52px !important;
+}
+.ia-trace-table .ia-summary-link {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  font-size: var(--text-body);
+  line-height: 24px;
+  font-weight: 400;
+}
+.ia-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+.ia-trace-id {
+  flex: 0 0 44px;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ia-trace-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ia-trace-category {
+  width: fit-content;
+  max-width: 100%;
+  padding-inline: var(--space-2xs);
+  border-radius: var(--radius-control);
+  background: var(--color-wash);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.ia-trace-duration {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.ia-trace-duration[data-status="unreplied"] {
+  color: var(--color-risk);
+}
+.ia-trace-duration[data-status="overdue"] {
+  color: var(--color-warn);
+}
+.ia-trace-duration[data-status="push"] {
+  color: var(--color-muted);
+  font-weight: 400;
+}
+.ia-trace-meta {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-xs);
+  height: 16px;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  line-height: 16px;
+}
+.ia-workbench .ia-trace-table .ant-tag {
+  flex-shrink: 0;
+  margin: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  border-radius: var(--radius-control);
+  font-size: var(--text-xs);
+}
+.ia-workbench .ia-trace-meta .ant-tag {
+  height: 16px;
+  padding-inline: var(--space-2xs);
+  border: 0;
+  background: var(--color-soft);
+  color: var(--color-secondary);
+  font-size: var(--text-xs);
+  line-height: 16px;
+}
+.ia-workbench .ia-trace-table .ant-table-tbody > tr:nth-child(even) > td {
+  background: var(--color-paper);
+}
+.ia-workbench .ia-trace-table .ant-table-tbody > tr > td.ant-table-cell-row-hover,
+.ia-workbench .ia-trace-table .ant-table-tbody > tr.ia-trace-selected > td {
+  background: var(--color-wash);
+}
+.ia-trace-table .ant-pagination {
+  align-items: center;
+  padding-block: var(--space-xs);
+}
+.ia-trace-table .ant-pagination-total-text {
+  margin-inline-end: auto;
+  color: var(--color-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 760px) {
+  .ia-trace-table .ant-table-sticky-holder {
+    top: 77px !important;
+  }
+}
+@media (max-width: 560px) {
+  .ia-trace-table .ant-pagination-total-text {
+    flex-basis: 100%;
+  }
+}
+@media (max-width: 480px) {
+  .ia-trace-table .ia-summary-link {
+    min-height: 32px;
+  }
+}

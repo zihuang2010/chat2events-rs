@@ -1,5 +1,14 @@
-use super::read::*;
-use crate::testutil;
+use super::{budget::*, query::*, serve::*};
+use crate::{config::WebLimits, testutil};
+use axum::{
+    Router,
+    extract::{Path as Id, State},
+    http::StatusCode,
+    middleware,
+    routing::get,
+};
+use std::{path::PathBuf, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 
 #[tokio::test]
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
@@ -459,4 +468,64 @@ async fn mysql_filtered_reads_use_date_and_failure_indexes() {
         eprintln!("{name}: {plan}");
     }
     testutil::drop_mysql_database(pool).await;
+}
+
+#[tokio::test]
+async fn admission_rejects_excess_work_and_releases_timed_out_slots() {
+    let state = WebState {
+        pool: sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://localhost/test")
+            .unwrap(),
+        raw_root: PathBuf::new(),
+        corp: "C".into(),
+        limits: WebLimits {
+            concurrency: 1,
+            scan_concurrency: 1,
+            max_response_bytes: 1000,
+            max_rows: 10,
+            query_timeout_secs: 1,
+        },
+        requests: Arc::new(Semaphore::new(1)),
+        scans: Arc::new(Semaphore::new(1)),
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let ready = entered.clone();
+    let app = Router::new()
+        .route(
+            "/slow",
+            get(move || {
+                let ready = ready.clone();
+                async move {
+                    ready.notify_one();
+                    std::future::pending::<&'static str>().await
+                }
+            }),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), admit));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/slow", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let http = reqwest::Client::new();
+    let first = tokio::spawn(http.get(&url).send());
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        http.get(&url).send().await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        first.await.unwrap().unwrap().status(),
+        StatusCode::GATEWAY_TIMEOUT
+    );
+    assert_eq!(state.requests.available_permits(), 1);
+    let _held_scan = state.scans.acquire().await.unwrap();
+    assert_eq!(
+        messages(State(state.clone()), Id(1)).await.unwrap_err().0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    server.abort();
+    let _ = server.await;
 }

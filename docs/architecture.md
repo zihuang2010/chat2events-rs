@@ -329,7 +329,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 它与跑批解耦 —— 只从 MySQL 和 ① 的端口取数，**不写任何表、不调模型、不参与跑批**，跑批不知道它存在。
 下钻原文走 `read_by_ids`，**不自己再翻译一遍上游字段名**。
 
-`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`，复用 MySQL 和 `read_by_ids`。
+`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额 · `query` 只读 SQL），复用 MySQL 和 `read_by_ids`。
 `GET /api/meta` 提供可用日期、群与客服标识、当前词表；`GET /api/dataset?from=...&to=...` 在同一个明确的 REPEATABLE READ 只读事务中读取 meta、event 与群日记录。
 默认请求最近七天，日期筛选进入后端查询并参与前端缓存键；全部历史仍可显式选择。群抽屉按需加载独立七天，窗口外事件由 `GET /api/event/{id}` 读取，原文由 `GET /api/event/{id}/messages` 读取。
 已完成事件的词表版本与 meta 不一致时显式报错；未完成群的标签三列在读取端暂不发布，事实仍可查看。

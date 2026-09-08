@@ -20,6 +20,7 @@
 //!   labeling.rs  群任务消费、全局批次并发、独立标签更新与指标发布
 //!                （**不叫 classify.rs**：⑤ 是 `crate::classify`，同名会让
 //!                 `use super::classify` 和 `use crate::classify` 挤在同一屏）
+//!   recover.rs   人工恢复：按群日补齐未完成分类，不重新抽取冻结事实
 //!   tally.rs     抽取结果与预算记账
 //! ```
 //!
@@ -28,10 +29,10 @@
 
 mod labeling;
 mod recover;
-pub use recover::recover;
 mod run;
 mod tally;
 
+pub use recover::recover;
 pub use run::{run, run_span};
 
 #[cfg(test)]

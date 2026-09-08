@@ -108,6 +108,15 @@
 .ag-response-platform a {
   font-size: var(--text-sm);
 }
+.ag-table {
+  isolation: isolate;
+}
+.ag-table .ant-pagination-options {
+  display: inline-block;
+}
+.ag-table.ant-table-wrapper .ant-table-pagination.ant-pagination {
+  margin-block: var(--space-lg);
+}
 .ag-comparison .od-section-head {
   margin-bottom: var(--space-xs);
 }
@@ -122,6 +131,9 @@
   font-size: var(--text-sm);
   white-space: nowrap;
 }
+.ag-table .ant-table.ant-table-small .ant-table-thead > tr > th {
+  padding-block: var(--space-sm);
+}
 .ag-table .ant-table-thead > tr:first-child > th {
   background: var(--color-soft);
 }
@@ -134,7 +146,8 @@
   gap: var(--space-2xs);
 }
 .ag-table .ant-table.ant-table-small .ant-table-tbody > tr > td {
-  padding-block: var(--space-2xs);
+  height: 64px;
+  padding-block: var(--space-sm);
 }
 .ag-table .ant-table-tbody > tr:nth-child(n) > td {
   background: var(--color-paper);
@@ -147,7 +160,7 @@
   background: var(--color-soft);
 }
 .ag-table .ia-table-link {
-  max-width: 118px;
+  max-width: calc(100% - 28px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

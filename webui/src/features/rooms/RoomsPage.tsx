@@ -9,17 +9,16 @@ import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { roomRollup, type RoomRow } from "@/domain/metrics";
 import { DataGap, DurationOrNull, NumberOrNull, PercentOrNull } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
-import { formatDuration, formatInt, shortId } from "@/lib/format";
+import { formatInt, shortId } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
-import { ContextBar } from "@/features/filters/ContextBar";
 import { RoomFilters } from "./RoomFilters";
 import { RoomInsightsDrawer } from "./RoomInsightsDrawer";
 import "./rooms.css";
 
 export function RoomsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const { events, days, cov, roomLabel, slaSec, lastDay, dayset, query, aliasIsAuthoritative } =
+  const { events, days, roomLabel, slaSec, lastDay, dayset, query, roomAliasIsAuthoritative } =
     analytics;
   const { filters, patch, hrefWith, reset } = api;
 
@@ -40,6 +39,20 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       }),
     [events, analytics.dataset, days, dayset, slaSec, lastDay, roomLabel, query, filters.room],
   );
+  const pageSize = Math.min(200, filters.pageSize);
+  const currentPage = Math.min(filters.page, Math.max(1, Math.ceil(rows.length / pageSize)));
+  const messageTotal = rows.some((row) => row.msgs !== null)
+    ? rows.reduce((sum, row) => sum + (row.msgs ?? 0), 0)
+    : null;
+  const messagesIncomplete = rows.some((row) => row.missingDays > 0 || row.unknownDays > 0);
+  const knownEventRows = rows.filter((row) => row.events !== null);
+  const activeRooms = knownEventRows.length
+    ? knownEventRows.filter((row) => row.events! > 0).length
+    : null;
+  const eventTotal = knownEventRows.length
+    ? knownEventRows.reduce((sum, row) => sum + row.events!, 0)
+    : null;
+  const eventsIncomplete = messagesIncomplete || rows.some((row) => row.failedDays > 0);
 
   const columns: ColumnsType<RoomRow> = [
     {
@@ -62,13 +75,10 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           >
             {r.label}
           </button>
-          {aliasIsAuthoritative ? null : (
+          {roomAliasIsAuthoritative(r.key) ? null : (
             <>
               {" "}
-              <DataGap
-                label="别名 待补"
-                detail="库里只有 officialRoomId，没有群名。这是占位别名，需要一张花名册映射表。"
-              />
+              <DataGap label="别名 待补" detail="尚未获取到该群的权威名称。" />
             </>
           )}
           <span className="c2e-sub">{shortId(r.key)}</span>
@@ -76,16 +86,17 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       ),
     },
     {
-      title: <Tooltip title={METRIC.msgCount}>消息数</Tooltip>,
+      title: <Tooltip title={METRIC.msgCount}>消息总量</Tooltip>,
       dataIndex: "msgs",
       key: "msgs",
       className: "ra-metric-emphasis",
       align: "right",
       width: 92,
-      sorter: (a, b) => a.msgs - b.msgs,
+      sorter: (a, b) => (a.msgs ?? -1) - (b.msgs ?? -1),
+      render: (n: number | null) => <NumberOrNull value={n} />,
     },
     {
-      title: <Tooltip title={METRIC.events}>事件数</Tooltip>,
+      title: <Tooltip title={METRIC.events}>事件量</Tooltip>,
       dataIndex: "events",
       key: "events",
       className: "ra-metric-emphasis",
@@ -196,12 +207,27 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       key: "coverage",
       width: 116,
       render: (_, r) =>
-        r.failedDays > 0 ? (
+        r.unknownDays > 0 ? (
+          <span style={{ color: "var(--c2e-critical-ink)" }}>{r.unknownDays} 日最新结果未知</span>
+        ) : r.missingDays > 0 ? (
+          <span style={{ color: "var(--c2e-critical-ink)" }}>
+            {r.missingDays} 日无记录，完整性未知{r.failedDays ? ` · ${r.failedDays} 日失败` : ""}
+          </span>
+        ) : r.failedDays > 0 ? (
           <Tooltip title={`${r.failedDays} 个「群 × 日」抽取失败，这一行的事件级数字不含它们`}>
             <span style={{ color: "var(--c2e-critical-ink)", fontWeight: 600 }}>
               {r.failedDays} / {r.totalDays} 日失败
             </span>
           </Tooltip>
+        ) : r.pendingLabels || r.failedLabels ? (
+          <span style={{ color: "var(--c2e-critical-ink)" }}>
+            {[
+              r.pendingLabels ? `${r.pendingLabels} 日待打标` : "",
+              r.failedLabels ? `${r.failedLabels} 日打标失败` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
         ) : (
           <span style={{ color: "var(--c2e-good-ink)" }}>{r.totalDays} 日完整</span>
         ),
@@ -240,33 +266,6 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       </header>
 
       <RoomFilters meta={analytics.dataset.meta} api={api} />
-      <div className="od-context ra-context">
-        <div>
-          <span>
-            当前群数 <b>{formatInt(rows.length)}</b>
-          </span>
-          <span>
-            首响阈值 <b>{formatDuration(slaSec)}</b>
-          </span>
-        </div>
-        <div className="ra-selected-filters" role="region" aria-label="已选筛选条件">
-          <ContextBar analytics={analytics} api={api} part="filters" />
-        </div>
-        {cov.failed ? (
-          <details className="ra-coverage">
-            <summary>
-              <InfoCircleOutlined /> {cov.failed} / {cov.cells} 个群日抽取失败
-            </summary>
-            <p>
-              涉及 {cov.rooms.map(roomLabel).join("、")}，日期 {cov.days.join("、")}。
-              事件指标不含失败群日，当前统计不完整。
-            </p>
-          </details>
-        ) : (
-          <span>{cov.cells ? "当前窗口抽取完整" : "当前窗口无群日记录"}</span>
-        )}
-      </div>
-
       {rows.length === 0 ? (
         <EmptyState
           title="没有匹配的群"
@@ -278,7 +277,41 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           <div className="od-section-head">
             <div>
               <h2 id="room-details-title">群维度指标</h2>
-              <p>{rows.length} 个群 · 当前筛选范围</p>
+              <p className="ra-summary" aria-label="群指标摘要">
+                <span>
+                  活跃群 <b>{activeRooms === null ? "—" : formatInt(activeRooms)}</b> 个
+                  <Tooltip title={METRIC.rooms} mouseEnterDelay={0.8} trigger={["hover", "focus"]}>
+                    <button type="button" className="od-info" aria-label="活跃群口径">
+                      <InfoCircleOutlined aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </span>
+                <span>
+                  消息总量 <b>{messageTotal === null ? "—" : formatInt(messageTotal)}</b> 条
+                  <Tooltip
+                    title={METRIC.roomMessageTotal}
+                    mouseEnterDelay={0.8}
+                    trigger={["hover", "focus"]}
+                  >
+                    <button type="button" className="od-info" aria-label="消息总量口径">
+                      <InfoCircleOutlined aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </span>
+                <span>
+                  事件量 <b>{eventTotal === null ? "—" : formatInt(eventTotal)}</b> 起
+                </span>
+                <span>当前筛选范围 · {formatInt(rows.length)} 个群</span>
+                {messageTotal === null ? (
+                  <span className="ra-coverage">无群日记录，消息总量暂缺</span>
+                ) : messagesIncomplete ? (
+                  <span className="ra-coverage">数据不完整，仅已知量</span>
+                ) : null}
+                {eventsIncomplete ? <span className="ra-coverage">事件统计不完整</span> : null}
+                {rows.some((row) => row.pendingLabels || row.failedLabels) ? (
+                  <span className="ra-coverage">分类统计未完成</span>
+                ) : null}
+              </p>
             </div>
             <Link className="od-link" to={hrefWith({}, "/detail")}>
               事件明细 <ArrowRightOutlined />
@@ -289,7 +322,18 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
             rowKey="key"
             columns={columns}
             dataSource={rows}
-            pagination={false}
+            pagination={{
+              current: currentPage,
+              pageSize,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100, 200],
+              showTotal: (total, range) => `${range[0]} - ${range[1]} / 共 ${total} 个群`,
+              onChange: (page, size) =>
+                patch({ page: size === pageSize ? page : 1, pageSize: size }),
+            }}
+            onChange={(_, __, ___, extra) => {
+              if (extra.action === "sort") patch({ page: 1 });
+            }}
             scroll={{ x: "max-content" }}
             onRow={(record) => ({
               className: "c2e-row-clickable",

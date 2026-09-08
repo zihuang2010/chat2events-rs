@@ -7,7 +7,13 @@ import { Tooltip } from "antd";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
-import { agentRollup, categoryRollup, isUnreplied, roomRollup } from "@/domain/metrics";
+import {
+  agentRollup,
+  categoryRollup,
+  coverageLabel,
+  isUnreplied,
+  roomRollup,
+} from "@/domain/metrics";
 import { formatDuration, formatDurationCompact, formatInt, formatPercent } from "@/lib/format";
 import { EventDrawer } from "@/features/detail/EventDrawer";
 import { CategoryPie, OverviewTrend, ResponseDistribution } from "./OverviewCharts";
@@ -88,9 +94,8 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
   const { hrefWith } = api;
   const [roomOrder, setRoomOrder] = useState("msgs");
   const m = msgRollup(analytics, api);
-  const recordedDays = m.byDay.filter((d) => d.cells > 0).length;
-  const missingDays = days.length - recordedDays;
-  const unavailable = cov.failed === cov.cells;
+  const missingDays = cov.missing;
+  const unavailable = cov.known === 0;
   const count = (n: number) => (unavailable ? "—" : formatInt(n));
   const slaLabel = SLA_OPTIONS.find((o) => o.value === slaSec)?.label ?? `${slaSec} 秒`;
   const cats = categoryRollup(events, "level1", analytics.taxIndex);
@@ -106,10 +111,10 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
     query: analytics.query,
   }).sort((a, b) => {
     if (roomOrder === "unreplied")
-      return (b.unreplied ?? -1) - (a.unreplied ?? -1) || b.msgs - a.msgs;
+      return (b.unreplied ?? -1) - (a.unreplied ?? -1) || (b.msgs ?? -1) - (a.msgs ?? -1);
     if (roomOrder === "overdue")
-      return (b.overdueRate ?? -1) - (a.overdueRate ?? -1) || b.msgs - a.msgs;
-    return b.msgs - a.msgs;
+      return (b.overdueRate ?? -1) - (a.overdueRate ?? -1) || (b.msgs ?? -1) - (a.msgs ?? -1);
+    return (b.msgs ?? -1) - (a.msgs ?? -1);
   });
   const rooms = allRooms.slice(0, 10);
   const heatMax = Math.max(1, ...rooms.flatMap((r) => r.series.map((n) => n ?? 0)));
@@ -117,6 +122,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
     events,
     groupDaily: analytics.dataset.groupDaily,
     agents: analytics.dataset.meta.agents,
+    rooms: analytics.dataset.meta.rooms,
     days,
     dayset: analytics.dayset,
     slaSec,
@@ -124,7 +130,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
     query: analytics.query,
   })
     .sort((a, b) => b.involved - a.involved)
-    .slice(0, 8);
+    .slice(0, 10);
   const maxInvolved = Math.max(1, ...agentRows.map((a) => a.involved));
   const queue = events
     .filter(isUnreplied)
@@ -166,18 +172,24 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
         </div>
       </header>
 
-      <section className="od-metrics" aria-label="核心指标">
+      <section className="od-metrics od-overview-metrics" aria-label="核心指标">
         <Metric
-          label="消息量"
+          label="活跃群"
+          value={count(agg.rooms)}
+          unit="个"
+          info={METRIC.rooms}
+          to={hrefWith({}, "/rooms")}
+          note="当前事件涉及的群 · 按群去重"
+        />
+        <Metric
+          label="消息总量"
           value={cov.cells ? formatInt(m.msgs) : "—"}
           unit="条"
           info={MSG_INFO}
           to={hrefWith({}, "/rooms")}
           note={
             missingDays ? (
-              <>
-                已记录 {recordedDays} / {days.length} 天 · 日均暂缺
-              </>
+              <>{missingDays} 个群日无记录 · 日均暂缺</>
             ) : (
               <>日均 {days.length ? formatInt(Math.round(m.msgs / days.length)) : "—"} 条</>
             )
@@ -230,9 +242,6 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
 
       <div className="od-context">
         <div>
-          <Link to={hrefWith({}, "/rooms")}>
-            活跃群 <b>{count(agg.rooms)}</b>
-          </Link>
           <Link to={hrefWith({}, "/agents")}>
             活跃客服数 <b>{count(agg.agents)}</b>
           </Link>
@@ -240,14 +249,14 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
             首响阈值 <b>{slaLabel}</b>
           </span>
         </div>
-        {cov.failed || missingDays ? (
+        {!cov.complete ? (
           <Link className="od-coverage" to={hrefWith({}, "/rooms")}>
-            <InfoCircleOutlined /> {cov.failed ? `${cov.failed} 个群日抽取失败` : null}
-            {cov.failed && missingDays ? " · " : null}
-            {missingDays ? `${missingDays} 天无记录` : null} · 事件统计不完整 <ArrowRightOutlined />
+            <InfoCircleOutlined /> {coverageLabel(cov)} ·{" "}
+            {cov.pendingLabels || cov.failedLabels ? "分类统计未完成" : "事件统计不完整"}{" "}
+            <ArrowRightOutlined />
           </Link>
         ) : (
-          <span>{cov.cells ? "当前窗口抽取完整" : "当前窗口无群日记录"}</span>
+          <span>{coverageLabel(cov)}</span>
         )}
       </div>
 
@@ -314,7 +323,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
               value={roomOrder}
               onChange={(e) => setRoomOrder(e.target.value)}
             >
-              <option value="msgs">消息量</option>
+              <option value="msgs">消息总量</option>
               <option value="unreplied">无响应数</option>
               <option value="overdue">超时率</option>
             </select>
@@ -331,7 +340,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
               <thead>
                 <tr>
                   <th scope="col">群聊</th>
-                  <th scope="col">消息量</th>
+                  <th scope="col">消息总量</th>
                   <th scope="col">事件量</th>
                   {days.map((day) => (
                     <th className="od-day" scope="col" key={day}>
@@ -359,7 +368,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
                         </span>
                       ) : null}
                     </th>
-                    <td className="od-num">{formatInt(r.msgs)}</td>
+                    <td className="od-num">{r.msgs === null ? "—" : formatInt(r.msgs)}</td>
                     <td className="od-num">{r.events === null ? "—" : formatInt(r.events)}</td>
                     {r.series.map((n, i) => (
                       <td className="od-day" key={days[i]}>
@@ -474,7 +483,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
             to={hrefWith({ status: "unreplied", overdueOnly: null }, "/detail")}
           />
           <div className="od-queue">
-            {queue.slice(0, 5).map((e) => (
+            {queue.slice(0, 6).map((e) => (
               <Link className="od-queue-row" key={e.id} to={hrefWith({ drawer: e.id })}>
                 <span className="od-queue-summary" title={e.summary}>
                   {e.summary}

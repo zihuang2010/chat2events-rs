@@ -92,27 +92,36 @@ export function buildOverviewTrend(
   return {
     ...common,
     grid: [
-      { left: 44, right: 12, top: 34, height: 146 },
-      { left: 44, right: 12, top: 236, height: 74 },
+      { left: 44, right: 12, top: 34, height: 74 },
+      { left: 44, right: 12, top: 164, height: 146 },
     ],
     xAxis: [
       { ...dates, gridIndex: 0 },
       { ...dates, gridIndex: 1 },
     ],
     yAxis: [
-      { ...axis, gridIndex: 0, name: "事件 / 起", nameTextStyle: { color: skin.c.ink2 } },
       {
         ...axis,
-        gridIndex: 1,
-        name: "消息 / 条",
+        gridIndex: 0,
+        name: "消息总量 / 条",
         nameTextStyle: { color: skin.c.ink2 },
         splitNumber: 2,
       },
+      { ...axis, gridIndex: 1, name: "事件 / 起", nameTextStyle: { color: skin.c.ink2 } },
     ],
     series: [
       {
+        name: "消息总量",
+        type: "bar",
+        data: msgs.map((m) => (m.cells ? m.msgs : null)),
+        barMaxWidth: 28,
+        itemStyle: { color: skin.c.barSoft, borderRadius: [3, 3, 0, 0] },
+      },
+      {
         name: "事件量",
         type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
         data: known(dailyCounts(events, days)),
         smooth: false,
         showSymbol: true,
@@ -123,20 +132,13 @@ export function buildOverviewTrend(
       {
         name: "无响应",
         type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
         data: known(dailyCounts(events, days, isUnreplied)),
         smooth: false,
         symbolSize: 5,
         itemStyle: { color: skin.c.crit },
         lineStyle: { width: 2, type: "dashed" },
-      },
-      {
-        name: "消息量",
-        type: "bar",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: msgs.map((m) => (m.cells ? m.msgs : null)),
-        barMaxWidth: 28,
-        itemStyle: { color: skin.c.barSoft, borderRadius: [3, 3, 0, 0] },
       },
     ],
   };
@@ -172,16 +174,16 @@ export function OverviewTrend({ analytics, api }: OverviewProps) {
           ) : (
             <>
               <span>
+                <i data-tone="muted" />
+                消息总量
+              </span>
+              <span>
                 <i />
-                事件
+                事件量
               </span>
               <span>
                 <i data-tone="risk" />
                 无响应
-              </span>
-              <span>
-                <i data-tone="muted" />
-                消息
               </span>
             </>
           )}
@@ -193,7 +195,7 @@ export function OverviewTrend({ analytics, api }: OverviewProps) {
         ariaLabel={
           hourly
             ? "事件到达节奏：按 UTC+8 小时统计事件量，标出其中首响超时的事件"
-            : "每日业务量：上图为事件与无响应起数，下图为消息条数，各自从零起算；红色日期有抽取失败"
+            : "每日业务量：上图为消息总量，下图为事件量与无响应起数，各自从零起算；红色日期有抽取失败"
         }
         onEvent={
           hourly
@@ -212,8 +214,8 @@ export function OverviewTrend({ analytics, api }: OverviewProps) {
         {hourly
           ? "按首条消息时间归入小时 · UTC+8 · 首响超时含无响应"
           : analytics.cov.failed
-            ? "红色日期含抽取失败，事件量为已知部分；消息量不受抽取影响。"
-            : "事件按发生日期归属；消息量按群日记录汇总。"}
+            ? "红色日期含抽取失败，事件量为已知部分；消息总量不受抽取影响。"
+            : "事件按发生日期归属；消息总量按群日记录汇总。"}
         {!hourly && msgs.some((m) => !m.cells) ? " 缺少记录的日期留空，不按零计。" : null}
       </p>
     </>

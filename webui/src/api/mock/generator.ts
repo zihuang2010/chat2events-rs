@@ -381,6 +381,7 @@ export function buildMockDataset(seed = 20260829): MockDataset {
         first_reply_p50_sec: failed ? null : q(0.5),
         first_reply_p90_sec: failed ? null : q(0.9),
         extraction_status: failed ? "failed" : "ok",
+        classification_status: failed ? "failed" : "ok",
       });
 
       if (failed) {
@@ -425,7 +426,7 @@ export function buildMockDataset(seed = 20260829): MockDataset {
       agents: agents.map(({ agent, alias }) => ({ agent, alias })),
       taxonomy: MOCK_TAXONOMY,
       taxonomy_version: TAXONOMY_VERSION,
-      // 群名与客服姓名在库里不存在，这里的中文名是占位花名册，界面必须标「待补」
+      // 模拟数据中的群名与客服姓名是占位花名册，界面必须标「待补」。
       alias_is_authoritative: false,
     },
     events,

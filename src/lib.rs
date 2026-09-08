@@ -30,7 +30,7 @@
 //
 // ⚠️ `classify` 在 v1 之后转成 `pub`：`taxonomy` 的归纳与审阅、`recompute` 的重打标
 // 都拿 `Classifier` 和 `TaxonomyType` 说话，而 `examples/` 里那几个人工工具是它们的
-// 入口。转 `pub` 不破坏上面那条规矩 —— `classify` 里没有一行 SQL，读词表是 `store`
+// 入口。转 `pub` 不破坏上面那条规矩 —— `classify` 只操作本地答案缓存，读业务词表是 `store`
 // 的事，词表由调用方读好传进来（那同时也是「classify 不 import store」的由来）。
 //
 // **编排住在 lib 里，不住在 example**（跟 `main` / `daily` 同一条规矩）：
@@ -44,10 +44,11 @@ pub mod ingest;
 pub mod llm;
 pub(crate) mod metrics;
 pub(crate) mod mirror;
-pub(crate) mod nearest;
 pub mod recompute;
+mod rejection;
 pub(crate) mod store;
 pub mod taxonomy;
+pub mod web;
 pub mod window;
 
 #[cfg(test)]

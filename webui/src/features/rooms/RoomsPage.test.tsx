@@ -34,7 +34,7 @@ beforeAll(() => {
 });
 
 const raw = buildMockDataset();
-const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy);
+const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
 const dataset: LoadedDataset = {
   ...raw,
   events: decorate(raw.events, taxIndex),
@@ -44,9 +44,9 @@ const dataset: LoadedDataset = {
   fallbackReason: null,
 };
 
-function Harness() {
+function Harness({ data = dataset }: { data?: LoadedDataset }) {
   const api = useFilters();
-  const analytics = useAnalytics(dataset, api.filters);
+  const analytics = useAnalytics(data, api.filters);
   const location = useLocation();
   return (
     <>
@@ -55,6 +55,110 @@ function Harness() {
     </>
   );
 }
+
+it("shows_authoritative_room_name_without_placeholder_badge", () => {
+  const room = dataset.meta.rooms[0]!;
+  const data: LoadedDataset = {
+    ...dataset,
+    meta: {
+      ...dataset.meta,
+      rooms: [
+        {
+          ...room,
+          alias: "真实商家群",
+          merchant_id: "9007199254740993",
+          alias_is_authoritative: true,
+        },
+      ],
+      alias_is_authoritative: false,
+    },
+  };
+  const view = render(
+    <MemoryRouter initialEntries={[`/rooms?room=${room.roomid}`]}>
+      <Providers>
+        <Workbench>
+          <Harness data={data} />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  expect(view.container.querySelector(".ra-room-link")).toHaveTextContent("真实商家群");
+  expect(screen.queryByText("别名 待补")).not.toBeInTheDocument();
+});
+
+it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
+  "summarizes_messages_for_visible_rooms_%s",
+  (scope) => {
+    const cell = dataset.groupDaily[0]!;
+    const room = dataset.meta.rooms.find((row) => row.roomid === cell.roomid)!;
+    const other = dataset.meta.rooms.find((row) => row.roomid !== cell.roomid)!;
+    const otherDay = dataset.meta.days.find((day) => day !== cell.dt)!;
+    const cells = [
+      { ...cell, msg_count: 17 },
+      { ...cell, roomid: other.roomid, msg_count: 23, extraction_status: "failed" as const },
+      { ...cell, dt: otherDay, msg_count: 100 },
+    ];
+    const data: LoadedDataset = {
+      ...dataset,
+      meta: { ...dataset.meta, rooms: [room, other] },
+      events: [],
+      groupDaily:
+        scope === "missing"
+          ? []
+          : scope === "partial"
+            ? cells.slice(0, 1)
+            : scope === "zero"
+              ? cells.map((row) => ({ ...row, msg_count: 0 }))
+              : cells,
+    };
+    const search = new URLSearchParams({ from: cell.dt, to: cell.dt });
+    if (scope === "room") search.set("room", room.roomid);
+    if (scope === "query") search.set("q", room.roomid);
+    const view = render(
+      <MemoryRouter initialEntries={[`/rooms?${search}`]}>
+        <Providers>
+          <Workbench>
+            <Harness data={data} />
+          </Workbench>
+        </Providers>
+      </MemoryRouter>,
+    );
+    const summary = screen.getByLabelText("群指标摘要");
+    const expected =
+      scope === "missing" ? "—" : scope === "zero" ? "0" : scope === "all" ? "40" : "17";
+    expect(summary).toHaveTextContent(`消息总量 ${expected} 条`);
+    const roomCount = scope === "room" || scope === "query" ? 1 : 2;
+    expect(summary).toHaveTextContent(`${roomCount} 个群`);
+    expect(summary).toHaveTextContent(/活跃群.*消息总量.*事件量/);
+    expect(summary).toHaveTextContent(`活跃群 ${scope === "missing" ? "—" : "0"} 个`);
+    expect(summary).toHaveTextContent(`事件量 ${scope === "missing" ? "—" : "0"} 起`);
+    expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(roomCount);
+    if (scope === "partial") expect(summary).toHaveTextContent("仅已知量");
+    if (scope === "missing") expect(summary).toHaveTextContent("消息总量暂缺");
+    if (scope === "all") expect(summary).not.toHaveTextContent("数据不完整");
+  },
+);
+
+it("缺记录的群保持可见并标为未知，不声称抽取完整", () => {
+  const room = dataset.meta.rooms[0]!;
+  const data = {
+    ...dataset,
+    groupDaily: dataset.groupDaily.filter((r) => r.roomid !== room.roomid),
+  };
+  const view = render(
+    <MemoryRouter initialEntries={[`/rooms?room=${room.roomid}`]}>
+      <Providers>
+        <Workbench>
+          <Harness data={data} />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
+  expect(view.container.textContent).toContain("完整性未知");
+  expect(view.container.textContent).not.toContain("当前窗口抽取完整");
+  expect(view.container.textContent).toContain("7 日无记录");
+});
 
 it("选择一个群后只显示该群指标", () => {
   const room = dataset.meta.rooms[0]!;
@@ -101,7 +205,7 @@ it("群表前置消息数，点击群名打开独立七天指标，关闭保留�
   const headers = [...view.container.querySelectorAll(".ra-details .ant-table-thead th")].map(
     (cell) => cell.textContent,
   );
-  expect(headers.slice(0, 3)).toEqual(["群", "消息数", "事件数"]);
+  expect(headers.slice(0, 3)).toEqual(["群", "消息总量", "事件量"]);
   expect(headers).toContain("主要事件类型");
   expect(headers.slice(4, 9)).toEqual(["商家发起", "首响 P50", "首响 P90", "无响应", "无响应率"]);
   expect(screen.getByRole("heading", { name: "群聊洞察" })).toBeInTheDocument();
@@ -110,7 +214,7 @@ it("群表前置消息数，点击群名打开独立七天指标，关闭保留�
   await user.click(button);
   const dialog = await screen.findByRole("dialog");
   expect(dialog).toHaveTextContent("2026-08-25 至 2026-08-31");
-  for (const name of ["消息指标", "事件指标", "事件类型分布", "首响指标"]) {
+  for (const name of ["消息总量", "事件量", "事件类型分布", "首响指标"]) {
     expect(within(dialog).getByRole("heading", { name })).toBeInTheDocument();
   }
   expect(within(dialog).getAllByRole("img", { name: /近7天/ })).toHaveLength(4);

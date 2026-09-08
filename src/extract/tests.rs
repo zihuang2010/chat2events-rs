@@ -56,6 +56,7 @@ pub(crate) fn msgs_with(n: usize, big_gap_at: Option<usize>) -> Vec<Message> {
             corp: "C".into(),
             at,
             sender_id: format!("u{}", i % 4),
+            official_user_id: None,
             sender_role: if internal {
                 Role::Internal
             } else {
@@ -70,6 +71,145 @@ pub(crate) fn msgs_with(n: usize, big_gap_at: Option<usize>) -> Vec<Message> {
 
 pub(crate) fn msgs(n: usize) -> Vec<Message> {
     msgs_with(n, None)
+}
+
+#[tokio::test]
+async fn live_model_retries_invalid_output_and_sends_a_strict_nested_schema() {
+    use serde_json::json;
+    let bad = json!({"events":[{"ref":null,"msg_indexes":[1],"summary":"客户18472625055要求改期","still_open":true}]}).to_string();
+    let good = json!({"events":[{"ref":null,"msg_indexes":[1,2],"summary":"商家要求改期","still_open":false}]}).to_string();
+    let (base, server) = testutil::http_model(
+        vec![
+            (200, testutil::completion(&bad, "stop")),
+            (200, testutil::completion(&good, "stop")),
+        ],
+        false,
+    );
+    let model = LiveModel::new(testutil::test_llm(&base, "test"));
+    let input = msgs(2);
+    let events = extract(&input, &model, SEG).await.unwrap();
+    assert_eq!(
+        events[0].source_msg_ids,
+        input.iter().map(|m| m.msg_id.clone()).collect::<Vec<_>>()
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["messages"][2]["content"], bad);
+    assert!(
+        requests[1]["messages"][3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("18472625055")
+    );
+    let schema = &requests[0]["response_format"]["json_schema"]["schema"];
+    let draft = &schema["$defs"]["WireDraft"];
+    assert_eq!(draft["additionalProperties"], json!(false));
+    assert!(
+        draft["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ref")),
+        "嵌套可空字段也必须 required"
+    );
+}
+
+#[tokio::test]
+async fn live_truncation_bisects_before_json_parsing_and_carries_notes() {
+    use serde_json::json;
+    let half = |r: serde_json::Value| {
+        json!({"events":[{"ref":r,"msg_indexes":[1,2],"summary":"商家要求改期","still_open":true}]})
+            .to_string()
+    };
+    let (base, server) = testutil::http_model(
+        vec![
+            (200, testutil::completion("{broken", "length")),
+            (200, testutil::completion(&half(json!(null)), "stop")),
+            (200, testutil::completion(&half(json!("E1")), "stop")),
+        ],
+        false,
+    );
+    let input = msgs_with(4, Some(2));
+    let events = extract(
+        &input,
+        &LiveModel::new(testutil::test_llm(&base, "test")),
+        SEG,
+    )
+    .await
+    .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].source_msg_ids,
+        input.iter().map(|m| m.msg_id.clone()).collect::<Vec<_>>()
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[2]["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("E1")
+    );
+}
+
+#[tokio::test]
+async fn live_http_errors_do_not_bisect_the_conversation() {
+    let (base, server) = testutil::http_model(
+        vec![(
+            400,
+            serde_json::json!({"error":{"message":"synthetic rejection","type":"invalid_request_error","code":"bad_request"}}),
+        )],
+        false,
+    );
+    let error = extract(
+        &msgs(4),
+        &LiveModel::new(testutil::test_llm(&base, "test")),
+        SEG,
+    )
+    .await
+    .unwrap_err();
+    assert!(!error.to_string().contains("输出预算耗尽"));
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_timeout_is_a_split_signal_without_a_transport_retry() {
+    use std::{io::Read, net::TcpListener, time::Duration as StdDuration};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut cfg: crate::config::Config = toml::from_str(include_str!("../../config.toml")).unwrap();
+    cfg.llm.extract.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    cfg.llm.timeout_secs = 1;
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(StdDuration::from_secs(3)))
+            .unwrap();
+        stream.read_exact(&mut [0]).unwrap();
+        std::thread::sleep(StdDuration::from_millis(1250));
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "超时不应在传输层重发"
+        );
+    });
+    let model = LiveModel::new(
+        crate::llm::Llm::new(&cfg.llm, &cfg.llm.extract, "test-only-key".into()).unwrap(),
+    );
+    assert!(
+        matches!(model.call("合成消息", 1, &BTreeSet::new()).await, Err(SegError::TooBig(reason)) if reason == "请求超时")
+    );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn live_connection_failure_is_not_a_split_signal() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    drop(listener);
+    let model = LiveModel::new(testutil::test_llm(&base, "test"));
+    assert!(matches!(
+        model.call("合成消息", 4, &BTreeSet::new()).await,
+        Err(SegError::Failed(_))
+    ));
 }
 
 pub(crate) fn draft(idx: &[usize], summary: &str, still_open: bool) -> Draft {
@@ -133,19 +273,17 @@ impl SegmentModel for BisectStub {
             return Err(SegError::TooBig("stub 吃不下".into()));
         }
         self.entering.lock().unwrap().push(open_refs.clone());
-        // 走真实的 validate —— 桩也要过校验，否则测的就不是生产那条路
-        validate(
-            vec![WireDraft {
-                r#ref: None,
-                msg_indexes: vec![1, segment_size],
-                summary: "自检桩".into(),
-                still_open: self.still_open,
-            }],
+        // 适配器通过公共构造入口复用真实校验。
+        EventDraft::new(
+            vec![1, segment_size],
+            "自检桩".into(),
+            None,
+            self.still_open,
             segment_size,
             open_refs,
         )
-        // `to_string()` 走 `Display` = 运维版。桩不该是逐字证据的第三个出口。
-        .map_err(|e| SegError::Failed(e.to_string().into()))
+        .map(|draft| vec![draft])
+        .map_err(SegError::Failed)
     }
 }
 

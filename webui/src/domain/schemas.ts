@@ -44,10 +44,10 @@ export const eventSchema = z
     first_responder: EASY_USER_ID.nullable(),
     summary: z.string(),
     /** 二级 type_id，**主类**。指标只按它统计 */
-    event_type: z.string(),
+    event_type: z.string().nullable(),
     /** 全集，第一个恒等于 event_type。副类只供下钻，不进任何指标 */
-    event_types: z.array(z.string()).min(1),
-    taxonomy_version: z.string(),
+    event_types: z.array(z.string()).min(1).nullable(),
+    taxonomy_version: z.string().nullable(),
   })
   .superRefine((event, ctx) => {
     if (event.occurred_on !== event.first_msg_time.slice(0, 10)) {
@@ -69,7 +69,11 @@ export const eventSchema = z
         message: "事件时间顺序不一致",
       });
     }
-    if (event.event_types[0] !== event.event_type) {
+    if (
+      event.event_type === null
+        ? event.event_types !== null || event.taxonomy_version !== null
+        : event.event_types?.[0] !== event.event_type || event.taxonomy_version === null
+    ) {
       ctx.addIssue({ code: "custom", path: ["event_types"], message: "首个分类必须等于主分类" });
     }
     if (
@@ -101,6 +105,9 @@ export const groupDailySchema = z
     first_reply_p50_sec: z.number().int().nonnegative().nullable(),
     first_reply_p90_sec: z.number().int().nonnegative().nullable(),
     extraction_status: z.enum(["ok", "failed"]),
+    classification_status: z.enum(["pending", "ok", "failed"]),
+    /** 只读取数派生：晚于群日记录的失败不能确定影响范围，保守标记未知。 */
+    freshness: z.enum(["known", "unknown"]).optional(),
   })
   .superRefine((row, ctx) => {
     const counts = [row.event_count, row.merchant_event_count, row.unreplied_count];
@@ -162,9 +169,8 @@ export const messageSchema = z.object({
 export type MessageRow = z.infer<typeof messageSchema>;
 
 /**
- * 群名与客服姓名在库里**不存在**（领域里只有 officialRoomId 和 easyUserId）。
- * 后端若能提供花名册就填 alias，并把 alias_is_authoritative 置真；
- * 否则前端一律显示 ID 并标注「待补」，绝不把占位名当成真名端出去。
+ * 群名称来自 b_wecom_merchant_group，逐群标记是否为权威名称。
+ * 商家 ID 用字符串保留 BIGINT 精度；客服姓名仍由全局标记控制。
  */
 export const metaSchema = z.object({
   corpid: z.string(),
@@ -175,7 +181,14 @@ export const metaSchema = z.object({
       (days) => days.every((day, index) => index === 0 || day > days[index - 1]!),
       "日期必须唯一且按升序排列",
     ),
-  rooms: z.array(z.object({ roomid: z.string(), alias: z.string().nullable() })),
+  rooms: z.array(
+    z.object({
+      roomid: z.string(),
+      alias: z.string().nullable(),
+      merchant_id: z.string().nullable().optional(),
+      alias_is_authoritative: z.boolean().optional(),
+    }),
+  ),
   agents: z.array(z.object({ agent: EASY_USER_ID, alias: z.string().nullable() })),
   taxonomy: z.array(taxonomyTypeSchema),
   taxonomy_version: z.string(),
@@ -188,6 +201,15 @@ export const groupDailyListSchema = z.array(groupDailySchema);
 export const agentDailyListSchema = z.array(agentDailySchema);
 export const failureListSchema = z.array(failureSchema);
 export const messageListSchema = z.array(messageSchema);
+
+/** 一次只读事务的完整数据集，meta 与两类记录必须来自同一快照。 */
+export const rawDatasetSchema = z.object({
+  meta: metaSchema,
+  events: eventListSchema,
+  groupDaily: z.array(
+    groupDailySchema.refine((row) => row.freshness !== undefined, "缺少处理新鲜度"),
+  ),
+});
 
 /** 指标层实际消费的形态：原始行 + 派生字段。派生只算一次。 */
 export interface DecoratedEvent extends EventRow {
@@ -203,6 +225,4 @@ export interface Dataset {
   readonly meta: Meta;
   readonly events: readonly DecoratedEvent[];
   readonly groupDaily: readonly GroupDailyRow[];
-  readonly agentDaily: readonly AgentDailyRow[];
-  readonly failures: readonly FailureRow[];
 }

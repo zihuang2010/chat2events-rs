@@ -52,7 +52,7 @@ impl Role {
     }
 }
 
-/// 八个字段，每一个都有读取点。
+/// 每个字段都有读取点。
 ///
 /// 端口上每多一个死字段，就是向未来每一个适配器收一次税 —— `msg_type` /
 /// `mentions` / `plain_text` 曾经在这里，读取点分别是 0 / 0 / 只当兜底。
@@ -63,6 +63,8 @@ pub struct Message {
     pub corp: String,
     pub at: NaiveDateTime,
     pub sender_id: String,
+    /// 内部员工账号，仅用于落库关联账号信息，不进入模型提示词。
+    pub official_user_id: Option<String>,
     pub sender_role: Role,
     pub text: String,
     pub reply_to: Option<String>,

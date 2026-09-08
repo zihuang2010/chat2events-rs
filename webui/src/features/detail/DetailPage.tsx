@@ -18,6 +18,15 @@ import "./detail.css";
 export function DetailPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const { events, agg, roomLabel, agentLabel, slaSec } = analytics;
   const { filters, patch, reset } = api;
+  const sourceMessages = useMemo(
+    () =>
+      new Set(
+        events.flatMap((event) =>
+          event.source_msg_ids.map((id) => JSON.stringify([event.corpid, event.roomid, id])),
+        ),
+      ).size,
+    [events],
+  );
   const [sort, setSort] = useState<{ key: string; order: "ascend" | "descend" | null }>({
     key: "first_msg_time",
     order: "descend",
@@ -78,7 +87,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             </span>
           </button>
           <div className="ia-trace-meta">
-            {e.event_types.length > 1 ? (
+            {e.event_types && e.event_types.length > 1 ? (
               <Tooltip title="副类只落在 event_types 列供下钻，不进任何指标">
                 <Tag>+{e.event_types.length - 1} 副类</Tag>
               </Tooltip>
@@ -197,15 +206,31 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       api={api}
     >
       <InsightMetrics
-        unavailable={analytics.cov.cells === analytics.cov.failed}
+        unavailable={analytics.cov.known === 0}
         items={[
           {
+            key: "rooms",
+            label: "活跃群",
+            value: formatInt(agg.rooms),
+            unit: "个",
+            info: METRIC.rooms,
+            note: "当前事件涉及的群 · 按群去重",
+          },
+          {
+            key: "sourceMessages",
+            label: "来源消息数",
+            value: formatInt(sourceMessages),
+            unit: "条",
+            info: METRIC.sourceMessages,
+            note: "当前匹配事件 · 按消息去重",
+          },
+          {
             key: "events",
-            label: "匹配事件",
+            label: "事件量",
             value: formatInt(agg.events),
             unit: "起",
             info: METRIC.events,
-            note: `${agg.rooms} 个群 · ${agg.agents} 位活跃客服`,
+            note: `${agg.agents} 位活跃客服 · 按匹配事件去重`,
           },
           {
             key: "merchant",
@@ -243,7 +268,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
         {events.length === 0 ? (
           <EmptyState
             title="没有匹配的事件"
-            description="当前筛选组合下一条事件都没有。这不代表数据缺失：若要确认是不是抽取失败造成的，看上方完整性提示。"
+            description="当前筛选条件下没有事件。抽取失败不代表业务量为零。"
             onReset={reset}
           />
         ) : (

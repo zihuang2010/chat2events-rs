@@ -60,7 +60,7 @@ fn build_sql(n_months: usize) -> String {
 /// - `file_status = 0` —— 1 = 冻结，不该再读（`CONTEXT.md` 一直把它写成筛选条件，
 ///   此前代码没实现）。顺带让 `idx_file_status(file_status, file_month, id)` 用得上 ——
 ///   只有 `is_deleted` 时它是全表扫。
-/// - `ndjson_last_append_time >= 窗口起点` —— 上游从 T-N 之前就没再追加过的文件，
+/// - `ndjson_last_append_time >= 窗口起点` —— 上游从窗口起点之前就没再追加过的文件，
 ///   **必然不含窗口内的消息**：追加时刻只会晚于消息时刻，不会早于。所以跳过它不是
 ///   近似，是恒等式。实测上游那一列与 `gmt_modified_time` 逐秒相同、会话时区 +08:00，
 ///   跟窗口是同一个墙钟，不需要留时差余量。

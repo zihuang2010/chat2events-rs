@@ -6,7 +6,7 @@ import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import { buildRoomCharts, buildRoomInsights } from "./roomInsights";
 
 const raw = buildMockDataset();
-const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy);
+const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
 const dataset: LoadedDataset = {
   ...raw,
   events: decorate(raw.events, taxIndex),
@@ -16,6 +16,27 @@ const dataset: LoadedDataset = {
   loadedAt: 0,
 };
 const roomId = raw.meta.rooms[0]!.roomid;
+
+it("keeps_fact_metrics_available_while_room_labels_are_pending", () => {
+  const cell = raw.groupDaily.find(
+    (row) => row.roomid === roomId && row.extraction_status === "ok",
+  )!;
+  const model = buildRoomInsights(
+    {
+      ...dataset,
+      meta: { ...dataset.meta, days: [cell.dt] },
+      groupDaily: [{ ...cell, classification_status: "pending" }],
+      events: [],
+    },
+    roomId,
+    1800,
+  );
+  expect(model.pendingLabels).toBe(1);
+  expect(model.failedLabels).toBe(0);
+  expect(model.daily.at(-1)!.classificationStatus).toBe("pending");
+  expect(model.daily.at(-1)!.metrics).not.toBeNull();
+  expect(model.categories.level1).toEqual([]);
+});
 
 describe("群聊近七天指标", () => {
   it("固定连续七个自然日，按群隔离，缺记录留空，成功且无事件是零", () => {
@@ -96,7 +117,8 @@ describe("群聊近七天指标", () => {
       occurred_on: index < 9 ? first : last,
       asker_role: "EXTERNAL" as const,
       firstReplySec: index < 9 ? 60 : 6000,
-      event_types: [dataset.events[0]!.event_type, "secondary"],
+      event_types: ["urge_visit", "secondary"],
+      event_type: "urge_visit",
     }));
     const source: LoadedDataset = {
       ...dataset,

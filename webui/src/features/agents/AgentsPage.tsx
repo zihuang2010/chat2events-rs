@@ -43,7 +43,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
     agg,
   } = analytics;
   const { filters, patch, go, hrefWith, reset } = api;
-  const unavailable = analytics.cov.cells === analytics.cov.failed;
+  const unavailable = analytics.cov.known === 0;
 
   const rows = useMemo(
     () =>
@@ -51,6 +51,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         events,
         groupDaily: dataset.groupDaily,
         agents: dataset.meta.agents,
+        rooms: dataset.meta.rooms.filter((room) => !filters.room || room.roomid === filters.room),
         days,
         dayset,
         slaSec,
@@ -58,8 +59,11 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         // events 已按摘要、群与客服统一筛选，不能再把关键词缩窄为仅姓名。
         query: "",
       }).filter((row) => !filters.agent || row.key === filters.agent),
-    [events, dataset, days, dayset, slaSec, agentLabel, filters.agent],
+    [events, dataset, days, dayset, slaSec, agentLabel, filters.agent, filters.room],
   );
+
+  const pageSize = Math.min(200, filters.pageSize);
+  const currentPage = Math.min(filters.page, Math.max(1, Math.ceil(rows.length / pageSize)));
 
   const points: WorkloadPoint[] = useMemo(
     () =>
@@ -80,7 +84,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
   const focus = filters.focusAgent ? rows.find((r) => r.key === filters.focusAgent) : undefined;
   const involvedTotal = rows.reduce((sum, row) => sum + row.involved, 0);
   const maxInvolved = Math.max(1, ...rows.map((row) => row.involved));
-  const closeFocus = () => patch({ focusAgent: null, page: filters.page });
+  const closeFocus = () => patch({ focusAgent: null, page: currentPage });
   const responseParts = [
     {
       key: "ontime",
@@ -124,7 +128,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       dataIndex: "label",
       key: "label",
       fixed: "left",
-      width: 180,
+      width: 160,
       sorter: (a, b) => a.label.localeCompare(b.label, "zh"),
       render: (_, r) => (
         <>
@@ -135,7 +139,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             aria-haspopup="dialog"
             onClick={(event) => {
               event.stopPropagation();
-              patch({ focusAgent: r.key, page: filters.page });
+              patch({ focusAgent: r.key, page: currentPage });
             }}
           >
             {r.label}
@@ -154,6 +158,14 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       title: "参与工作量",
       children: [
         {
+          title: "活跃群",
+          dataIndex: "rooms",
+          key: "rooms",
+          align: "right",
+          width: 88,
+          sorter: (a, b) => a.rooms - b.rooms,
+        },
+        {
           title: (
             <span className="ag-column-title">
               参与事件 <InsightInfo label="参与事件口径" text={METRIC.involved} />
@@ -162,7 +174,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "involved",
           key: "involved",
           align: "right",
-          width: 150,
+          width: 136,
           defaultSortOrder: "descend",
           sorter: (a, b) => a.involved - b.involved,
           render: (v: number) => (
@@ -173,14 +185,6 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
               </span>
             </div>
           ),
-        },
-        {
-          title: "服务群",
-          dataIndex: "rooms",
-          key: "rooms",
-          align: "right",
-          width: 90,
-          sorter: (a, b) => a.rooms - b.rooms,
         },
       ],
     },
@@ -200,7 +204,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "owned",
           key: "owned",
           align: "right",
-          width: 100,
+          width: 120,
           sorter: (a, b) => a.owned - b.owned,
           render: (v: number, r) => (
             <>
@@ -214,7 +218,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "replySamples",
           key: "replySamples",
           align: "right",
-          width: 100,
+          width: 96,
           sorter: (a, b) => a.replySamples - b.replySamples,
           render: (v: number) => formatInt(v),
         },
@@ -223,7 +227,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "p50",
           key: "p50",
           align: "right",
-          width: 125,
+          width: 112,
           sorter: (a, b) => (a.p50 ?? Infinity) - (b.p50 ?? Infinity),
           render: (v: number | null) => <DurationOrNull value={v} />,
         },
@@ -232,7 +236,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "p90",
           key: "p90",
           align: "right",
-          width: 145,
+          width: 132,
           sorter: (a, b) => (a.p90 ?? Infinity) - (b.p90 ?? Infinity),
           render: (v: number | null) => (
             <span className={v !== null && v > slaSec ? "ag-warn" : undefined}>
@@ -249,7 +253,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           dataIndex: "overdueRate",
           key: "overdueRate",
           align: "right",
-          width: 120,
+          width: 112,
           sorter: (a, b) => (a.overdueRate ?? -1) - (b.overdueRate ?? -1),
           render: (v: number | null, r) => (
             <>
@@ -271,10 +275,12 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         </span>
       ),
       key: "coverage",
-      width: 130,
+      width: 140,
       render: (_, r) =>
         r.failedCells > 0 ? (
           <span className="ag-risk">{r.failedCells} 个群日缺失</span>
+        ) : r.coverageUnknown ? (
+          <span className="ag-risk">完整性未知</span>
         ) : (
           <span className="ag-muted">完整</span>
         ),
@@ -313,12 +319,20 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         className="ag-summary"
         items={[
           {
+            key: "rooms",
+            label: "活跃群",
+            value: formatInt(agg.rooms),
+            unit: "个",
+            info: METRIC.rooms,
+            note: "当前事件涉及的群 · 按群去重",
+          },
+          {
             key: "events",
-            label: "事件总数",
+            label: "事件量",
             value: formatInt(agg.events),
             unit: "起",
             info: METRIC.events,
-            note: `覆盖 ${agg.rooms} 个群 · ${filters.agent ? "所选客服参与 · " : ""}按事件去重`,
+            note: `${filters.agent ? "所选客服参与 · " : ""}按事件去重`,
           },
           {
             key: "agents",
@@ -445,21 +459,29 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                       <Table<AgentRow>
                         className="ag-table"
                         size="small"
+                        tableLayout="fixed"
                         rowKey="key"
                         columns={columns}
                         dataSource={rows}
                         pagination={{
-                          pageSize: 20,
-                          hideOnSinglePage: true,
-                          showSizeChanger: false,
+                          current: currentPage,
+                          pageSize,
+                          showSizeChanger: true,
+                          pageSizeOptions: [10, 20, 50, 100, 200],
+                          showTotal: (total, range) => `${range[0]} - ${range[1]} / 共 ${total} 人`,
+                          onChange: (page, size) =>
+                            patch({ page: size === pageSize ? page : 1, pageSize: size }),
                         }}
-                        scroll={{ x: 1240 }}
+                        onChange={(_, __, ___, extra) => {
+                          if (extra.action === "sort") patch({ page: 1 });
+                        }}
+                        scroll={{ x: 1100, y: "min(560px, 60vh)" }}
                         rowClassName={(record) =>
                           record.key === filters.focusAgent ? "ant-table-row-selected" : ""
                         }
                         onRow={(record) => ({
                           className: "c2e-row-clickable",
-                          onClick: () => patch({ focusAgent: record.key, page: filters.page }),
+                          onClick: () => patch({ focusAgent: record.key, page: currentPage }),
                         })}
                       />
                     ),
@@ -490,7 +512,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                             description="当前范围没有有效的商家首响时长样本。"
                           />
                         )}
-                        <p className="ag-muted">时长越低，响应越快；气泡大小表示服务群数。</p>
+                        <p className="ag-muted">时长越低，响应越快；气泡大小表示活跃群数。</p>
                       </div>
                     ),
                   },
@@ -559,8 +581,10 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
               <Alert
                 type="warning"
                 showIcon
-                title={`${focus.failedCells} 个服务群日抽取失败，事件统计不完整`}
+                title={`${focus.failedCells} 个群日抽取失败，事件统计不完整`}
               />
+            ) : focus.coverageUnknown ? (
+              <Alert type="warning" showIcon title="当前范围有失败或缺失群日，客服统计完整性未知" />
             ) : null}
             <InsightMetrics
               items={[
@@ -570,7 +594,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                   value: formatInt(focus.involved),
                   unit: "起",
                   info: METRIC.involved,
-                  note: `服务 ${focus.rooms} 个群`,
+                  note: `活跃群 ${focus.rooms} 个`,
                 },
                 {
                   key: "owned",
@@ -599,7 +623,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             <InsightSection
               title="每日变化"
               subtitle="参与事件与首响归属事件数"
-              footer="按事件开始日归属；服务群抽取失败日留空。"
+              footer="按事件开始日归属；当前范围有失败或缺失群日时留空。"
             >
               <div className="ia-chart">
                 <TrendChart
@@ -607,30 +631,12 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                   series={[
                     {
                       name: "参与事件",
-                      values: focus.involvedSeries.map((value, index) =>
-                        dataset.groupDaily.some(
-                          (day) =>
-                            day.dt === days[index] &&
-                            focus.roomIds.includes(day.roomid) &&
-                            day.extraction_status === "failed",
-                        )
-                          ? null
-                          : value,
-                      ),
+                      values: focus.involvedSeries,
                       area: true,
                     },
                     {
                       name: "首响归属",
-                      values: focus.ownedSeries.map((value, index) =>
-                        dataset.groupDaily.some(
-                          (day) =>
-                            day.dt === days[index] &&
-                            focus.roomIds.includes(day.roomid) &&
-                            day.extraction_status === "failed",
-                        )
-                          ? null
-                          : value,
-                      ),
+                      values: focus.ownedSeries,
                     },
                   ]}
                   ariaLabel={`${focus.label} 每日活跃量与首响归属事件数`}
@@ -641,7 +647,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
               </div>
             </InsightSection>
             <InsightSection
-              title="服务群明细"
+              title="活跃群明细"
               subtitle={`${focus.rooms} 个群 · 当前客服参与的事件`}
             >
               <Table

@@ -8,6 +8,9 @@
 //! read_by_ids(raw_root, corp, room, window, ids)  -> [Message]
 //! ```
 //!
+//! 跑批专用的 `read_synced_room` 在上述会话读取契约上限定本轮同步成功的月份。
+//! `list_rooms` / `read_room` 仅用于本地检查，不再决定无人值守跑批的输入名单。
+//!
 //! **契约**（这段文档注释就是「端口」本身 —— 不写 trait，判据是「一个适配器 =
 //! 假想接缝」。真出现第二个数据源那天再提取，那时契约已被验证过）：
 //!
@@ -51,6 +54,7 @@ mod read;
 mod types;
 
 pub use layout::{list_rooms, months, prune, room_path};
+pub(crate) use read::read_synced_room;
 pub use read::{read_by_ids, read_room};
 pub use types::{Conversation, IngestError, Message, Role};
 

@@ -1,5 +1,5 @@
 import type { LoadedDataset } from "@/api/source";
-import { aggregate, categoryRollup } from "@/domain/metrics";
+import { aggregate, categoryRollup, groupDayStatus } from "@/domain/metrics";
 import { addDays } from "@/lib/format";
 import type { EChartsOption } from "@/components/charts/EChart";
 import { chartBase, WORKBENCH_THEME } from "@/app/theme/workbench";
@@ -15,14 +15,11 @@ export function buildRoomInsights(dataset: LoadedDataset, roomId: string, slaSec
   );
   const daily = days.map((day) => {
     const cells = records.filter((row) => row.dt === day);
-    const status = !cells.length
-      ? "missing"
-      : cells.some((row) => row.extraction_status === "failed")
-        ? "failed"
-        : "ok";
+    const status = groupDayStatus(cells[0]);
     return {
       day,
       status,
+      classificationStatus: cells[0]?.classification_status,
       msgs: cells.length ? cells.reduce((sum, row) => sum + row.msg_count, 0) : null,
       senders: cells.length ? cells.reduce((sum, row) => sum + row.sender_count, 0) : null,
       metrics:
@@ -48,6 +45,13 @@ export function buildRoomInsights(dataset: LoadedDataset, roomId: string, slaSec
     msgs: records.length ? records.reduce((sum, row) => sum + row.msg_count, 0) : null,
     failed: daily.filter((day) => day.status === "failed").length,
     missing: daily.filter((day) => day.status === "missing").length,
+    unknown: daily.filter((day) => day.status === "unknown").length,
+    pendingLabels: daily.filter(
+      (day) => day.status === "ok" && day.classificationStatus === "pending",
+    ).length,
+    failedLabels: daily.filter(
+      (day) => day.status === "ok" && day.classificationStatus === "failed",
+    ).length,
     // 分位数在七天事件上重算，不平均每日 P50 / P90。
     metrics: knownDays.size ? aggregate(events, slaSec, end) : null,
     categories: {
@@ -90,7 +94,7 @@ export function buildRoomCharts(model: RoomInsights, level: "level1" | "level2")
     ],
     series: [
       {
-        name: "消息数",
+        name: "消息总量",
         type: "bar",
         data: model.daily.map((day) => day.msgs),
         barMaxWidth: 28,
@@ -111,7 +115,7 @@ export function buildRoomCharts(model: RoomInsights, level: "level1" | "level2")
     yAxis: { ...axis, name: "事件 / 起" },
     series: [
       {
-        name: "事件数",
+        name: "事件量",
         type: "bar",
         barMaxWidth: 28,
         data: model.daily.map((day) => day.metrics?.events ?? null),
@@ -160,7 +164,7 @@ export function buildRoomCharts(model: RoomInsights, level: "level1" | "level2")
     },
     series: [
       {
-        name: "事件数",
+        name: "事件量",
         type: "bar",
         barMaxWidth: 16,
         data: categories.map((row) => row.count),

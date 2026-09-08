@@ -8,6 +8,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
+import { addDays, windowBounds } from "@/lib/format";
 import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
 import type { FiltersApi } from "@/features/filters/useFilters";
 
@@ -23,8 +24,9 @@ export function RoomFilters({
   const { filters, patch, reset } = api;
   const first = meta.days[0] as string;
   const last = meta.days.at(-1) as string;
-  const from = filters.from ?? first;
-  const to = filters.to ?? last;
+  const { from, to } = windowBounds(meta.days, filters.from, filters.to);
+  const defaults = windowBounds(meta.days);
+  const threeDaysFrom = addDays(last, -2) < first ? first : addDays(last, -2);
   const [expanded, setExpanded] = useState(false);
   const [search, setSearch] = useState({ applied: filters.query, draft: filters.query });
   // 输入草稿保留原来的回车提交行为；URL 导航与重置同步已提交关键词。
@@ -35,18 +37,20 @@ export function RoomFilters({
     [filters.level1, filters.level2, filters.status].filter(Boolean).length +
     Number(filters.overdueOnly !== null);
   const active =
-    from !== first ||
-    to !== last ||
+    from !== defaults.from ||
+    to !== defaults.to ||
     Boolean(filters.room || filters.agent || filters.query.trim() || moreCount) ||
     filters.slaSec !== DEFAULT_SLA_SEC;
   const preset =
     from === first && to === last
       ? "all"
-      : to === last && meta.days.filter((day) => day >= from).length === 3
-        ? "3d"
-        : from === to && to === last
-          ? "1d"
-          : "custom";
+      : to === last && from === defaults.from
+        ? "7d"
+        : to === last && from === threeDaysFrom
+          ? "3d"
+          : from === to && to === last
+            ? "1d"
+            : "custom";
   const disabledDate = (date: Dayjs) => {
     const value = date.format("YYYY-MM-DD");
     return value < first || value > last;
@@ -126,6 +130,7 @@ export function RoomFilters({
               value={preset}
               options={[
                 { label: `全部 ${meta.days.length} 天`, value: "all" },
+                ...(defaults.from !== first ? [{ label: "近 7 天", value: "7d" }] : []),
                 { label: "近 3 天", value: "3d" },
                 { label: "最后 1 天", value: "1d" },
                 ...(preset === "custom"
@@ -134,8 +139,8 @@ export function RoomFilters({
               ]}
               onChange={(value) => {
                 if (value === "all") patch({ from: first, to: last });
-                if (value === "3d")
-                  patch({ from: meta.days[Math.max(0, meta.days.length - 3)] as string, to: last });
+                if (value === "7d") patch(defaults);
+                if (value === "3d") patch({ from: threeDaysFrom, to: last });
                 if (value === "1d") patch({ from: last, to: last });
               }}
             />
@@ -208,7 +213,10 @@ export function RoomFilters({
                 value: type.type_id,
                 label: `${type.parent_name} / ${type.name}`,
               })),
-              { value: UNTYPED, label: "未归类 / 归不上去" },
+              {
+                value: UNTYPED,
+                label: meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去",
+              },
             ]}
           />
         </Form.Item>

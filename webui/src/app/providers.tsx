@@ -15,7 +15,7 @@ const theme = buildAntdTheme();
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // T+1 跑批：数据一天只换一次，没必要反复回源
+      // 每日跑批：数据一天只换一次，没必要反复回源
       staleTime: 5 * 60_000,
       refetchOnWindowFocus: false,
       retry: 1,

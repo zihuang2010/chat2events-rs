@@ -31,8 +31,8 @@ use crate::{
     join,
     llm::Llm,
     metrics::{self, Attribution},
-    nearest::Nearest,
     store,
+    window::Window,
 };
 use chrono::NaiveDate;
 use sqlx::MySqlPool;
@@ -42,14 +42,7 @@ use tokio::task::JoinSet;
 /// 把 `[since, until]` 内所有群的 event 按 `version` 这版词表重打一遍标，
 /// 并重算客服日指标。
 ///
-/// `concurrency` / `seed` 走命令行：它们是**每次跑的决定**（当天的端点额度、
-/// 这一版词表要用多少种子），不是稳定取值。
-///
-/// **`margin` 反过来，走配置** —— `daily` 每天也要用同一个值，两边不一致就会让
-/// 冻结区和 `[T-2, T-1]` 用两套口径（承重不变量 1）。
-///
-/// `seed = 0` 退回老路：不训练、不写模型文件、全部问模型。
-#[allow(clippy::too_many_arguments)]
+/// `concurrency` 由命令行指定；所有未缓存摘要交给大模型，不自动训练。
 pub async fn run(
     config: &Config,
     llm: &Llm,
@@ -58,52 +51,36 @@ pub async fn run(
     since: NaiveDate,
     until: NaiveDate,
     concurrency: usize,
-    seed: usize,
 ) -> Result<()> {
     assert!(concurrency >= 1, "并发度至少 1");
     store::check_schema(pool).await?;
 
     let types = store::read_taxonomy(pool, version).await?;
-    // **空词表在这里是错误，不是 v0。** `daily` 那边空词表=「还没上词表」的正常状态；
-    // 但专门跑一趟把所有 event 重打成 `__untyped__` 没有任何意义，多半是版本号打错了。
-    if types.is_empty() {
-        return Err(format!(
-            "词表 {version} 在 b_merchant_group_taxonomy 里一行都没有 —— \
-             先人工插入词表（examples/taxonomy.rs 的 emit-sql）再重打标"
-        )
-        .into());
+    // v0 不用于历史重打标；正式词表统一由 Classifier 构造时校验。
+    if version == "v0" {
+        return Err("重打标不支持 v0".into());
     }
     if version != CURRENT_VERSION {
         tracing::warn!(
             version,
             current = CURRENT_VERSION,
             "重打标用的版本和 classify::CURRENT_VERSION 不一致：明天的跑批会把 \
-             [T-2, T-1] 这两天按 {} 重新打回去，那两天将和其余日期用不同的词表。\
+             日常跑批窗口按 {} 重新打回去，那些日期将和其余日期用不同的词表。\
              升版的正确顺序是「插词表 → 改 CURRENT_VERSION 重新编译部署 → 跑这个」。",
             CURRENT_VERSION
         );
     }
 
-    // ⚠️ **训练期这个 `Classifier` 必须还没挂类心** —— 种子标签要是模型给的答案，
-    // 拿旧类心去标种子等于用上一版模型教自己，训完只会把旧偏差固化下来。
-    let mut classifier = Classifier::new(version, types, llm.clone(), &config.classify.cache_dir)?;
-    let mut centroids = 0;
-    if seed > 0 {
-        let m = train(pool, &classifier, since, until, seed).await?;
-        m.save(classifier.model_path())?;
-        tracing::info!(path = %classifier.model_path().display(), "类心模型已写出，daily 下一轮起自动加载");
-        centroids = m.class_count();
-        classifier.attach(m, config.classify.margin);
-    }
-    // `Arc` 只为跨任务共享 —— `Classifier` 内部的缓存锁本来就是 `Mutex`，
-    // 临界区不跨 await（见 `classify::Classifier::classify`），并发下依旧成立。
+    let classifier = Classifier::new(version, types, llm.clone(), &config.classify.cache_dir)?;
+    // `Arc` 只为跨任务共享；分类请求不持有缓存锁，提交时统一采纳答案。
     let classifier = Arc::new(classifier);
+    // 「群 × 这段区间」是重打标全程的作用域。`Window::span` 顺带兜住「since > until」
+    // —— 那两个数来自命令行，错了该在第一秒炸，不该跑到 SQL 里去查一个空区间。
+    let days = Window::span(since, until);
     let rooms = store::read_event_rooms(pool, since, until).await?;
     tracing::info!(
         version,
         types = classifier.type_count(),
-        centroids,
-        margin = config.classify.margin,
         rooms = rooms.len(),
         concurrency,
         %since,
@@ -121,9 +98,9 @@ pub async fn run(
             t.record(join(set.join_next().await), rooms.len());
         }
         // `MySqlPool` 的 clone 是池的 `Arc` 克隆，不是新连接。
-        let (c, p) = (classifier.clone(), pool.clone());
+        let (c, p, d) = (classifier.clone(), pool.clone(), days.clone());
         set.spawn(async move {
-            let r = retag_room(&p, &c, &corp, &room, since, until).await;
+            let r = retag_room(&p, &c, &corp, &room, &d).await;
             (corp, room, r)
         });
     }
@@ -182,11 +159,11 @@ async fn retag_room(
     classifier: &Classifier,
     corp: &str,
     room: &str,
-    since: NaiveDate,
-    until: NaiveDate,
+    days: &Window,
 ) -> Result<u64> {
+    let shard = store::Shard::new(corp, room, days);
     // `ids` 是给 [`store::retag_room`] 定位行用的，**不进 `Event`**（事实列契约）。
-    let (ids, events) = store::read_events(pool, corp, room, since, until).await?;
+    let (ids, events) = store::read_events(pool, shard).await?;
     if events.is_empty() {
         return Ok(0);
     }
@@ -204,106 +181,5 @@ async fn retag_room(
         classifier.version(),
         Attribution::default(),
     );
-    store::retag_room(
-        pool,
-        corp,
-        room,
-        since,
-        until,
-        &ids,
-        &labels,
-        classifier.version(),
-        &agent,
-    )
-    .await
-}
-
-/// 「LLM 教一次」：拿**高频前 `seed` 条**去重摘要问模型，用答案训练类心。
-///
-/// 取高频而不是随机，是因为 `read_summary_counts` 已经按出现次数降序给好了 ——
-/// 高频那一头覆盖的事件最多，同样的种子预算买到的覆盖率最高。
-///
-/// ⚠️ 这一步**把全部去重摘要读进内存**（25 万条约几十 MB）。硬规则说的是
-/// 不把大数据集读进内存，这里破一次例：词表归纳在同一张表上做的是
-/// 同一件事，而重打标是人工触发的一次性进程，不是无人值守的跑批。
-///
-/// 种子答案会顺带填进打标缓存，所以**第二次跑这一步几乎不花钱**。
-async fn train(
-    pool: &MySqlPool,
-    classifier: &Classifier,
-    since: NaiveDate,
-    until: NaiveDate,
-    seed: usize,
-) -> Result<Nearest> {
-    let counts = store::read_summary_counts(pool, since, until).await?;
-    let take = seed.min(counts.len());
-    tracing::info!(
-        distinct = counts.len(),
-        seed = take,
-        "开始训练类心：先让模型标种子"
-    );
-    let sums: Vec<&str> = counts.iter().take(take).map(|(s, _)| s.as_str()).collect();
-    let labels = classifier.classify(&sums).await?;
-    let pairs: Vec<(String, Labels)> = sums.iter().map(|s| s.to_string()).zip(labels).collect();
-    evaluate(&pairs);
-    Ok(Nearest::train(&pairs))
-}
-
-/// 留出集自检 —— **跑之前先看这张表再定 `margin`**。
-///
-/// 每 5 条抽 1 条当验证集，用另外 4/5 训练，报几个阈值下的两个数：
-///   * **覆盖率** —— 有多少条敢本地贴（剩下的回落问模型，是成本不是错误）
-///   * **一致率** —— 敢贴的那些里，跟模型答案一样的占多少（**这才是质量**）
-///
-/// 一致率上不去就把 `margin` 调高（覆盖率随之下降），或者干脆 `seed = 0`
-/// 退回全部问模型。**它只打印不拦人** —— 拿多少一致率换多少钱是人的决定。
-fn evaluate(pairs: &[(String, Labels)]) {
-    let (train, hold): (Vec<_>, Vec<_>) = pairs
-        .iter()
-        .enumerate()
-        .partition(|(i, _)| !i.is_multiple_of(5));
-    let train: Vec<(String, Labels)> = train.into_iter().map(|(_, p)| p.clone()).collect();
-    if train.is_empty() || hold.is_empty() {
-        tracing::warn!("种子太少，跳过留出集自检");
-        return;
-    }
-    let m = Nearest::train(&train);
-    tracing::info!(
-        train = train.len(),
-        hold = hold.len(),
-        centroids = m.class_count(),
-        "留出集自检（margin / 覆盖率 / 一致率）"
-    );
-    // **留出集只跑一遍 predict**，五个阈值共用这一份结果。
-    // 此前是阈值套在外层、`predict` 在里层，同一条摘要被算五遍 —— 而 `margin`
-    // 跟阈值无关（它是最近类心与次近之差，`nearest.rs`），阈值只是拿它比大小。
-    let scored: Vec<(f32, bool)> = hold
-        .iter()
-        .filter_map(|(_, (s, want))| m.predict(s).map(|h| (h.margin, h.labels == want)))
-        .collect();
-
-    for th in [0.0f32, 0.02, 0.05, 0.10, 0.20] {
-        let (mut covered, mut agree) = (0usize, 0usize);
-        for (margin, ok) in &scored {
-            if *margin >= th {
-                covered += 1;
-                if *ok {
-                    agree += 1;
-                }
-            }
-        }
-        let pct = |x: usize, n: usize| {
-            if n == 0 {
-                0.0
-            } else {
-                x as f64 / n as f64 * 100.0
-            }
-        };
-        tracing::info!(
-            margin = th,
-            coverage = format!("{:.1}%", pct(covered, hold.len())),
-            agreement = format!("{:.1}%", pct(agree, covered)),
-            "留出集"
-        );
-    }
+    store::retag_room(pool, shard, &ids, &labels, classifier.version(), &agent).await
 }

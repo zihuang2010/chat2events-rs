@@ -4,7 +4,7 @@
 //! cargo run --release --example backfill -- . 2026-08-01 2026-08-31
 //! ```
 //!
-//! **一趟跑完，不是循环喂 `daily::run`。** `Window::new` 的窗口是 `[T-N, T-1]`，
+//! **一趟跑完，不是循环喂 `daily::run`。** `Window::new` 的窗口是 `[T-(N+1), T-2]`，
 //! 连着喂 31 个 run_date 会让相邻窗口两两重叠 —— 同一天被抽两遍，白烧一倍 token。
 //! 这里走 [`Window::span`]，每条消息恰好进一次模型。
 //!
@@ -47,7 +47,18 @@ async fn main() -> Result<()> {
         );
     }
 
-    let llm = Llm::new(&cfg.llm, secrets.llm.api_key)?;
+    // 补跑走整条流水线，两队都要 —— key 目前是同一个，第一次要 clone。
+    let extract_llm = Llm::new(&cfg.llm, &cfg.llm.extract, secrets.llm.api_key.clone())?;
+    let classify_llm = Llm::new(&cfg.llm, &cfg.llm.classify, secrets.llm.api_key)?;
     let pool = config::mysql_pool(&cfg.mysql, &secrets.mysql.url).await?;
-    daily::run_span(&cfg, &llm, &pool, run_date, w).await
+    daily::run_span(
+        &cfg,
+        &extract_llm,
+        &classify_llm,
+        &pool,
+        &secrets.oss,
+        run_date,
+        w,
+    )
+    .await
 }

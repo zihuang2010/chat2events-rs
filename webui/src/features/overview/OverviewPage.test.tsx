@@ -55,7 +55,7 @@ beforeAll(() => {
 
 function loadMock(): LoadedDataset {
   const raw = buildMockDataset();
-  const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy);
+  const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
   return {
     source: "mock",
     fallbackReason: null,
@@ -64,8 +64,6 @@ function loadMock(): LoadedDataset {
     meta: raw.meta,
     events: decorate(raw.events, taxIndex),
     groupDaily: raw.groupDaily,
-    agentDaily: raw.agentDaily,
-    failures: raw.failures,
   };
 }
 
@@ -107,6 +105,10 @@ describe("整体概览", () => {
     // 消息总量必须真的出现在页面上，不是只有一个「消息」字样的标签
     const total = msgRollup(props.analytics, props.api).msgs.toLocaleString("zh-CN");
     expect(view.container.textContent).toContain(total);
+    const labels = [
+      ...view.container.querySelectorAll(".od-overview-metrics .od-metric-label"),
+    ].map((label) => label.textContent);
+    expect(labels.slice(0, 3)).toEqual(["活跃群", "消息总量", "事件量"]);
     view.unmount();
   });
 
@@ -221,6 +223,7 @@ describe("概览的三块分布", () => {
       events: analytics.events,
       groupDaily: analytics.dataset.groupDaily,
       agents: analytics.dataset.meta.agents,
+      rooms: analytics.dataset.meta.rooms,
       days: analytics.days,
       dayset: analytics.dayset,
       slaSec: analytics.slaSec,
@@ -251,7 +254,7 @@ describe("概览的三块分布", () => {
       expect(text, `${t} 没渲染出来`).toContain(t);
     // 三块排行瓦片（消息最多 / 无响应最多 / 超时率最高）并进了群表的汇总列。
     // 列没了 = 那三张榜的信息被静默丢掉，比瓦片消失更难发现。
-    for (const h of ["消息量", "无响应", "超时率", "首响 P50"])
+    for (const h of ["消息总量", "无响应", "超时率", "首响 P50"])
       expect(text, `群表缺了「${h}」列`).toContain(h);
     expect(text).toContain("无响应不归属首响客服");
     const legend = [...view.container.querySelectorAll(".od-category-count")].map((el) =>
@@ -292,7 +295,7 @@ describe("D 的群表", () => {
       labelOf: analytics.roomLabel,
       query: analytics.query,
     })
-      .sort((a, b) => b.msgs - a.msgs)
+      .sort((a, b) => (b.msgs ?? -1) - (a.msgs ?? -1))
       .slice(0, 10)
       .map((r) => r.label);
 
@@ -337,7 +340,8 @@ describe("D 概览指标边界与交互", () => {
       </MemoryRouter>,
     );
     expect(view.container.textContent).toContain("最近 7 天");
-    expect(view.container.textContent).toContain("2 天无记录");
+    expect(view.container.textContent).toContain(`${2 * dataset.meta.rooms.length} 个群日无记录`);
+    expect(view.container.textContent).toContain("完整性未知");
     const dates = [...view.container.querySelectorAll(".od-table thead .od-day")].map(
       (el) => el.textContent,
     );
@@ -483,7 +487,7 @@ describe("D 概览指标边界与交互", () => {
       const svg = chart.renderToSVGString();
       expect(svg).toContain("<path");
       expect(svg).toContain("事件 / 起");
-      if (!hourly) expect(svg).toContain("消息 / 条");
+      if (!hourly) expect(svg).toContain("消息总量 / 条");
       chart.dispose();
     }
     const option = buildOverviewTrend(
@@ -491,8 +495,9 @@ describe("D 概览指标边界与交互", () => {
       msgs.map((m) => ({ ...m, failed: m.cells })),
       false,
     );
-    const series = option.series as { data: unknown[] }[];
-    expect(series[0]?.data).toEqual(msgs.map(() => null));
+    const series = option.series as { name: string; data: unknown[] }[];
+    expect(series.map((item) => item.name)).toEqual(["消息总量", "事件量", "无响应"]);
+    expect(series.find((item) => item.name === "事件量")?.data).toEqual(msgs.map(() => null));
   });
 });
 

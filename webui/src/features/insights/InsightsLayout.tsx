@@ -3,11 +3,10 @@ import { Select, Tooltip } from "antd";
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
+import { coverageLabel } from "@/domain/metrics";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
-import { ContextBar } from "@/features/filters/ContextBar";
 import { RoomFilters } from "@/features/rooms/RoomFilters";
-import { formatInt } from "@/lib/format";
 import "../rooms/rooms.css";
 import "./insights.css";
 
@@ -20,6 +19,7 @@ interface InsightMetric {
   info?: string | undefined;
   tone?: "bad" | "mid" | undefined;
   to?: string | undefined;
+  unavailable?: boolean;
 }
 
 export function InsightsLayout({
@@ -35,7 +35,7 @@ export function InsightsLayout({
   api: FiltersApi;
   children: ReactNode;
 }) {
-  const { cov, roomLabel, days } = analytics;
+  const { days } = analytics;
   const id = useId();
   return (
     <main className="od-overview od-room-analysis ia-workbench">
@@ -64,27 +64,11 @@ export function InsightsLayout({
         </section>
       </header>
       <RoomFilters meta={analytics.dataset.meta} api={api} label={`${title}筛选条件`} />
-      <div className="od-context ra-context ia-context">
-        <span aria-live="polite">
-          当前事件 <b>{cov.cells === cov.failed ? "—" : formatInt(analytics.events.length)}</b> 起
-        </span>
-        <div className="ra-selected-filters" role="region" aria-label="已选筛选条件">
-          <ContextBar analytics={analytics} api={api} part="filters" />
-        </div>
-        {cov.failed ? (
-          <details className="ra-coverage">
-            <summary>
-              <InfoCircleOutlined /> {cov.failed} / {cov.cells} 个群日抽取失败
-            </summary>
-            <p>
-              涉及 {cov.rooms.map(roomLabel).join("、")}，日期 {cov.days.join("、")}
-              。事件指标不含失败群日，当前统计不完整。
-            </p>
-          </details>
-        ) : (
-          <span>{cov.cells ? "当前窗口抽取完整" : "当前窗口无群日记录"}</span>
-        )}
-      </div>
+      {analytics.cov.pendingLabels || analytics.cov.failedLabels ? (
+        <p className="od-footnote" role="status">
+          <InfoCircleOutlined /> {coverageLabel(analytics.cov)} · 分类统计未完成
+        </p>
+      ) : null}
       {children}
     </main>
   );
@@ -110,32 +94,39 @@ export function InsightMetrics({
   unavailable?: boolean;
 }) {
   return (
-    <section className={`od-metrics ia-metrics ${className}`} aria-label="关键指标">
-      {items.map((item) => (
-        <div
-          key={item.key}
-          className="od-metric"
-          data-tone={item.tone === "bad" ? "risk" : item.tone === "mid" ? "warn" : undefined}
-        >
-          <div className="od-metric-label">
-            {item.label}
-            {item.info ? <InsightInfo label={`${item.label}口径`} text={item.info} /> : null}
-          </div>
-          {item.to && !unavailable ? (
-            <Link className="od-metric-value" to={item.to}>
-              {item.value}
-              <small>{item.unit}</small>
-              <ArrowRightOutlined className="od-metric-arrow" />
-            </Link>
-          ) : (
-            <div className="od-metric-value">
-              {unavailable ? "—" : item.value}
-              <small>{item.unit}</small>
+    <section
+      className={`od-metrics ia-metrics ${className}`}
+      aria-label="关键指标"
+      data-count={items.length}
+    >
+      {items.map((item) => {
+        const isUnavailable = item.unavailable ?? unavailable;
+        return (
+          <div
+            key={item.key}
+            className="od-metric"
+            data-tone={item.tone === "bad" ? "risk" : item.tone === "mid" ? "warn" : undefined}
+          >
+            <div className="od-metric-label">
+              {item.label}
+              {item.info ? <InsightInfo label={`${item.label}口径`} text={item.info} /> : null}
             </div>
-          )}
-          <p>{unavailable ? "当前范围事件统计暂缺" : item.note}</p>
-        </div>
-      ))}
+            {item.to && !isUnavailable ? (
+              <Link className="od-metric-value" to={item.to}>
+                {item.value}
+                <small>{item.unit}</small>
+                <ArrowRightOutlined className="od-metric-arrow" />
+              </Link>
+            ) : (
+              <div className="od-metric-value">
+                {isUnavailable ? "—" : item.value}
+                <small>{item.unit}</small>
+              </div>
+            )}
+            <p>{isUnavailable ? "当前范围事件统计暂缺" : item.note}</p>
+          </div>
+        );
+      })}
     </section>
   );
 }

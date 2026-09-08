@@ -26,6 +26,7 @@ fn msg(i: usize, at: (u32, u32, u32), role: Role, who: &str, text: &str) -> Mess
             .and_hms_opt(at.0, at.1, at.2)
             .unwrap(),
         sender_id: who.into(),
+        official_user_id: None,
         sender_role: role,
         text: text.into(),
         reply_to: None,
@@ -36,7 +37,8 @@ fn msg(i: usize, at: (u32, u32, u32), role: Role, who: &str, text: &str) -> Mess
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (cfg, secrets) = config::load_from_dir(&config::dir_from_args());
     config::init_logging(&cfg.log);
-    let llm = Llm::new(&cfg.llm, secrets.llm.api_key)?;
+    // 冒烟只打 ③ 抽取那条线。
+    let llm = Llm::new(&cfg.llm, &cfg.llm.extract, secrets.llm.api_key)?;
     let model = extract::LiveModel::new(llm);
 
     let msgs = vec![

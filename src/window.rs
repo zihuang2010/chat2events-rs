@@ -12,7 +12,7 @@ pub struct Window {
 }
 
 impl Window {
-    /// 每日跑批的窗口 `[T-N, T-1]`。T 当天还没过完，不进窗口。
+    /// 每日跑批的窗口 `[T-(N+1), T-2]`。跳过当天和昨天，读取此前 N 个自然日。
     ///
     /// `lookback = 0` 是配置错误，按「启动期配置直接崩」的规矩 panic ——
     /// 空窗口流进读取层只会静默读出 0 条。
@@ -22,8 +22,8 @@ impl Window {
             "lookback_days 必须 ≥ 1（0 产生空窗口），改 config.toml"
         );
         Self::span(
-            run_date - chrono::Duration::days(i64::from(lookback)),
-            run_date - chrono::Duration::days(1),
+            run_date - chrono::Duration::days(i64::from(lookback) + 1),
+            run_date - chrono::Duration::days(2),
         )
     }
 
@@ -65,10 +65,27 @@ mod tests {
     }
 
     #[test]
-    fn new_is_t_minus_n_to_t_minus_1() {
-        let w = Window::new(d(9, 1), 2);
-        assert_eq!(w.days(), [d(8, 30), d(8, 31)]);
-        assert_eq!((w.since(), w.until()), (d(8, 30), d(8, 31)));
+    fn daily_window_skips_today_and_yesterday() {
+        let w = Window::new(d(9, 7), 2);
+        assert_eq!(w.days(), [d(9, 4), d(9, 5)]);
+        assert_eq!((w.since(), w.until()), (d(9, 4), d(9, 5)));
+        assert_eq!(Window::new(d(9, 8), 2).days(), [d(9, 5), d(9, 6)]);
+    }
+
+    #[test]
+    fn daily_window_keeps_the_requested_day_count_across_calendar_boundaries() {
+        for (run_date, lookback, since, until) in [
+            ("2026-09-07", 1, "2026-09-05", "2026-09-05"),
+            ("2026-09-07", 4, "2026-09-02", "2026-09-05"),
+            ("2026-09-01", 2, "2026-08-29", "2026-08-30"),
+            ("2026-01-01", 2, "2025-12-29", "2025-12-30"),
+            ("2024-03-02", 2, "2024-02-28", "2024-02-29"),
+        ] {
+            let w = Window::new(run_date.parse().unwrap(), lookback);
+            assert_eq!(w.since(), since.parse::<NaiveDate>().unwrap());
+            assert_eq!(w.until(), until.parse::<NaiveDate>().unwrap());
+            assert_eq!(w.days().len(), lookback as usize);
+        }
     }
 
     #[test]

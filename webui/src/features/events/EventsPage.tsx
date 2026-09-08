@@ -20,11 +20,13 @@ import { Sparkline } from "@/components/charts/Sparkline";
 import { formatInt, formatPercent } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi, FilterPatch } from "@/features/filters/useFilters";
+import { msgRollup } from "@/features/overview/overviewMetrics";
 import "./events.css";
 
 export function EventsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const { events, days, cov, agg, taxIndex, dataset } = analytics;
   const { filters, hrefWith, reset } = api;
+  const messages = msgRollup(analytics, api);
   const [level, setLevel] = useState<"level1" | "level2">("level1");
   const categories = useMemo(
     () => ({
@@ -34,6 +36,10 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
     [events, taxIndex],
   );
   const rows = categories[level];
+  const withoutTaxonomy = dataset.meta.taxonomy_version === "v0";
+  const unclassifiedInfo = withoutTaxonomy
+    ? "尚未建立词表，分类暂不可用；事件总量与首响指标仍可用。"
+    : METRIC.unclassified;
   const unclassified = events.filter((event) => event.level1 === "未归类").length;
   const knownLevel1 = new Set(dataset.meta.taxonomy.map((type) => type.parent_name));
   const knownLevel2 = new Set(dataset.meta.taxonomy.map((type) => type.type_id));
@@ -90,7 +96,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       title: "事件构成",
       children: [
         {
-          title: "事件数",
+          title: "事件量",
           dataIndex: "count",
           key: "count",
           align: "right",
@@ -105,7 +111,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
               事件占比{" "}
               <InsightInfo
                 label="事件占比口径"
-                text="该分类事件数 / 当前筛选范围事件总数。只按主分类计数，同一层级占比合计为 100%。"
+                text="该分类事件数 / 当前筛选范围事件总数。只按主分类计数；打标未完成的事件暂不归入分类，占比合计可能不足 100%。"
               />
             </span>
           ),
@@ -181,7 +187,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       ),
       children: [
         {
-          title: "事件数",
+          title: "事件量",
           dataIndex: "unreplied",
           key: "unreplied",
           align: "right",
@@ -230,15 +236,34 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       api={api}
     >
       <InsightMetrics
-        unavailable={cov.cells === cov.failed}
+        unavailable={cov.known === 0}
         items={[
           {
+            key: "rooms",
+            label: "活跃群",
+            value: formatInt(agg.rooms),
+            unit: "个",
+            info: METRIC.rooms,
+            note: "当前事件涉及的群 · 按群去重",
+          },
+          {
+            key: "messages",
+            label: "消息总量",
+            value: cov.cells ? formatInt(messages.msgs) : "—",
+            unit: "条",
+            info: METRIC.msgCount,
+            unavailable: false,
+            note:
+              "仅按日期、群统计" +
+              (!cov.cells ? " · 无群日记录" : cov.missing || cov.unknown ? " · 仅已知量" : ""),
+          },
+          {
             key: "events",
-            label: "事件总数",
+            label: "事件量",
             value: formatInt(agg.events),
             unit: "起",
             info: METRIC.events,
-            note: "覆盖 " + agg.rooms + " 个群 · 按事件去重",
+            note: "按事件去重",
             to: agg.events ? hrefWith({ focusAgent: null }, "/detail") : undefined,
           },
           {
@@ -263,10 +288,10 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
           },
           {
             key: "unclassified",
-            label: "未归类事件",
+            label: withoutTaxonomy ? "未建词表事件" : "未归类事件",
             value: formatInt(unclassified),
             unit: "起",
-            info: METRIC.unclassified,
+            info: unclassifiedInfo,
             note:
               "占全部事件 " + (formatPercent(agg.events ? unclassified / agg.events : null) ?? "—"),
             to: unclassified
@@ -412,8 +437,8 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
             <dd>{METRIC.unreplied} 无响应率为分类内无响应事件数 / 商家发起事件数。</dd>
           </div>
           <div>
-            <dt>未归类</dt>
-            <dd>{METRIC.unclassified}</dd>
+            <dt>{withoutTaxonomy ? "未建词表" : "未归类"}</dt>
+            <dd>{unclassifiedInfo}</dd>
           </div>
           <div>
             <dt>每日趋势</dt>

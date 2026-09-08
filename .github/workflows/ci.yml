@@ -1,7 +1,7 @@
 # CI —— 检查 + 出 Linux 二进制。
 #
-# ⚠️ 这里跑的是**离线**那部分。`store` 的写库 SQL 要真 MySQL、`LiveModel` 要真端点，
-#    两者都没有离线测试 —— CI 全绿 ≠ 全验过，见 docs/deploy.md 结尾。
+# 离线逻辑与模型 HTTP 协议走默认测试；事务与只读取数另在隔离 MySQL 中验证。
+# 真实模型业务质量、OSS 权限与目标机部署仍需各自验收。
 #
 # ⚠️ 慢的原因是 DuckDB：Cargo.toml 开了 features = ["bundled", "json"]，
 #    要现场编 352 个 C++ unity TU（分钟级）。rust-cache 就是为它上的。
@@ -42,6 +42,20 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: chat2events_test
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -57,10 +71,15 @@ jobs:
 
       - run: cargo test --locked
 
+      - name: 验证真实 MySQL 事务与只读取数
+        env:
+          CHAT2EVENTS_TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/chat2events_test
+        run: cargo test --locked mysql_ -- --ignored
+
   # 只在打 tag 时构建产物 —— 平时的 PR 不该为 release profile 再编一遍 DuckDB
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    needs: [check, webui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,9 +139,8 @@ jobs:
       #    要命的是「要了目标机给不出的版本」，所以比版本，不比有无。
       - name: 校验 glibc / libstdc++ 下界
         run: |
-          BIN=target/release/chat2events-rs
-          ldd "$BIN"
-          objdump -T "$BIN" | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
+          ldd target/release/chat2events-rs target/release/webui
+          objdump -T target/release/chat2events-rs target/release/webui | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
           # ceiling <符号前缀> <目标机能给的最高版本>
           ceiling() {
             max=$(grep "^$1" glibc-baseline.txt | sort -V | tail -1) || true
@@ -139,13 +157,15 @@ jobs:
       # json_serialize_sql 只出现在扩展源码里，本仓库的 SQL 不含它。
       - name: 校验 json 扩展已静态链
         run: |
-          grep -qa 'json_serialize_sql' target/release/chat2events-rs \
-            || { echo "::error::json 扩展没链进去，运行时会联网下载"; exit 1; }
+          for BIN in target/release/chat2events-rs target/release/webui; do
+            grep -qa 'json_serialize_sql' "$BIN" \
+              || { echo "::error::$BIN 的 json 扩展没链进去"; exit 1; }
+          done
 
       - name: 打包
         run: |
           tar -czf chat2events-rs-linux-x86_64.tar.gz \
-            -C target/release chat2events-rs
+            -C target/release chat2events-rs webui
 
       # gh 是 runner 自带的，不引第三方 action
       - name: 发 Release

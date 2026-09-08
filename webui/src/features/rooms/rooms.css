@@ -5,7 +5,6 @@
  */
 .ra-context {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-sm);
   padding-block: var(--space-xs);
@@ -32,8 +31,41 @@
   padding-block: var(--space-lg);
   min-width: 0;
 }
+.ra-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs) var(--space-md);
+  font-size: var(--text-sm);
+  line-height: 24px;
+}
+.ra-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: inherit;
+  white-space: nowrap;
+}
+.ra-summary b {
+  color: var(--color-ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ra-summary .od-info {
+  font-size: inherit;
+}
 .od-room-analysis .ant-table-wrapper {
   max-width: 100%;
+}
+.od-room-analysis .ant-table-pagination {
+  flex-wrap: wrap;
+  row-gap: var(--space-xs);
+}
+.od-room-analysis .ant-pagination-total-text {
+  white-space: nowrap;
+}
+.od-room-analysis .ant-pagination-options {
+  display: inline-block;
 }
 .od-room-analysis .ant-table {
   color: var(--color-ink);
@@ -417,7 +449,6 @@
 }
 @media (max-width: 800px) {
   .ra-context {
-    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2xs);
   }
   .od-room-analysis .od-header {

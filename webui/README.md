@@ -15,6 +15,17 @@ pnpm check      # lint + format + 类型 + 单元测试，提交前必须干净
 pnpm build      # 产出 dist/，纯静态文件
 ```
 
+在仓库根目录启动 Rust 只读后端：
+
+```bash
+cargo run --locked --bin webui -- /etc/chat2events <corpid>
+```
+
+默认监听 `127.0.0.1:8787`；第三个参数可指定监听地址。
+前端通过 `/api/dataset` 一次读取同一 MySQL 快照中的词表、事件和群日记录。
+默认仅加载最近七天，日期筛选会重新请求对应范围；群抽屉独立请求七天，事件深链接按 ID 补读。
+缺记录与无法定位影响范围的后续失败都显示为未知，不能当作完整或零；原文超出保留期返回 410。
+
 默认模式仅在 `/api/meta` 探活网络不可达、超时、404 或 5xx 时回落到模拟数据源，顶栏常驻「模拟数据」标记。
 `?source=api` 强制只走真接口（失败即报错，不回落），`?source=mock` 强制模拟。
 探活的权限 / 契约错误，以及探活成功后的数据读取错误，均显式报错。
@@ -80,8 +91,11 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 `meta.days` 必须是升序、唯一且有效的日期；时间字符串按 UTC+8 解析，不依赖浏览器时区。
 事件时间顺序、归属日、主分类、首响归属和失败群日的 NULL 约束也在响应边界检查。
 
-`/api/meta` 若能提供真实的群名与客服姓名，请一并把 `alias_is_authoritative` 置 `true`，
-界面会自动去掉「别名 待补」标记。
+`/api/meta` 与 `/api/dataset` 的群元数据按 `(corp_id, official_room_id)` 左连接
+`b_wecom_merchant_group`，历史群仍读取已删除配置。`group_name` 返回为 `rooms[].alias`，
+名称非空时 `rooms[].alias_is_authoritative` 为 `true`；未匹配或名称为空时继续标记待补。
+`rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度，暂不用于商家展示或筛选。
+客服姓名仍由顶层 `alias_is_authoritative` 控制。工作台 MySQL 账号需具备该配置表的 SELECT 权限。
 
 ## 三条不能破的口径
 
@@ -97,4 +111,4 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 
 库里没有来源的能力在界面上一律标注，不编造。完整清单见页尾，或
 `src/domain/definitions.ts` 的 `DATA_GAPS`：已解决 / 后续回复时效 / 客服回复消息数 /
-客服姓名与群名 / 工作时间口径 / 客服当天实际参与。
+客服姓名 / 工作时间口径 / 客服当天实际参与。

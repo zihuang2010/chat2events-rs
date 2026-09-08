@@ -64,7 +64,9 @@ describe("边界场景覆盖", () => {
       data.events.filter((e) => e.last_msg_time.slice(0, 10) !== e.occurred_on).length,
     ).toBeGreaterThan(0);
     expect(data.events.filter((e) => e.agents.length > 1).length).toBeGreaterThan(0);
-    expect(data.events.filter((e) => e.event_types.length > 1).length).toBeGreaterThan(0);
+    expect(
+      data.events.filter((e) => e.event_types !== null && e.event_types.length > 1).length,
+    ).toBeGreaterThan(0);
     expect(data.events.filter((e) => e.event_type === "__untyped__").length).toBeGreaterThan(0);
   });
 
@@ -108,7 +110,7 @@ describe("契约不变量", () => {
   });
 
   it("event_types 的第一个恒等于 event_type", () => {
-    expect(data.events.every((e) => e.event_types[0] === e.event_type)).toBe(true);
+    expect(data.events.every((e) => e.event_types?.[0] === e.event_type)).toBe(true);
   });
 
   it("摘要是中文一句话、不超过 100 字、不含订单号等 ID", () => {

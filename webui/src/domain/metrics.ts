@@ -14,20 +14,37 @@ import type { DecoratedEvent, EventRow, GroupDailyRow, Meta, TaxonomyType } from
 
 export type TaxonomyIndex = ReadonlyMap<string, TaxonomyType>;
 
-export function buildTaxonomyIndex(taxonomy: readonly TaxonomyType[]): TaxonomyIndex {
+function groupBy<T>(rows: readonly T[], keyOf: (row: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(row);
+    else groups.set(key, [row]);
+  }
+  return groups;
+}
+
+export function buildTaxonomyIndex(
+  taxonomy: readonly TaxonomyType[],
+  version: string,
+): TaxonomyIndex {
   const m = new Map<string, TaxonomyType>(taxonomy.map((t) => [t.type_id, t]));
   m.set(UNTYPED, {
     type_id: UNTYPED,
     parent_name: "未归类",
-    name: "归不上去",
-    description: "有词表但归不上去，是数据信号不是系统状态。",
+    name: version === "v0" ? "未建词表" : "归不上去",
+    description:
+      version === "v0"
+        ? "尚未建立词表，分类暂不可用；事件总量与首响指标仍可用。"
+        : "有词表但归不上去，是数据信号不是系统状态。",
   });
   return m;
 }
 
 export function decorate(events: readonly EventRow[], tax: TaxonomyIndex): DecoratedEvent[] {
   return events.map((e) => {
-    const type = tax.get(e.event_type);
+    const type = e.event_type === null ? undefined : tax.get(e.event_type);
     return {
       ...e,
       firstReplySec:
@@ -39,8 +56,8 @@ export function decorate(events: readonly EventRow[], tax: TaxonomyIndex): Decor
                 parseDateTime(e.first_msg_time).getTime()) /
                 1000,
             ),
-      level1: type?.parent_name ?? "未归类",
-      level2: type?.name ?? e.event_type,
+      level1: e.event_type === null ? "打标未完成" : (type?.parent_name ?? "未归类"),
+      level2: type?.name ?? e.event_type ?? "打标未完成",
       crossDay: dayOf(e.last_msg_time) !== e.occurred_on,
     };
   });
@@ -123,10 +140,38 @@ export function aggregate(
 
 export interface Coverage {
   cells: number;
+  known: number;
   failed: number;
+  missing: number;
+  unknown: number;
+  pendingLabels: number;
+  failedLabels: number;
   rooms: string[];
   days: string[];
   complete: boolean;
+}
+
+/** 没有群日记录只能判未知，不能推断当天应该处理或已经成功。 */
+export function groupDayStatus(
+  row: GroupDailyRow | undefined,
+): "missing" | "failed" | "unknown" | "ok" {
+  if (!row) return "missing";
+  if (row.extraction_status === "failed") return "failed";
+  return row.freshness === "unknown" ? "unknown" : "ok";
+}
+
+export function coverageLabel(cov: Coverage): string {
+  if (cov.complete) return "当前窗口抽取完整";
+  if (cov.cells === 0) return "当前窗口无群日记录，完整性未知";
+  return [
+    cov.failed ? `${cov.failed} 个群日抽取失败` : "",
+    cov.missing ? `${cov.missing} 个群日无记录，完整性未知` : "",
+    cov.unknown ? `${cov.unknown} 个群日最新处理结果未知` : "",
+    cov.pendingLabels ? `${cov.pendingLabels} 个群日待打标` : "",
+    cov.failedLabels ? `${cov.failedLabels} 个群日打标失败` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** 覆盖度。**数据完整时也要显示**，让调用方在结构上没法忘记处理它。 */
@@ -134,15 +179,59 @@ export function coverage(
   groupDaily: readonly GroupDailyRow[],
   dayset: ReadonlySet<string>,
   room: string | null,
+  rooms: Meta["rooms"],
 ): Coverage {
   const cells = groupDaily.filter((g) => dayset.has(g.dt) && (!room || g.roomid === room));
-  const bad = cells.filter((g) => g.extraction_status === "failed");
+  const byRoom = groupBy(cells, (row) => row.roomid);
+  const roomIds = room ? [room] : rooms.map((r) => r.roomid);
+  let known = 0;
+  let failed = 0;
+  let missing = 0;
+  let unknown = 0;
+  let pendingLabels = 0;
+  let failedLabels = 0;
+  const uncertainRooms = new Set<string>();
+  const uncertainDays = new Set<string>();
+  for (const id of roomIds) {
+    const byDay = new Map((byRoom.get(id) ?? []).map((row) => [row.dt, row]));
+    for (const day of dayset) {
+      const row = byDay.get(day);
+      const status = groupDayStatus(row);
+      if (row?.extraction_status === "ok") {
+        if (row.classification_status === "pending") pendingLabels += 1;
+        if (row.classification_status === "failed") failedLabels += 1;
+        if (row.classification_status !== "ok") {
+          uncertainRooms.add(id);
+          uncertainDays.add(day);
+        }
+      }
+      if (status === "ok") known += 1;
+      else {
+        if (status === "failed") failed += 1;
+        else if (status === "missing") missing += 1;
+        else unknown += 1;
+        uncertainRooms.add(id);
+        uncertainDays.add(day);
+      }
+    }
+  }
   return {
     cells: cells.length,
-    failed: bad.length,
-    rooms: [...new Set(bad.map((g) => g.roomid))],
-    days: [...new Set(bad.map((g) => g.dt))].sort(),
-    complete: bad.length === 0,
+    known,
+    failed,
+    missing,
+    unknown,
+    pendingLabels,
+    failedLabels,
+    rooms: [...uncertainRooms],
+    days: [...uncertainDays].sort(),
+    complete:
+      known > 0 &&
+      failed === 0 &&
+      missing === 0 &&
+      unknown === 0 &&
+      pendingLabels === 0 &&
+      failedLabels === 0,
   };
 }
 
@@ -173,9 +262,13 @@ export interface RoomRow {
   overdue: number;
   overdueRate: number | null;
   backlog: number;
-  msgs: number;
-  senders: number;
+  msgs: number | null;
+  senders: number | null;
   failedDays: number;
+  pendingLabels: number;
+  failedLabels: number;
+  missingDays: number;
+  unknownDays: number;
   totalDays: number;
   /** 每日事件数，缺格是 null（那天抽取失败），渲染时必须断成缺口 */
   series: (number | null)[];
@@ -195,20 +288,28 @@ export function roomRollup(params: {
 }): RoomRow[] {
   const { events, groupDaily, rooms, days, dayset, slaSec, lastDay, labelOf, query } = params;
   const out: RoomRow[] = [];
+  const eventsByRoom = groupBy(events, (event) => event.roomid);
+  const cellsByRoom = groupBy(
+    groupDaily.filter((row) => dayset.has(row.dt)),
+    (row) => row.roomid,
+  );
 
   for (const r of rooms) {
-    const cells = groupDaily.filter((g) => g.roomid === r.roomid && dayset.has(g.dt));
-    if (cells.length === 0) continue;
-    const mine = events.filter((e) => e.roomid === r.roomid);
+    const cells = cellsByRoom.get(r.roomid) ?? [];
+    const mine = eventsByRoom.get(r.roomid) ?? [];
     const label = labelOf(r.roomid);
     if (query && !`${label} ${r.roomid}`.toLowerCase().includes(query) && mine.length === 0)
       continue;
 
     const agg = aggregate(mine, slaSec, lastDay);
-    const failedDays = cells.filter((c) => c.extraction_status === "failed").length;
-    const allFailed = failedDays === cells.length;
+    const cov = coverage(cells, dayset, r.roomid, [r]);
+    const allFailed = cov.known === 0;
     const l1 = new Map<string, number>();
-    for (const e of mine) l1.set(e.level1, (l1.get(e.level1) ?? 0) + 1);
+    for (const e of mine) {
+      if (e.event_type !== null) l1.set(e.level1, (l1.get(e.level1) ?? 0) + 1);
+    }
+    const cellsByDay = new Map(cells.map((cell) => [cell.dt, cell]));
+    const counts = dailyCounts(mine, days);
 
     out.push({
       key: r.roomid,
@@ -222,14 +323,18 @@ export function roomRollup(params: {
       overdue: agg.overdue,
       overdueRate: agg.overdueRate,
       backlog: agg.backlog,
-      msgs: cells.reduce((s, c) => s + c.msg_count, 0),
-      senders: Math.max(0, ...cells.map((c) => c.sender_count)),
-      failedDays,
-      totalDays: cells.length,
-      series: days.map((d) => {
-        const cell = cells.find((c) => c.dt === d);
-        if (!cell || cell.extraction_status === "failed") return null;
-        return mine.filter((e) => e.occurred_on === d).length;
+      msgs: cells.length ? cells.reduce((s, c) => s + c.msg_count, 0) : null,
+      senders: cells.length ? Math.max(...cells.map((c) => c.sender_count)) : null,
+      failedDays: cov.failed,
+      pendingLabels: cov.pendingLabels,
+      failedLabels: cov.failedLabels,
+      missingDays: cov.missing,
+      unknownDays: cov.unknown,
+      totalDays: days.length,
+      series: days.map((d, index) => {
+        const cell = cellsByDay.get(d);
+        if (groupDayStatus(cell) !== "ok") return null;
+        return counts[index]!;
       }),
       topLevel1: [...l1]
         .sort((a, b) => b[1] - a[1])
@@ -258,26 +363,56 @@ export interface AgentRow {
   overdue: number;
   overdueRate: number | null;
   unreplied: number;
-  involvedSeries: number[];
-  ownedSeries: number[];
+  involvedSeries: (number | null)[];
+  ownedSeries: (number | null)[];
   failedCells: number;
+  coverageUnknown: boolean;
 }
 
 export function agentRollup(params: {
   events: readonly DecoratedEvent[];
   groupDaily: readonly GroupDailyRow[];
   agents: Meta["agents"];
+  rooms: Meta["rooms"];
   days: readonly string[];
   dayset: ReadonlySet<string>;
   slaSec: number;
   labelOf: (agent: string) => string;
   query: string;
 }): AgentRow[] {
-  const { events, groupDaily, agents, days, dayset, slaSec, labelOf, query } = params;
+  const { events, groupDaily, agents, rooms, days, dayset, slaSec, labelOf, query } = params;
   const out: AgentRow[] = [];
+  const eventsByAgent = new Map<string, DecoratedEvent[]>();
+  for (const event of events) {
+    for (const agent of new Set(event.agents)) {
+      const bucket = eventsByAgent.get(agent);
+      if (bucket) bucket.push(event);
+      else eventsByAgent.set(agent, [event]);
+    }
+  }
+  const cells = groupDaily.filter((row) => dayset.has(row.dt));
+  const cellsByDay = groupBy(cells, (row) => row.dt);
+  const failedByRoom = new Map<string, number>();
+  for (const cell of cells) {
+    if (cell.extraction_status === "failed") {
+      failedByRoom.set(cell.roomid, (failedByRoom.get(cell.roomid) ?? 0) + 1);
+    }
+  }
+  // 没有独立的客服群归属，失败或缺失群日是否涉及该客服无法从成功事件反推。
+  const unknownDays = new Set(
+    days.filter((day) => {
+      const recorded = new Map((cellsByDay.get(day) ?? []).map((row) => [row.roomid, row]));
+      return (
+        rooms.length === 0 ||
+        rooms.some((room) => groupDayStatus(recorded.get(room.roomid)) !== "ok")
+      );
+    }),
+  );
+  const knownCounts = (mine: readonly DecoratedEvent[]) =>
+    dailyCounts(mine, days).map((count, index) => (unknownDays.has(days[index]!) ? null : count));
 
   for (const ag of agents) {
-    const mine = events.filter((e) => e.agents.includes(ag.agent));
+    const mine = eventsByAgent.get(ag.agent) ?? [];
     if (mine.length === 0) continue;
     const label = labelOf(ag.agent);
     if (query && !`${label} ${ag.agent}`.toLowerCase().includes(query)) continue;
@@ -302,11 +437,10 @@ export function agentRollup(params: {
       overdue,
       overdueRate: ownedMerchant.length ? overdue / ownedMerchant.length : null,
       unreplied: mine.filter(isUnreplied).length,
-      involvedSeries: dailyCounts(mine, days),
-      ownedSeries: dailyCounts(owned, days),
-      failedCells: groupDaily.filter(
-        (g) => roomIds.includes(g.roomid) && dayset.has(g.dt) && g.extraction_status === "failed",
-      ).length,
+      involvedSeries: knownCounts(mine),
+      ownedSeries: knownCounts(owned),
+      failedCells: roomIds.reduce((sum, room) => sum + (failedByRoom.get(room) ?? 0), 0),
+      coverageUnknown: unknownDays.size > 0,
     });
   }
   return out;
@@ -339,6 +473,7 @@ export function categoryRollup(
   }
   const m = new Map<string, Bucket>();
   for (const e of events) {
+    if (e.event_type === null) continue;
     const key = level === "level1" ? e.level1 : e.event_type;
     let b = m.get(key);
     if (!b) {

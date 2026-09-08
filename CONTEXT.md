@@ -55,6 +55,8 @@
 | `event` | 抽取出的结构化业务事件。「问题」是 event 的一个子类型 |
 | `occurred_on` | event 的归属日 = 首条来源消息的日期，同时是幂等分片键 |
 | `taxonomy` | 版本化的类型词表 |
+| 分类恢复 | 对已保存事实补齐首次未完成的标签与分类指标；不重新抽取事实，不改已有标签；零事件同样需要完成状态 |
+| 事实完成凭据 | 证明事实成功保存的时间；分类标签更新不提供新的事实凭据，历史未知不能推断成已知 |
 | `agent` | **平台客服**（`INTERNAL`），主键是 `easyUserId`。与**商家客服**（`EXTERNAL`）相对 —— 两边都是客服，群里没有终端消费者 |
 | `师傅` | 平台的上门服务人员。**不在群里**，只在正文中被提及，没有 `easyUserId`，目前不进领域。正文里的师傅手机号由 `body` 掩掉；**姓名不掩**（掩姓规则已删 与下文「`summary` 要求」）|
 
@@ -97,7 +99,7 @@ messageTime                     bigint   毫秒，文件内严格升序
 callbackReceivedTime            bigint   （不使用）
 sender.identityType             INTERNAL / EXTERNAL，100% 填充
 sender.easyUserId               varchar(16)  内外统一形态
-sender.officialUserId           varchar(4-11) 形态混杂（手机号 / 字母账号），不使用
+sender.officialUserId           内部员工账号（手机号 / 字母账号），与昵称关联标识 easyUserId 区分
 standardType / sourceMsgType    TEXT / IMAGE / GIF / VIDEO / ...
 content                         原文；非文本为 [图片消息] / [GIF消息] / [视频消息] 占位符
 analysisText                    上游「已清洗」的纯文本；非文本为空串（走 content 兜底，3742 条样本里 536 条）
@@ -130,7 +132,7 @@ semanticPayload.mediaItems[]    含 fileAesKey / temporaryDownloadUrl（不使�
 
 ### 领域 `Message`
 
-**八个字段，每一个都有读取点。端口上每多一个死字段，就是向未来每一个适配器收一次税。**
+**每个字段都有读取点。端口上每多一个死字段，就是向未来每一个适配器收一次税。**
 
 ```
 msg_id        <- sourceMessageId          溯源键；replyTo 指向的就是它
@@ -139,6 +141,7 @@ corp          <- corpId
 at            <- messageTime（ms -> timestamp，业务本地时区）
 sender_id     <- sender.easyUserId
 sender_role   <- sender.identityType      Role::Internal / Role::External
+official_user_id <- sender.officialUserId  仅 INTERNAL，缺失或空串为 None；关联账号信息
 text          <- COALESCE(NULLIF(analysisText,''), content)
 reply_to      <- semanticPayload.replyTo.sourceMessageId
 ```
@@ -161,7 +164,7 @@ reply_to      <- semanticPayload.replyTo.sourceMessageId
 | `mentions[]` | 读取点 **0**。唯一提到它的是一句注释，内容是「**为什么不用它**」（只有 id 没有姓名，映射会给模型假身份） |
 | `plain_text` | 存在的唯一理由是当 `text` 的兜底，已并进适配器的 `COALESCE` |
 
-**不进领域**：`messageKey` · `easyRoomId` · `groupId` · `sourceMsgType` · `standardType` · `callbackReceivedTime` · `sender.officialUserId` · `mediaItems` · `segments` · `mentions` · `location` · `subMessages`
+**不进领域**：`messageKey` · `easyRoomId` · `groupId` · `sourceMsgType` · `standardType` · `callbackReceivedTime` · `mediaItems` · `segments` · `mentions` · `location` · `subMessages`
 
 ### 领域 `Conversation`
 
@@ -178,7 +181,7 @@ msg_counts       dict[date, (msg_count, sender_count)]，消息级指标搭同�
 
 **接口粒度 = 群 × 一次运行的完整会话 = 失败隔离粒度 = ③ 的输入。** 四者必须相等。
 
-`sender.officialUserId` 不进领域，意味着 prompt 里**发言人**是角色化匿名标签（`平台A` / `商家B`）。要看某个 `easyUserId` 是谁，回 raw 区查 —— 低频人工操作。
+内部员工的昵称关联标识是 `easyUserId`，账号信息关联标识是 `officialUserId`，二者不可互换。客服标识 `agent` 仍使用前者，账号字段允许缺失。prompt 里**发言人**仍是角色化匿名标签（`平台A` / `商家B`），账号字段不发送给模型。
 
 ⚠️ **这只匿名了群里的人。终端消费者的 PII 全在正文里** —— 实测 1850 条：193 条（10.4%）带客户手机号、88 条带门牌号级住址、101 处真实姓名（客户 / 师傅 / 群成员自己）。「模型看到的不是人名或手机号」这句话曾经是**破的**，正文原样进 prompt。现在由 `body` 保证。
 
@@ -204,12 +207,16 @@ first_responder         first_agent_reply_time 那条消息的 sender_id，可�
 summary                 事件摘要
 ```
 
-**标注列**（任何时候可写，**但只有词表升版这一个原因**）
+**标注列**：新事实先保存，首次打标随后完成；冻结区已有标签只因词表升版重打。
 
 ```
-event_type
-taxonomy_version
+event_type              主类；未完成时为 NULL
+event_types             标签全集；未完成时为 NULL，完成后首项等于主类
+taxonomy_version        标签所用词表版本；未完成时为 NULL
 ```
+
+**抽取成功**只表示事实已经生成并保存。**打标完成**表示本群全部事件标签齐全，分类指标可以发布。
+**打标失败**不撤销事实，也不等于“归不上去”；后者是模型已经给出的正式分类结果。
 
 ⚠️ 列名形态受公司《数据库规范》约束（时间字段以 `_time` 结尾、不得裸用 `type`、表名带 `b_` 前缀）
 —— 本仓库适用条款与四条已取下的例外见 `docs/database-conventions.md`。
@@ -252,7 +259,7 @@ agent_attribution = first_responder | all_participants     # 默认 first_respon
 | 阶段 | 状态 | 能出的指标 |
 |---|---|---|
 | **v0** | 还没有词表，全部 `__untyped__` | 消息量 · 问题总量 · 首响时效 · 客服处理**总量** |
-| **归纳** | 攒够 event → LLM 读 `summary` 产出**带名字带描述的草稿** → 业务审阅改名增删 → 定 v1 | — |
+| **定稿** | 人阅读已有 event 的说法 → 手写类型与描述 → 试打检查覆盖 → 审阅定版 | — |
 | **v1+** | `cargo run --example recompute -- . v1 <since> <until>` 重打标 + 重算指标 | 以上全部 **+ 分类明细** |
 
 - **v0 期不是缺陷，是明确的上线阶段。** 系统在任何阶段都能完整跑通，不需要等词表。
@@ -261,10 +268,9 @@ agent_attribution = first_responder | all_participants     # 默认 first_respon
   - `v0` + `__untyped__` = 还没有词表，**系统状态**
   - `vN` + `__untyped__` = 有词表但归不上去，**数据信号**（词表覆盖不足）
 - **验收判据**：`vN` + `__untyped__` 占比超过阈值即需升版。阈值数值等真实数据，但**上线前必须定死一个数**，并做成可查数字，否则没人会去看。
-- **聚类做发现，分类做打标。** 簇不是类型 —— 簇经过人工命名才变成稳定的词表。词表定下后不再漂移，新 event 只做分类，不参与重新聚类。聚类的角色是**"检查词表漏了什么"**，不是"产出第一版词表"。
+- **词表由人定义，分类负责打标。** 词表定版后不再漂移，新 event 从固定词表中选择；覆盖不足由人审阅未分类事件并决定升版。
 - **人工加类只能通过升版。** 不做"给现有版本热加一个类" —— 那会让同一个版本号在不同时间对应两套词表，`taxonomy_version` 就失去意义。
-- v1 归纳用**全量** event，之后升版用**滚动窗口**（如最近 3 个月，理由是代表性而非成本）。
-- 词表用一个**手写文件**（yaml / sql）维护，人工执行插入。不做词表管理界面。
+- 首版与升版都通过已有事件检查词表的代表性，样本范围由业务审阅决定。
+- 类型名称、描述和版本由人维护；同一版本的含义保持不变。
 
 ---
-

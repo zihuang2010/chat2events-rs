@@ -48,8 +48,7 @@ pub fn room_path(raw_root: &Path, month: &str, corp: &str, room: &str) -> PathBu
 /// ⚠️ **同步阻塞，`daily::run_span` 里没有 `spawn_blocking` 包它** ——
 /// 2 个月 × N 个 corp × 上千文件的嵌套 `read_dir`。今天成立是因为**阶段顺序**：
 /// 它跑在 ① 拉取之后、`run_rooms` 之前，此刻 runtime 上没有在飞的模型调用。
-/// 跟 `mirror::download` 的 `sync_all` 同一条论证（那儿写在
-/// `write_and_verify` 的注释里）。**改阶段顺序之前先回来看这一段。**
+/// 跑批现已直接使用同步名单；此函数保留给本地检查。**并发调用之前先确认阻塞影响。**
 pub fn list_rooms(raw_root: &Path, w: &Window) -> Vec<(String, String)> {
     // BTreeSet 顺便排序：调用方按固定顺序跑批，日志和失败列表才可比。
     let mut found = BTreeSet::new();
@@ -94,6 +93,19 @@ pub(super) fn files(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Vec<
         .collect()
 }
 
+/// 同步已确认的文件必须都参与读取；缺失时交给 DuckDB 显式报错，不能过滤掉残缺月份。
+pub(super) fn synced_files(
+    raw_root: &Path,
+    corp: &str,
+    room: &str,
+    months: &[String],
+) -> Vec<(String, PathBuf)> {
+    months
+        .iter()
+        .map(|m| (m.clone(), room_path(raw_root, m, corp, room)))
+        .collect()
+}
+
 /// 删掉过保留期的月目录，返回删掉几个。
 ///
 /// **本轮窗口要读的月份不可能被删** —— 保留起点锚在 `w.since()` 而不是今天，
@@ -112,7 +124,7 @@ pub(super) fn files(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Vec<
 /// 删不掉只是磁盘继续涨，不是数据错 —— 记 warn，不掀翻这一轮。
 ///
 /// ⚠️ **同步阻塞，没有 `spawn_blocking`。** `remove_dir_all` 一个月目录最大约
-/// 18 GB / 上千文件，每月轮转触发一次。跟 [`list_rooms`] 同一条论证：它跑在
+/// 18 GB / 上千文件，每月轮转触发一次。它跑在
 /// ① 拉取之后、`run_rooms` 之前，此刻 runtime 上没有在飞的模型调用。
 /// **这个前提住在 `daily::run_span` 的阶段顺序里，代码本身拦不住它被改。**
 pub fn prune(raw_root: &Path, w: &Window, retention: u32) -> usize {

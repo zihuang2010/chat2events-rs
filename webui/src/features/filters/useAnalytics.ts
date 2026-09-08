@@ -9,6 +9,7 @@ import type { LoadedDataset } from "@/api/source";
 import {
   aggregate,
   coverage,
+  groupDayStatus,
   isBacklog,
   isMerchant,
   isOverdue,
@@ -18,7 +19,7 @@ import {
   type TaxonomyIndex,
 } from "@/domain/metrics";
 import type { DecoratedEvent } from "@/domain/schemas";
-import { addDays } from "@/lib/format";
+import { addDays, windowBounds } from "@/lib/format";
 import type { Filters } from "./useFilters";
 
 export interface Analytics {
@@ -37,6 +38,7 @@ export interface Analytics {
   query: string;
   aliasIsAuthoritative: boolean;
   roomLabel: (roomId: string) => string;
+  roomAliasIsAuthoritative: (roomId: string) => boolean;
   agentLabel: (agentId: string) => string;
   typeLabel: (typeId: string) => string;
 }
@@ -48,26 +50,32 @@ export function useAnalytics(
 ): Analytics {
   return useMemo(() => {
     const allDays = dataset.meta.days;
-    const from =
-      filters.from &&
-      /^\d{4}-\d{2}-\d{2}$/.test(filters.from) &&
-      addDays(filters.from, 0) === filters.from
-        ? filters.from
-        : (allDays[0] as string);
-    const toRaw =
-      filters.to && /^\d{4}-\d{2}-\d{2}$/.test(filters.to) && addDays(filters.to, 0) === filters.to
-        ? filters.to
-        : (allDays[allDays.length - 1] as string);
-    const to = toRaw < from ? from : toRaw;
+    const { from, to } = windowBounds(allDays, filters.from, filters.to);
 
-    // 概览传入连续自然日，缺记录的日期也保留在时间轴上。
-    const days = windowDays ? [...windowDays] : allDays.filter((d) => d >= from && d <= to);
+    // 只补齐已加载窗口内的自然日，避免 URL 的远端日期触发无界枚举。
+    const days = windowDays ? [...windowDays] : [];
+    if (!windowDays) {
+      const loadedFrom = allDays[0]!;
+      const loadedTo = allDays[allDays.length - 1]!;
+      const start = from < loadedFrom ? loadedFrom : from;
+      const end = to > loadedTo ? loadedTo : to;
+      if (start <= end) {
+        for (let day = start; day < end; day = addDays(day, 1)) days.push(day);
+        days.push(end);
+      }
+    }
     const dayset = new Set(days);
     const lastDay = days[days.length - 1] ?? to;
 
-    const roomAlias = new Map(dataset.meta.rooms.map((r) => [r.roomid, r.alias]));
+    const rooms = new Map(dataset.meta.rooms.map((r) => [r.roomid, r]));
     const agentAlias = new Map(dataset.meta.agents.map((a) => [a.agent, a.alias]));
-    const roomLabel = (id: string) => roomAlias.get(id) ?? id;
+    const roomLabel = (id: string) => rooms.get(id)?.alias ?? id;
+    const roomAliasIsAuthoritative = (id: string) => {
+      const room = rooms.get(id);
+      return Boolean(
+        room?.alias && (room.alias_is_authoritative ?? dataset.meta.alias_is_authoritative),
+      );
+    };
     const agentLabel = (id: string) => agentAlias.get(id) ?? id;
     const typeLabel = (id: string) => dataset.taxIndex.get(id)?.name ?? id;
 
@@ -94,7 +102,17 @@ export function useAnalytics(
       return true;
     };
 
-    const windowEvents = dataset.events.filter((e) => dayset.has(e.occurred_on));
+    const knownByRoom = new Map<string, Set<string>>();
+    for (const cell of dataset.groupDaily) {
+      if (groupDayStatus(cell) !== "ok") continue;
+      const known = knownByRoom.get(cell.roomid) ?? new Set<string>();
+      known.add(cell.dt);
+      knownByRoom.set(cell.roomid, known);
+    }
+    // 失败重跑保留旧事实供核实，但这些事实不能作为本轮已知成功的指标。
+    const windowEvents = dataset.events.filter(
+      (e) => dayset.has(e.occurred_on) && knownByRoom.get(e.roomid)?.has(e.occurred_on),
+    );
     const events = windowEvents.filter((e) => matches(e, lastDay));
 
     return {
@@ -106,11 +124,12 @@ export function useAnalytics(
       windowEvents,
       events,
       agg: aggregate(events, filters.slaSec, lastDay),
-      cov: coverage(dataset.groupDaily, dayset, filters.room),
+      cov: coverage(dataset.groupDaily, dayset, filters.room, dataset.meta.rooms),
       slaSec: filters.slaSec,
       query,
       aliasIsAuthoritative: dataset.meta.alias_is_authoritative,
       roomLabel,
+      roomAliasIsAuthoritative,
       agentLabel,
       typeLabel,
     };

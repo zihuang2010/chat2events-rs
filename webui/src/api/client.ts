@@ -5,17 +5,14 @@
  * 会产出「偏小但看起来正常」的数字，而那种错没人会发现。宁可在边界上显式失败。
  */
 
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
+import { windowBounds } from "@/lib/format";
 import {
-  agentDailyListSchema,
-  eventListSchema,
-  failureListSchema,
-  groupDailyListSchema,
+  rawDatasetSchema,
+  eventSchema,
   messageListSchema,
   metaSchema,
-  type AgentDailyRow,
   type EventRow,
-  type FailureRow,
   type GroupDailyRow,
   type MessageRow,
   type Meta,
@@ -79,7 +76,17 @@ async function get<T>(
       headers: { accept: "application/json" },
     });
     if (!res.ok) {
-      throw new ApiError(`HTTP ${res.status}`, { kind: "http", status: res.status, path });
+      let detail: string | undefined;
+      if ((res.headers.get("content-type") ?? "").includes("json")) {
+        const error = z.object({ error: z.string() }).safeParse(await res.json().catch(() => null));
+        if (error.success) detail = error.data.error;
+      }
+      throw new ApiError(`HTTP ${res.status}`, {
+        kind: "http",
+        status: res.status,
+        path,
+        ...(detail === undefined ? {} : { detail }),
+      });
     }
     if (!(res.headers.get("content-type") ?? "").toLowerCase().includes("json")) {
       throw new ApiError("返回的不是 JSON", {
@@ -126,22 +133,32 @@ export interface RawDataset {
   meta: Meta;
   events: EventRow[];
   groupDaily: GroupDailyRow[];
-  agentDaily: AgentDailyRow[];
-  failures: FailureRow[];
 }
 
-export async function fetchDataset(meta: Meta): Promise<RawDataset> {
-  const from = meta.days[0];
-  const to = meta.days[meta.days.length - 1];
-  const [events, groupDaily, agentDaily, failures] = await Promise.all([
-    get("/events", eventListSchema, { from, to }),
-    get("/metric/group", groupDailyListSchema, { from, to }),
-    get("/metric/agent", agentDailyListSchema, { from, to }),
-    get("/failures", failureListSchema, { from, to }),
-  ]);
-  return { meta, events, groupDaily, agentDaily, failures };
+export interface DatasetWindow {
+  from?: string | null;
+  to?: string | null;
+}
+
+export async function fetchDataset(meta: Meta, period: DatasetWindow = {}): Promise<RawDataset> {
+  const { from, to } = windowBounds(meta.days, period.from, period.to);
+  return get("/dataset", rawDatasetSchema, { from, to });
 }
 
 /** 消息原文。真接口走摄取端口的 read_by_ids，可见范围受 raw 区保留期限制。 */
 export const fetchMessages = (eventId: number): Promise<MessageRow[]> =>
   get(`/event/${encodeURIComponent(String(eventId))}/messages`, messageListSchema);
+
+/** 深链接可能指向当前日期范围之外的事件，按行 id 单独读取。 */
+export async function fetchEvent(eventId: number, taxonomyVersion: string): Promise<EventRow> {
+  const path = `/event/${encodeURIComponent(String(eventId))}`;
+  const event = await get(path, eventSchema);
+  if (event.taxonomy_version !== null && event.taxonomy_version !== taxonomyVersion) {
+    throw new ApiError("事件与当前页面词表版本不一致", {
+      kind: "contract",
+      path,
+      detail: "词表已变化，请刷新页面后重试",
+    });
+  }
+  return event;
+}

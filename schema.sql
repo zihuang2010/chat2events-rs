@@ -23,15 +23,9 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_event —— 按 (corpid, roomid, occurred_on) 分片删重写
 --
--- 事实列（冻结区 occurred_on < T-N 不可写）：除 event_type / event_types / taxonomy_version 外的全部。
--- 标注列（任何时候可写，但只有词表升版这一个原因）：event_type / event_types / taxonomy_version。
---
--- 已建过表的库补这一列（event_types 是后加的）：
---   ALTER TABLE b_merchant_group_event
---     ADD COLUMN event_types JSON NOT NULL AFTER event_type;
---   UPDATE b_merchant_group_event SET event_types = JSON_ARRAY(event_type);
--- 第二条不能省：JSON NOT NULL 没有默认值，存量行补不上就再也过不了「第一个恒等于
--- event_type」这条约定，而 webUI 的下钻会读到空。
+-- 事实列（冻结区 occurred_on < T-(N+1) 不可写）：除 event_type / event_types / taxonomy_version 外的全部。
+-- 标注列：新事实保存后独立补齐；冻结区已有标签只因词表升版重打。
+-- 已有库升级步骤见 docs/deploy.md 的「独立打标流水线升级」。
 -- summary 归**事实列** —— 它由抽取那一次的模型决定，而冻结区本来就不再跑抽取。
 -- 这保证冻结区的 sha256(summary) 缓存永远命中。
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -49,14 +43,15 @@ CREATE TABLE b_merchant_group_event (
     agents                 JSON            NOT NULL COMMENT '涉及的全部INTERNAL成员easyUserId数组，全存。归属口径换了不用重跑LLM',
     first_responder        CHAR(16)        NULL     COMMENT 'first_agent_reply_time那条消息的发送方easyUserId',
     summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（落库前由抽取校验器拦截）',
-    event_type             VARCHAR(64)     NOT NULL COMMENT '事件类型**主类**。指标只按它统计（uk_agent_daily的一列）。为空时用显式的__untyped__不用NULL；v0+__untyped__=还没有词表（系统状态），vN+__untyped__=归不上去（数据信号）',
-    event_types            JSON            NOT NULL COMMENT '事件类型**全集**数组，第一个恒等于event_type。一个事件确实可能同时属于两件事。**副类不进任何指标**——一个事件计进N行会让SUM(event_count)>事件数，客服主管拿它当处理量会虚高。只给webUI下钻用，不建索引',
-    taxonomy_version       VARCHAR(16)     NOT NULL COMMENT '打标所用的词表版本',
+    event_type             VARCHAR(64)     NULL COMMENT '主类；NULL=尚未完成打标，__untyped__=模型归不上去或v0未建词表。分类指标只按主类统计',
+    event_types            JSON            NULL COMMENT '标签全集；NULL=尚未完成打标，完成后非空且首项等于event_type。副类只供下钻',
+    taxonomy_version       VARCHAR(16)     NULL COMMENT '打标所用词表版本；NULL=尚未完成打标',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     KEY idx_shard (corpid, roomid, occurred_on) COMMENT '分片删重写必需',
-    KEY idx_day (occurred_on) COMMENT 'BI直连：按时间段捞事件明细'
+    KEY idx_day (occurred_on) COMMENT 'BI直连：按时间段捞事件明细',
+    KEY idx_corp_day (corpid, occurred_on) COMMENT '只读工作台按企业与日期定位，保留按群写入的分片索引'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '抽取出的结构化业务事件';
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -89,11 +84,15 @@ CREATE TABLE b_merchant_group_metric_daily (
     first_reply_p50_sec INT UNSIGNED        NULL     COMMENT '首响时效P50（秒），只统计商家发起的事件。用分位数不用均值：一条几小时才回的会把均值整个带偏',
     first_reply_p90_sec INT UNSIGNED        NULL     COMMENT '首响时效P90（秒），只统计商家发起的事件',
     extraction_status   ENUM('ok','failed') NOT NULL COMMENT '抽取状态。ok=算出来了（可能是0个事件），failed=没算出来（事件级列全为NULL）',
+    classification_status ENUM('pending','ok','failed') NOT NULL DEFAULT 'ok' COMMENT '打标状态；pending=已保存事实，ok=标签和分类指标齐全，failed=打标未完成',
+    agent_accounts      JSON               NULL COMMENT '本轮群窗口的平台客服账号映射，easyUserId到officialUserId；供独立打标后计算客服指标',
+    fact_completed_time DATETIME(6)        NULL COMMENT '事实成功保存时间；仅成功抽取写入，打标不修改；NULL表示缺少可信完成凭据',
     gmt_created_time    DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time   DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_daily (corpid, roomid, dt) COMMENT '语义键：REPLACE覆盖写靠它触发冲突',
-    KEY idx_day (dt) COMMENT 'BI直连：跨群看某一天/某时间段'
+    KEY idx_day (dt) COMMENT 'BI直连：跨群看某一天/某时间段',
+    KEY idx_corp_day (corpid, dt) COMMENT '只读工作台按企业与日期读取群日'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '群维度日指标';
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +115,7 @@ CREATE TABLE b_merchant_group_agent_metric_daily (
     corpid            VARCHAR(32)     NOT NULL COMMENT '企业ID',
     room              VARCHAR(64)     NOT NULL COMMENT '群ID。进键是为了让键嵌套进「群×日」的失败隔离粒度',
     agent             CHAR(16)        NOT NULL COMMENT '平台客服（INTERNAL）easyUserId',
+    official_user_id   VARCHAR(64)         NULL COMMENT '平台客服账号，对应sender.officialUserId；取本次群处理窗口最新非空值，缺失为NULL，不参与语义键',
     dt                DATE            NOT NULL COMMENT '统计日',
     event_type        VARCHAR(64)     NOT NULL COMMENT '事件类型，空用__untyped__',
     taxonomy_version  VARCHAR(16)     NOT NULL COMMENT '词表版本',
@@ -175,8 +175,10 @@ CREATE TABLE b_merchant_group_run_failure (
     corpid            VARCHAR(32)     NOT NULL COMMENT '企业ID',
     roomid            VARCHAR(64)     NOT NULL COMMENT '群ID',
     reason            TEXT            NOT NULL COMMENT '失败原因',
-    gmt_created_time  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    gmt_modified_time DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    stage             ENUM('extract','classify') NOT NULL DEFAULT 'extract' COMMENT '失败阶段；打标失败不使已保存事实失效',
+    gmt_created_time  DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间；与事实完成凭据同精度，避免同秒失败被遗漏',
+    gmt_modified_time DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间',
     PRIMARY KEY (id),
-    KEY idx_run (run_date) COMMENT '按跑批日查失败群'
+    KEY idx_run (run_date) COMMENT '按跑批日查失败群',
+    KEY idx_room_stage_time (corpid, roomid, stage, gmt_created_time) COMMENT '按群与阶段定位最后失败时间，避免每次聚合全部历史'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '跑批失败记录（群×本次运行）';

@@ -82,12 +82,152 @@ fn room_path_is_the_layout() {
 // ── 样本集成 ─────────────────────────────────────────────────────────
 
 #[test]
+fn oversized_room_fails_without_returning_a_partial_conversation() {
+    use std::io::Write;
+    let root = testutil::fresh_root("ingest", "room-budget");
+    let path = room_path(&root, "202608", "C", "R");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    // 按行生成约 33 MiB 正文，测试自身不先持有整份大 JSON fixture。
+    let text = "x".repeat(64 * 1024);
+    for i in 0..520 {
+        let mut value = row(&format!("m{i}"), ms(25, 10, 0), "u1");
+        value["analysisText"] = text.clone().into();
+        serde_json::to_writer(&mut file, &value).unwrap();
+        writeln!(file).unwrap();
+    }
+    file.flush().unwrap();
+    drop(file);
+    assert!(
+        matches!(read_room(&root, "C", "R", &all()), Err(IngestError::Room(message)) if message.contains("32 MiB"))
+    );
+    let small = raw("room-after-budget", "202608", &sample());
+    assert_eq!(
+        read_room(&small, "C", "R", &all()).unwrap().msgs.len(),
+        10,
+        "超限不会破坏共享读取实例"
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn internal_account_keeps_easy_id_and_optional_official_id() {
+    for (name, role, account, expected) in [
+        (
+            "internal",
+            "INTERNAL",
+            json!("13523611718"),
+            Some("13523611718"),
+        ),
+        (
+            "letter-account",
+            "INTERNAL",
+            json!("staff.a"),
+            Some("staff.a"),
+        ),
+        ("external", "EXTERNAL", json!("external-account"), None),
+        ("null-account", "INTERNAL", Value::Null, None),
+        ("empty-account", "INTERNAL", json!(""), None),
+    ] {
+        let mut message = row("m1", ms(25, 9, 0), "1688857091747413");
+        message["sender"]["identityType"] = json!(role);
+        message["sender"]["officialUserId"] = account;
+        let root = raw(name, "202608", &[message]);
+        let conv = read_room(&root, "C", "R", &all()).unwrap();
+        assert_eq!(conv.msgs[0].sender_id, "1688857091747413");
+        assert_eq!(conv.msgs[0].official_user_id.as_deref(), expected);
+    }
+    let mut message = row("m1", ms(25, 9, 0), "1688857091747413");
+    message["sender"]
+        .as_object_mut()
+        .unwrap()
+        .remove("officialUserId");
+    let root = raw("missing-account", "202608", &[message]);
+    assert_eq!(
+        read_room(&root, "C", "R", &all()).unwrap().msgs[0].official_user_id,
+        None
+    );
+}
+
+#[test]
+fn daily_window_reads_only_the_two_days_before_yesterday() {
+    let date = |d| NaiveDate::from_ymd_opt(2026, 9, d).unwrap();
+    let rows: Vec<_> = [
+        ("before", 3, 23, 59, 59, 999),
+        ("start", 4, 0, 0, 0, 0),
+        ("end", 5, 23, 59, 59, 999),
+        ("yesterday", 6, 0, 0, 0, 0),
+        ("today", 7, 0, 0, 0, 0),
+    ]
+    .into_iter()
+    .map(|(id, d, hour, min, sec, milli)| {
+        let at = date(d).and_hms_milli_opt(hour, min, sec, milli).unwrap();
+        row(id, testutil::upstream_ms(at), "u1")
+    })
+    .collect();
+    let root = raw("daily-window", "202609", &rows);
+    let w = Window::new(date(7), 2);
+    let conv = read_synced_room(&root, "C", "R", &w, &["202609".into()]).unwrap();
+    assert_eq!(
+        conv.msgs
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect::<Vec<_>>(),
+        ["start", "end"]
+    );
+    assert_eq!(conv.msg_counts.len(), 2);
+    assert_eq!(conv.msg_counts[&date(4)], (1, 1));
+    assert_eq!(conv.msg_counts[&date(5)], (1, 1));
+}
+
+#[test]
 fn list_rooms_only_rooms_with_files() {
     let root = raw("list", "202608", &sample());
     assert_eq!(
         list_rooms(&root, &all()),
         [("C".to_string(), "R".to_string())]
     );
+}
+
+#[test]
+fn synced_reads_exclude_old_months_but_drilldown_keeps_them() {
+    let sep = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+    let root = raw("synced-months", "202608", &[row("old", ms(31, 9, 0), "u1")]);
+    testutil::write_month(
+        &root,
+        "202609",
+        "C",
+        "R",
+        &[row(
+            "current",
+            testutil::upstream_ms(sep.and_hms_opt(9, 0, 0).unwrap()),
+            "u1",
+        )],
+    );
+    let w = Window::span(day(31), sep);
+    let complete =
+        read_synced_room(&root, "C", "R", &w, &["202608".into(), "202609".into()]).unwrap();
+    assert_eq!(complete.msgs.len(), 2);
+    assert_eq!(complete.msg_counts[&day(31)], (1, 1));
+    assert_eq!(complete.msg_counts[&sep], (1, 1));
+    let conv = read_synced_room(&root, "C", "R", &w, &["202609".into()]).unwrap();
+    assert_eq!(
+        conv.msgs
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect::<Vec<_>>(),
+        ["current"]
+    );
+    assert!(!conv.msg_counts.contains_key(&day(31)));
+    let historical = read_by_ids(&root, "C", "R", &w, &["old".into()]).unwrap();
+    assert_eq!(historical[0].msg_id, "old");
+}
+
+#[test]
+fn a_missing_synced_month_fails_instead_of_returning_partial_messages() {
+    let root = raw("missing-synced", "202608", &sample());
+    let w = Window::span(day(25), NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+    assert!(read_synced_room(&root, "C", "R", &w, &["202608".into(), "202609".into()]).is_err());
 }
 
 #[test]
@@ -213,6 +353,24 @@ fn missing_required_field_fails_room() {
         let e = read_room(&root, "C", "R", &all()).unwrap_err();
         assert!(matches!(e, IngestError::Room(_)), "{blank}: {e}");
         assert!(e.to_string().contains("缺必填字段"), "{blank}: {e}");
+    }
+}
+
+#[test]
+fn missing_timestamps_fail_before_the_window_can_hide_them() {
+    for missing in [false, true] {
+        let mut rows = sample();
+        if missing {
+            rows[1].as_object_mut().unwrap().remove("messageTime");
+        } else {
+            rows[1]["messageTime"] = Value::Null;
+        }
+        let root = raw(&format!("missing-time-{missing}"), "202608", &rows);
+        let err = read_room(&root, "C", "R", &all()).unwrap_err();
+        assert!(matches!(err, IngestError::Room(_)), "{err}");
+        assert!(err.to_string().contains("缺必填字段"), "{err}");
+        assert!(read_synced_room(&root, "C", "R", &all(), &["202608".into()]).is_err());
+        assert!(read_by_ids(&root, "C", "R", &all(), &["m25b".into()]).is_err());
     }
 }
 

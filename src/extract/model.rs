@@ -13,13 +13,15 @@ use super::{
 use crate::{
     BoxError,
     llm::{Llm, LlmError, Turn},
+    rejection::Rejection,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fmt,
     future::Future,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 /// 允许一次「序号越界」的自我修正，不多给 —— 逼急了模型会编一个合法序号。
@@ -68,71 +70,6 @@ pub trait SegmentModel {
         segment_size: usize,
         open_refs: &BTreeSet<u32>,
     ) -> impl Future<Output = Result<Vec<EventDraft>, SegError>> + Send;
-}
-
-/// 一次校验不通过。**两份文案，两个去处，绝不混用。**
-///
-/// 分开是因为这两个消费者的需求正好相反：
-///   * **模型**要逐字证据才能自我修正 —— 「summary 不得含手机号「138…」」，
-///     不说是哪个号，模型不知道删哪几个字。
-///   * **运维**（stderr / `run_failure.reason`）只需要知道撞了哪条规则、几次。
-///
-/// 曾经它们是同一个 `String`：于是 `first_phone` 从 summary 里揪出来的那个手机号
-/// 被逐字打进 `run.log`，并当 `reason` 写进 `b_merchant_group_run_failure`（`TEXT`，
-/// **没有保留期**）。**挡 PII 进 `summary` 的那道闸，自己成了一条 PII 落库路径** ——
-/// 而它恰好只在「真有 PII 漏过来了」时才触发（`redact::PHONE` 匹配不到空格 / 连字符
-/// 形态，模型归一化后抄进 summary，这里才逮到）。
-///
-/// **`Display` 和 `Debug` 给的都是运维版**，逐字那份要显式 [`Rejection::verbatim`]。
-/// 于是 `{}`、`{:?}`、`Box<dyn Error>` 三条路都漏不出证据 —— 想漏得先把手伸过来。
-pub(super) struct Rejection {
-    /// 逐字，含证据原文。**只有两个合法去处：下一轮 prompt，和本模块的测试。**
-    to_model: String,
-    /// 规则名 + 条数，不含任何来自消息或 `summary` 的内容。
-    to_operator: String,
-}
-
-impl Rejection {
-    /// `errs` 的第一元是**规则名**（会出进程，所以要短、稳、可 `GROUP BY`），
-    /// 第二元是**逐字证据**（不出 `extract`）。
-    fn new(errs: Vec<(&'static str, String)>) -> Self {
-        let mut by_rule: BTreeMap<&'static str, usize> = BTreeMap::new();
-        for (rule, _) in &errs {
-            *by_rule.entry(rule).or_default() += 1;
-        }
-        Self {
-            to_operator: by_rule
-                .iter()
-                .map(|(r, n)| format!("{r} ×{n}"))
-                .collect::<Vec<_>>()
-                .join(" · "),
-            to_model: errs
-                .into_iter()
-                .map(|(_, m)| m)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        }
-    }
-
-    /// 回灌给模型的逐字文案 —— **带证据原文，可能含 PII**。
-    /// 名字起得刺眼是有意的：调用点应该少到一眼能数完。
-    pub(super) fn verbatim(&self) -> &str {
-        &self.to_model
-    }
-}
-
-impl fmt::Display for Rejection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_operator)
-    }
-}
-
-/// 手写而不是 `derive` —— `derive` 会把 `to_model` 一起打出来，
-/// 而 `unwrap()` / `{:?}` / `Box<dyn Error>` 都会走到这里。
-impl fmt::Debug for Rejection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_operator)
-    }
 }
 
 /// 校验模型这一段的输出。**不通过 = 该批次失败**，不做字段级兜底修补。
@@ -275,13 +212,44 @@ fn parse_ref(
 }
 
 /// 真实调用。**端点知识全都住在这里** —— 换端点要改的就是这个类型。
+///
+/// 顺带记本轮的模型用量（[`Self::usage`]）。生产上整轮只造一个（`daily::run` 里
+/// `Arc::new`，全部群共享），所以这两个计数天然就是**整轮口径**。
 pub struct LiveModel {
     llm: Llm,
+    /// 段调用次数。**含二分切出来的和校验重问的** —— 它数的是「真的发出去几个请求」，
+    /// 不是「分了几段」，因为要拿它当产能的分母。
+    calls: AtomicU64,
+    /// 累计模型耗时（毫秒）。**墙钟不等于它除以并发**：群与群之间有读取、落库和
+    /// 排队的空档。当外推的分子用，不当进度条。
+    millis: AtomicU64,
+}
+
+/// 本轮的模型用量 —— 给收尾那行日志做产能外推用。
+#[derive(Debug, Clone, Copy)]
+pub struct Usage {
+    pub calls: u64,
+    pub secs: f64,
 }
 
 impl LiveModel {
     pub fn new(llm: Llm) -> Self {
-        Self { llm }
+        Self {
+            llm,
+            calls: AtomicU64::new(0),
+            millis: AtomicU64::new(0),
+        }
+    }
+
+    /// 到目前为止发出去的段调用数和累计耗时。
+    ///
+    /// **`llm.rs` 每次调用打的那行 `elapsed_ms` 是逐次的、算完就扔**，全仓没有第二份
+    /// 累计 —— 这里接住它，不是重复记账。
+    pub fn usage(&self) -> Usage {
+        Usage {
+            calls: self.calls.load(Ordering::Relaxed),
+            secs: self.millis.load(Ordering::Relaxed) as f64 / 1000.0,
+        }
     }
 }
 
@@ -295,20 +263,26 @@ impl SegmentModel for LiveModel {
         let mut turns = vec![Turn::User(text.to_string())];
         let mut attempt = 0u32;
         loop {
-            let got: crate::llm::Extracted<SegmentExtraction> =
-                match self.llm.extract(SYSTEM, &turns).await {
-                    Ok(v) => v,
-                    // **端点知识 -> 切分信号的翻译就这两行。** 只认这两个：
-                    // 截断（输出预算耗尽）和超时（连上了但这一段没算完）。
-                    // `Other` 里含连接类错误，**绝不当成「太大」**。
-                    Err(LlmError::Truncated) => {
-                        return Err(SegError::TooBig("输出预算耗尽".into()));
-                    }
-                    Err(LlmError::Timeout) => {
-                        return Err(SegError::TooBig("请求超时".into()));
-                    }
-                    Err(e) => return Err(SegError::Failed(Box::new(e))),
-                };
+            // 计时包住调用本身，**失败的那次也算** —— 超时和跑飞照样烧了墙钟，
+            // 只数成功的会让产能外推系统性偏乐观。
+            let started = std::time::Instant::now();
+            let result = self.llm.extract(SYSTEM, &turns).await;
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.millis
+                .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            let got: crate::llm::Extracted<SegmentExtraction> = match result {
+                Ok(v) => v,
+                // **端点知识 -> 切分信号的翻译就这两行。** 只认这两个：
+                // 截断（输出预算耗尽）和超时（连上了但这一段没算完）。
+                // `Other` 里含连接类错误，**绝不当成「太大」**。
+                Err(LlmError::Truncated) => {
+                    return Err(SegError::TooBig("输出预算耗尽".into()));
+                }
+                Err(LlmError::Timeout) => {
+                    return Err(SegError::TooBig("请求超时".into()));
+                }
+                Err(e) => return Err(SegError::Failed(Box::new(e))),
+            };
 
             match validate(got.data.events, segment_size, open_refs) {
                 Ok(events) => return Ok(events),

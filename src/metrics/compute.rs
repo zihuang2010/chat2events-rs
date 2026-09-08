@@ -80,6 +80,8 @@ pub struct AgentRow {
     pub event_type: String,
     pub taxonomy_version: String,
     pub event_count: u32,
+    /// 平台客服账号，跑批从消息元信息补入；重打标保留库中已有值。
+    pub official_user_id: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -209,6 +211,7 @@ pub fn agent_rows(
             event_type,
             taxonomy_version: taxonomy_version.into(),
             event_count,
+            official_user_id: None,
         })
         .collect()
 }

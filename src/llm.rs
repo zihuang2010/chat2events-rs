@@ -22,16 +22,21 @@
 //!    （100ms 起翻倍、封顶 8s），尊重 Retry-After，429 还会读 body 区分「限流」(重试)
 //!    和「配额耗尽」(直接失败)。默认额外重试 3 次。
 //!
-//! 4. **超时不被那一层重试** —— 读过源码确认，不是推测：`retry/openai.rs:239` 的
-//!    `is_connection_error` 只认 `reqwest::Error::is_connect()`，超时走
+//! 4. **连接后的响应超时不被那一层重试**：`retry/openai.rs:239` 的
+//!    `is_connection_error` 只认 `reqwest::Error::is_connect()`，响应超时走
 //!    `Err(error) => return Err(error)` 当场返回。这一条是承重的：超时是自适应
 //!    二分的触发信号之一，若被重试 3 次吃掉，`timeout_secs=300` 会变成最坏 20 分钟
 //!    才浮出一个本该立刻切分的信号。**换 async-openai 版本时要重新确认这一条。**
+//!    握手超时同时属于 connect 与 timeout，仍按连接故障重试，不能触发切段。
+//!    完整逻辑调用另有总预算，SDK 的 Retry-After 等待也包含在内。
 
-use crate::{BoxError, config::LlmConfig};
+use crate::{
+    BoxError,
+    config::{LlmModel, LlmSection},
+};
 use async_openai::{
     Client,
-    config::OpenAIConfig,
+    config::{Config as _, OpenAIConfig},
     error::OpenAIError,
     types::chat::{
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
@@ -74,7 +79,7 @@ pub enum Turn {
 ///
 /// 前两个是「模型吃不下这一段」的两种表现，要翻译成同一个切分信号；
 /// `Other` 一律不切。这条分界错一边的代价不对称：把连接错误当成「太大」，
-/// 会把一次网络故障放大成一整棵二分调用树（切成两半，两半照样断，再各切两半……）。
+/// 会把一次网络故障变成无效的逐级切分，直到最小子段仍失败。
 #[derive(Debug)]
 pub enum LlmError {
     /// `finish_reason == Length` —— 输出预算耗尽，被截断了。
@@ -104,7 +109,8 @@ impl std::error::Error for LlmError {}
 impl From<OpenAIError> for LlmError {
     fn from(e: OpenAIError) -> Self {
         match &e {
-            OpenAIError::Reqwest(r) if r.is_timeout() => Self::Timeout,
+            // 握手失败也可能 is_timeout；只有已经连上后的超时才交给抽取切段。
+            OpenAIError::Reqwest(r) if r.is_timeout() && !r.is_connect() => Self::Timeout,
             _ => Self::Other(Box::new(e)),
         }
     }
@@ -131,10 +137,34 @@ pub struct Llm {
     reasoning_effort: ReasoningEffort,
     temperature: f32,
     max_tokens: u32,
+    request_timeout: Duration,
 }
 
 impl Llm {
-    pub fn new(cfg: &LlmConfig, api_key: String) -> crate::Result<Self> {
+    /// 分类缓存使用实际请求配置的身份，不包含凭证或仅影响等待时间的配置。
+    pub(crate) fn cache_identity(&self) -> crate::Result<String> {
+        Ok(serde_json::to_string(&(
+            self.client.config().api_base(),
+            &self.model,
+            &self.reasoning_effort,
+            self.temperature,
+            self.max_tokens,
+        ))?)
+    }
+
+    pub(crate) fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// `cfg` 是两队共用的那几个键，`m` 是这一队自己的模型 / 端点 / 输出上限。
+    ///
+    /// **调用方必须显式选边**（`&cfg.llm.extract` 或 `&cfg.llm.classify`）——
+    /// 拆成两个参数就是为了让「这一处是抽取还是打标」在调用点上写出来，
+    /// 而不是靠上下文猜。
+    pub fn new(cfg: &LlmSection, m: &LlmModel, api_key: String) -> crate::Result<Self> {
+        if cfg.timeout_secs == 0 || cfg.connect_timeout_secs == 0 || cfg.request_timeout_secs == 0 {
+            return Err("模型连接、请求与总预算必须大于零".into());
+        }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
@@ -145,28 +175,15 @@ impl Llm {
             client: Client::with_config(
                 OpenAIConfig::new()
                     .with_api_key(api_key)
-                    .with_api_base(&cfg.base_url),
+                    .with_api_base(&m.base_url),
             )
             .with_http_client(http),
-            model: cfg.model.clone(),
+            model: m.model.clone(),
             reasoning_effort: cfg.reasoning_effort.clone(),
             temperature: cfg.temperature,
-            max_tokens: cfg.max_tokens,
+            max_tokens: m.max_tokens,
+            request_timeout: Duration::from_secs(cfg.request_timeout_secs),
         })
-    }
-
-    /// 复制一个 `max_tokens` 更小的自己 —— 给**输出规模已知很小**的调用点用。
-    ///
-    /// 配置里那个 64000 是「模型收得下的最大值」，不是任何一处的真实需求。它对 ③ 是
-    /// 对的（`Truncated` / `Timeout` 正是那边对半切的信号，压小会改掉切分行为），
-    /// 但对一次只吐十来个类的定稿，它意味着**跑飞时唯一会喊停的是 `timeout_secs`** ——
-    /// 实测三趟中两趟栽在这里，报出来是一个无从下手的 `Timeout`。
-    /// 上限贴着实际需求给，跑飞就秒撞 `Truncated`：同样是失败，但那句话有信息量。
-    pub fn with_max_tokens(&self, max_tokens: u32) -> Self {
-        Self {
-            max_tokens,
-            ..self.clone()
-        }
     }
 
     /// [`extract`](Self::extract) 外面包一层**坏运气重发**：跑飞（`Truncated`）和
@@ -189,8 +206,9 @@ impl Llm {
         T: JsonSchema + DeserializeOwned,
     {
         let (mut runaways, mut timeouts) = (0u32, 0u32);
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
         loop {
-            match self.extract(system, turns).await {
+            match self.extract_until(system, turns, deadline).await {
                 // 静默重发等于不知道模型在跑飞。这两条 warn 是唯一的信号。
                 Err(LlmError::Truncated) if runaways < RUNAWAY_RETRIES => {
                     runaways += 1;
@@ -216,6 +234,23 @@ impl Llm {
         &self,
         system: &str,
         turns: &[Turn],
+    ) -> std::result::Result<Extracted<T>, LlmError>
+    where
+        T: JsonSchema + DeserializeOwned,
+    {
+        self.extract_until(
+            system,
+            turns,
+            tokio::time::Instant::now() + self.request_timeout,
+        )
+        .await
+    }
+
+    async fn extract_until<T>(
+        &self,
+        system: &str,
+        turns: &[Turn],
+        deadline: tokio::time::Instant,
     ) -> std::result::Result<Extracted<T>, LlmError>
     where
         T: JsonSchema + DeserializeOwned,
@@ -265,7 +300,10 @@ impl Llm {
         // 和 retry-after header、5xx 服务端错误。默认 info 就能看到它们（warn 更高）。
         // 它没有任何 debug/trace 事件 —— 把级别调详细也看不到请求体，要抓请求得在这里自己加。
         let started = std::time::Instant::now();
-        let response = self.client.chat().create(request).await?;
+        // 总预算覆盖 SDK 内部的退避等待；到期不是“段太大”，不能重新切段或重发。
+        let response = tokio::time::timeout_at(deadline, self.client.chat().create(request))
+            .await
+            .map_err(|_| LlmError::Other("模型调用总预算耗尽（包含重试与等待）".into()))??;
         let elapsed = started.elapsed();
 
         let choice = response
@@ -323,10 +361,23 @@ impl Llm {
 /// additionalProperties 和去掉 $schema 是 OpenAI strict 的要求 —— dashscope 其实
 /// 不检查这两条，但对着规范写，换回 OpenAI 时不用再改。
 ///
-/// ⚠️ 只补顶层的 required。嵌套类型（`$defs` 里的）走 schemars 自己那套 ——
-/// ③ 的 `SegmentExtraction` 顶层只有一个必填的 `events` 数组，元素类型另行处理。
+/// 所有嵌套对象也执行相同约束，包含 `$defs` 中的 WireDraft 与 Assignment。
 fn strict_schema<T: JsonSchema>() -> (String, serde_json::Value) {
-    let mut schema = serde_json::to_value(schema_for!(T)).expect("schema 转 json 失败");
+    use schemars::transform::{RecursiveTransform, Transform};
+    let mut schema = schema_for!(T);
+    RecursiveTransform(|schema: &mut schemars::Schema| {
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            let fields: Vec<serde_json::Value> =
+                properties.keys().map(|key| key.as_str().into()).collect();
+            schema.insert("required".into(), fields.into());
+            schema.insert("additionalProperties".into(), false.into());
+        }
+    })
+    .transform(&mut schema);
+    let mut schema = serde_json::to_value(schema).expect("schema 转 json 失败");
     let obj = schema.as_object_mut().expect("schema 顶层不是 object");
     obj.remove("$schema");
 
@@ -337,14 +388,6 @@ fn strict_schema<T: JsonSchema>() -> (String, serde_json::Value) {
         .unwrap_or("output")
         .to_string();
 
-    let fields: Vec<serde_json::Value> = obj["properties"]
-        .as_object()
-        .expect("schema 缺 properties")
-        .keys()
-        .map(|k| k.as_str().into())
-        .collect();
-    obj.insert("required".into(), fields.into());
-    obj.insert("additionalProperties".into(), false.into());
     (name, schema)
 }
 
@@ -353,11 +396,123 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
-    #[derive(JsonSchema, Deserialize)]
+    #[derive(Debug, JsonSchema, Deserialize)]
     #[allow(dead_code)]
     struct Sample {
         required_field: String,
         optional_field: Option<String>,
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_timeout_is_a_connection_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            // 接受 TCP 但不完成 TLS，稳定复现同时属于 connect 与 timeout 的错误。
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            drop(connection);
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("https://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_connect() && error.is_timeout());
+        let mapped = LlmError::from(OpenAIError::Reqwest(error));
+        server.abort();
+        let _ = server.await;
+        assert!(
+            matches!(mapped, LlmError::Other(_)),
+            "握手失败不应成为切段信号：{mapped}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_cannot_outlive_the_logical_request_budget() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            connection
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                connection.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            let header = String::from_utf8(header).unwrap().to_ascii_lowercase();
+            let length: usize = header
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            connection.read_exact(&mut vec![0; length]).unwrap();
+            let body = r#"{"error":{"message":"rate limit","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#;
+            write!(connection, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 86400\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let mut cfg: crate::config::Config = toml::from_str(
+            &include_str!("../config.toml")
+                .replace("request_timeout_secs = 1200", "request_timeout_secs = 1"),
+        )
+        .unwrap();
+        cfg.llm.extract.base_url = base;
+        let llm = Llm::new(&cfg.llm, &cfg.llm.extract, "test-only-key".into()).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            llm.extract_retry::<Sample>("test", &[Turn::User("test".into())]),
+        )
+        .await;
+        server.join().unwrap();
+        let error = result
+            .expect("SDK 的 Retry-After 必须受总预算约束")
+            .unwrap_err();
+        assert!(
+            matches!(error, LlmError::Other(_)),
+            "总预算耗尽不能触发重发或切段"
+        );
+        assert!(error.to_string().contains("总预算"));
+    }
+
+    #[tokio::test]
+    async fn retry_reissues_truncation_but_stops_at_its_budget() {
+        use crate::testutil::{completion, http_model, test_llm};
+        let (base, server) = http_model(
+            vec![
+                (200, completion("{broken", "length")),
+                (
+                    200,
+                    completion(r#"{"required_field":"ok","optional_field":null}"#, "stop"),
+                ),
+            ],
+            false,
+        );
+        test_llm(&base, "test")
+            .extract_retry::<Sample>("test", &[Turn::User("test".into())])
+            .await
+            .unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        let replies = (0..=RUNAWAY_RETRIES)
+            .map(|_| (200, completion("{broken", "length")))
+            .collect();
+        let (base, server) = http_model(replies, false);
+        assert!(matches!(
+            test_llm(&base, "test")
+                .extract_retry::<Sample>("test", &[Turn::User("test".into())])
+                .await,
+            Err(LlmError::Truncated)
+        ));
+        assert_eq!(server.join().unwrap().len(), RUNAWAY_RETRIES as usize + 1);
     }
 
     // Option 字段也要进 required，否则模型会跳过不输出

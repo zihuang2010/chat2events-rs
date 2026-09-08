@@ -25,9 +25,57 @@ pub struct Config {
     pub ingest: IngestConfig,
     pub extract: ExtractConfig,
     pub classify: ClassifyConfig,
-    pub llm: LlmConfig,
+    pub llm: LlmSection,
     pub mysql: MysqlConfig,
     pub log: LogConfig,
+}
+
+/// 只读入口只解析自己的运行参数，不要求模型、OSS 凭据或跑批并发关系。
+#[derive(Deserialize)]
+pub struct WebConfig {
+    pub ingest: WebIngestConfig,
+    pub mysql: MysqlConfig,
+    pub log: LogConfig,
+    pub web: WebLimits,
+}
+
+#[derive(Deserialize)]
+pub struct WebIngestConfig {
+    pub raw_root: PathBuf,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct WebLimits {
+    pub concurrency: usize,
+    pub scan_concurrency: usize,
+    pub max_response_bytes: usize,
+    pub max_rows: usize,
+    pub query_timeout_secs: u64,
+}
+
+#[derive(Deserialize)]
+pub struct WebSecrets {
+    pub mysql: MysqlSecrets,
+}
+
+pub fn load_web_from_dir(dir: &Path) -> (WebConfig, WebSecrets) {
+    let config: WebConfig = load(&dir.join("config.toml"), false);
+    assert!(
+        config.mysql.max_connections > 0 && config.mysql.acquire_timeout_secs > 0,
+        "MySQL 连接数与等待时间必须大于零"
+    );
+    assert!(
+        config.web.concurrency > 0
+            && config.web.scan_concurrency > 0
+            && config.web.max_response_bytes > 0
+            && config.web.max_rows > 0
+            && config.web.query_timeout_secs > 0,
+        "只读查询名额、结果预算与超时必须大于零"
+    );
+    let secrets = dir.join("secrets.toml");
+    #[cfg(unix)]
+    require_owner_only(&secrets);
+    (config, load(&secrets, true))
 }
 
 #[derive(Deserialize)]
@@ -89,16 +137,14 @@ pub struct IngestConfig {
     /// 目录布局与理由见 `ingest/layout.rs`（布局的唯一权威）。
     pub raw_root: PathBuf,
 
-    /// 回看窗口 N：读 `[T-N, T-1]`，这 N 天就是非冻结区。
+    /// 回看窗口 N：跳过当天和昨天，读 `[T-(N+1), T-2]`，这 N 天就是非冻结区。
     /// ⚠️ N=2 时「周五提问、周一回复」永远拼不起来 —— 没有任何一次运行会同时读到
     /// 周五和周一，该事件会永久算作未回复，而损失系统性落在**周五值班的人**头上。
     /// 判据是「跨 2 天以上才闭合」的占比，且**要按周几分别看**，> 5% 立刻调 4。
     pub lookback_days: u32,
 
-    /// 下载根地址（CDN）。拼上索引表的 `ndjson_object_key` 就是月文件的 URL。
-    /// **不是密钥** —— 是个公开域名，所以在 config.toml 而不是 secrets.toml。
-    /// ⚠️ 这条路径配了 30 天 CDN 缓存且客户端绕不掉。
-    pub download_base_url: String,
+    /// OSS 服务端点（不含 bucket）、bucket 和签名地域；直连 OSS，不经过 CDN。
+    pub oss: OssConfig,
 
     /// 本地 raw 区保留几个月，更老的月目录整个删掉（[`crate::ingest::prune`]）。
     ///
@@ -117,20 +163,7 @@ pub struct IngestConfig {
     /// 一个规矩：这类值必须由部署环境明确给出，代码里没有默认值。
     pub mirror_concurrency: usize,
 
-    /// 同时在处理的群数。**段之间仍然串行，
-    /// 并行只加在群与群之间。** 无默认值，缺失即报错。
-    ///
-    /// 它同时是两件事：
-    ///   * **内存上界** —— 一次最多持有这么多个 `Conversation`；
-    ///   * **墙钟旋钮** —— ③ 接上之后这是唯一能压的那个，届时约束是端点 TPM
-    ///     而不是并发数本身，调它之前先看限流。
-    ///
-    /// 今天只有读取在并发，**曾**测拐点在 8（100 群 / 555 MB / 12 核，串行 9.81s →
-    /// k=8 2.48s，k=12 起不再变快）。
-    ///
-    /// ⚠️ **第六轮之后那个数失效了**：它是「每个群新开一条 DuckDB 连接」时代量的，
-    /// 共享实例把单群读取成本压掉一个数量级（10 群 957ms → 71ms），拐点必然前移。
-    /// 重量之前别拿它当依据 —— 何况 ③ 接上后约束本来就是端点 TPM 而不是本机核数。
+    /// 同时读取、抽取和保存的群数；群内段仍串行。打标使用独立并发额度。
     pub room_concurrency: usize,
 }
 
@@ -146,58 +179,80 @@ pub struct ExtractConfig {
     /// 段长跳到几千时要拆成独立常量。
     pub segment_msgs: usize,
 }
-/// ⑤ 分类 —— 打标结果缓存落在哪。
+/// ⑤ 分类 —— 独立批次并发与结果缓存。
 #[derive(Deserialize)]
 pub struct ClassifyConfig {
-    /// `<cache_dir>/<taxonomy_version>.ndjson`，内容寻址、只增不减。
+    /// 全局最多同时处理的打标批次数，也约束消费者持有的群数和 channel 容量。
+    pub concurrency: usize,
+    /// `<cache_dir>/<taxonomy_version>-<策略指纹>.sqlite`，摘要 hash 对应标签全集；旧 NDJSON 首次导入。
     ///
     /// **这是承重件不是优化**：模型打标不保证同输入同输出，而非冻结区每天重写
-    /// `[T-2, T-1]`、同一批 event 会被反复打标 —— 没有跨运行的持久缓存，报表就会
+    /// `[T-3, T-2]`、同一批 event 会被反复打标 —— 没有跨运行的持久缓存，报表就会
     /// 抖动而非修正（承重不变量 1）。目录建不出来时进程在启动期就崩，不等到第一次打标。
     ///
-    /// **一个版本一个文件**：v0 的答案绝不能当 v1 的答案，文件名带版本是让这件事
-    /// 不可能发生的最省事的办法。
+    /// 策略指纹包含词表、提示词与模型请求配置；每个文件只允许一个进程持有写锁。
     pub cache_dir: PathBuf,
-
-    /// 本地类心敢不敢用的门槛：最近类心与次近之差要达到它，否则回落去问模型。
-    ///
-    /// **两条路必须用同一个值**（`daily` 和 `recompute`），否则冻结区和
-    /// `[T-2, T-1]` 用两套口径，边界上同类事件标签不同 —— 承重不变量 1 要防的抖动。
-    /// 所以它在配置里，不在命令行。
-    ///
-    /// **没有能抄的默认值**：跑一次 `examples/recompute.rs`，看日志里那张
-    /// 「留出集（margin / 覆盖率 / 一致率）」的表现场定。设成很大的数（如 `1.0`）
-    /// 等于关掉本地类心、全部问模型。
-    pub margin: f32,
 }
 
+/// `[llm]` —— **共用键写在节头下，两队各自的三个键在子节里**。
+///
+/// ③ 抽取和 ⑤ 打标是**两个不同的模型**（`[llm.extract]` / `[llm.classify]`）。
+/// 拆节的判据不是「它属不属于模型」，而是「**换一队模型时会不会想改它**」：
+///   * `model` / `base_url` / `max_tokens` 跟着**任务**走 —— 抽取要整段对话的事件
+///     列表（输出上限贴着模型收得下的最大值给），打标只吐几十个小对象（贴着实际
+///     需求给），两者差一个量级。这三个进 [`LlmModel`]。
+///   * 其余跟着**客户端**走：连接、响应与逻辑调用预算属于传输处置，`reasoning_effort` 两队都要关，
+///     `temperature = 0` 是两条线共同的确定性要求。留在这里。
+///
+/// **全写两遍也能跑，但那会给 `reasoning_effort` 和 `temperature` 各造一个副本，
+/// 而这两个字段配错的症状都是静默的** —— 前者是一行没人看的 warn 加一张翻倍的账单，
+/// 后者会让打标结果缓存（承重不变量 1）从「同 summary 同答案」退成偶然。
+/// 最不该有副本的正是它们。
 #[derive(Deserialize)]
-pub struct LlmConfig {
-    pub model: String,
-    pub base_url: String,
-
+pub struct LlmSection {
     /// ⚠️ 绝对不要给这个字段加默认值：ReasoningEffort 自带的 Default 是 Medium ——
     /// 配置里一省掉就变成"开着推理"。实测 qwen3.8-flash 默认开推理，答一个"2"
-    /// 要烧 41 个 reasoning token；抽取任务不需要它。宁可缺失即报错，
+    /// 要烧 41 个 reasoning token；抽取和打标都不需要它。宁可缺失即报错，
     /// 也不给一个危险的隐式值。注意 "minimal" 不等于关（实测仍有 13 tokens），
     /// 只有 "none" 是真关。
     pub reasoning_effort: ReasoningEffort,
 
     /// 抽取要可复现，不是创作 —— 生产恒为 0.0。
+    /// **打标那条线还额外靠它**：结果缓存是承重件（承重不变量 1），
+    /// temperature 一非零，「同 summary 同答案」就从高概率退成偶然。
     pub temperature: f32,
-
-    /// ⚠️ 跟着模型变，不是跟着端点变：qwen3.8-flash 收 64000，qwen-plus 只到 32768。
-    /// 换模型报 range 错就来 config.toml 调这里。
-    pub max_tokens: u32,
 
     /// 单次尝试的超时。实测单段调用 118~168s（3742 条样本、约 370 条/段），留 2 倍余量。
     /// ⚠️ 这是【每次尝试】的上限，不是总耗时：底层默认还会重试 3 次，
     /// 最坏情况墙钟是这个值的 4 倍。要卡总时长得在调用方再包一层。
     pub timeout_secs: u64,
 
+    /// 一次逻辑调用的总预算，包含 SDK 等待、传输重试与分类的坏运气重发。
+    pub request_timeout_secs: u64,
+
     /// 只管 TCP+TLS 握手。单独设是为了让"端点连不上"几秒内失败，
     /// 而不是耗满上面那个按分钟计的整体超时。
     pub connect_timeout_secs: u64,
+
+    /// ③ 抽取那一队。
+    pub extract: LlmModel,
+
+    /// ⑤ 打标那一队 —— `recompute` 重打标和 `taxonomy review` 试打也走这一份。
+    pub classify: LlmModel,
+}
+
+/// 一队的模型参数。**只有这三个跟着队走**，其余在 [`LlmSection`] 上共用。
+#[derive(Deserialize)]
+pub struct LlmModel {
+    pub model: String,
+    pub base_url: String,
+
+    /// ⚠️ **两件事同时跟着它变**：模型收得下多少（qwen3.8-flash 收 64000，
+    /// qwen-plus 只到 32768，超了直接报 range 错），和**这一队跑飞时靠谁喊停**。
+    /// 后者是承重的，论证在 `config.toml` 的 `[llm.classify]` 那段 ——
+    /// 跟 `segment_msgs` / `mirror_concurrency` 一个规矩，承重数字的理由住在 config.toml。
+    /// 两队的关系由 [`load_from_dir`] 里的断言守着。
+    pub max_tokens: u32,
 }
 
 /// 连接池参数。连接 URL 带密码，不在这里 —— 见 [`MysqlSecrets`]。
@@ -242,10 +297,51 @@ pub async fn mysql_pool(cfg: &MysqlConfig, url: &str) -> Result<MySqlPool, sqlx:
         .await
 }
 
+/// HTTP 超时之外，数据库本身也限制只读语句执行时间，避免客户端离开后慢查询继续占资源。
+pub async fn mysql_read_pool(
+    cfg: &MysqlConfig,
+    url: &str,
+    timeout_secs: u64,
+) -> crate::Result<MySqlPool> {
+    let timeout_ms = timeout_secs
+        .checked_mul(1000)
+        .filter(|n| *n > 0 && *n <= u32::MAX as u64)
+        .ok_or("只读查询超时超出 MySQL 支持范围")?;
+    Ok(MySqlPoolOptions::new()
+        .max_connections(cfg.max_connections)
+        .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                sqlx::Executor::execute(&mut *conn, SET_SESSION_TZ).await?;
+                sqlx::query("SET SESSION max_execution_time = ?")
+                    .bind(timeout_ms)
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(url)
+        .await?)
+}
+
 #[derive(Deserialize)]
 pub struct Secrets {
     pub llm: LlmSecrets,
     pub mysql: MysqlSecrets,
+    pub oss: OssSecrets,
+}
+
+#[derive(Deserialize)]
+pub struct OssConfig {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+}
+
+#[derive(Deserialize)]
+pub struct OssSecrets {
+    pub access_key_id: String,
+    pub access_key_secret: String,
 }
 
 #[derive(Deserialize)]
@@ -273,16 +369,63 @@ pub fn dir_from_args() -> PathBuf {
 /// 从一个目录加载两份配置。生产传 /etc/chat2events，开发传当前目录。
 pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
     let config: Config = load(&dir.join("config.toml"), false);
+    for (name, value) in [
+        (
+            "ingest.mirror_concurrency",
+            config.ingest.mirror_concurrency,
+        ),
+        ("ingest.room_concurrency", config.ingest.room_concurrency),
+        ("classify.concurrency", config.classify.concurrency),
+        ("extract.segment_msgs", config.extract.segment_msgs),
+        (
+            "ingest.raw_retention_months",
+            config.ingest.raw_retention_months as usize,
+        ),
+    ] {
+        assert!(value >= 1, "{name} 必须至少为 1，改 config.toml");
+    }
     // **跨节的约束，`serde` 查不到** —— 缺字段它拦得住，两节之间的关系拦不住。
-    // 小于 `room_concurrency` 就会有群在落库那几毫秒里排队等连接，
-    // `acquire_timeout_secs` 一到，报出来的是「落库失败」—— 那个群整轮作废，
-    // 而它的 token 已经烧完了。此前这条只写在 `config.toml` 的注释里，没人拦着。
+    // 小于这个和就会有群在落库那几毫秒里排队等连接，`acquire_timeout_secs` 一到，
+    // 报出来的是「落库失败」—— 那个群整轮作废，而它的 token 已经烧完了。
+    //
+    // ⚠️ **是两个消费者的和，不是 `room_concurrency` 一个。** 这条此前只拦
+    // `>= room_concurrency`，那是**打标队列独立出来之前**的形状：今天抽取侧
+    // `room_concurrency` 个群同时握着 `write_room` 的事务，打标侧
+    // `classify.concurrency` 个群同时握着 `read_events` / `update_event_labels` /
+    // `finish_classification`，两队互不相让，峰值就是它们的和。
+    let peak = config.ingest.room_concurrency + config.classify.concurrency;
     assert!(
-        config.mysql.max_connections as usize >= config.ingest.room_concurrency,
-        "mysql.max_connections（{}）必须 ≥ ingest.room_concurrency（{}）—— \
-         否则会有群在落库时等不到连接，白烧一整轮的 token。改 config.toml",
+        config.mysql.max_connections as usize >= peak,
+        "mysql.max_connections（{}）必须 ≥ ingest.room_concurrency（{}）\
+         + classify.concurrency（{}）= {peak} —— 抽取和打标是两个消费者、各自持连接，\
+         小于这个和就会有群在落库时等不到连接，白烧一整轮的 token。改 config.toml",
         config.mysql.max_connections,
-        config.ingest.room_concurrency
+        config.ingest.room_concurrency,
+        config.classify.concurrency
+    );
+    // **跨节的约束，`serde` 查不到。** 这条曾经是 `Llm::with_max_tokens` 的无条件钳位
+    // （`Classifier::new` 里把打标那份压到 6000，config 写什么都不算数）—— 钳位的毛病是
+    // 它把 config.toml 里那个数变成了谎言，而本文件第一条规矩是「配置错要在第一秒炸，
+    // 不该被代码悄悄修正」。所以钳位改成拒绝。
+    //
+    // 它拦的是**唯一的现实失效模式**：把 `[llm.extract]` 整段抄到 `[llm.classify]` 底下
+    // 只改 model —— 在「两节长得几乎一样」的结构里，这是最顺手的操作。
+    // 抄过去 max_tokens 就是 64000，而打标一批 50 条 × 每条一个小对象正常不过 2000 token。
+    // 上限一大，模型跑飞（strict JSON schema 下随机陷入重复生成，实测中招率约三分之一）
+    // 就没有任何东西拦得住，只能安静生成到撞满 timeout_secs，再报一个无从下手的 Timeout。
+    // 试打 870 条是 18 批，按这个中招率几乎每趟都要挂死几回。
+    //
+    // 用关系式不用绝对上限：绝对上限要在代码里再养一个魔数，而那正是搬进 config.toml 的
+    // 那个数。关系式弱一些（63999 也过），但它恰好盖住整段复制这一种错法。
+    assert!(
+        config.llm.classify.max_tokens < config.llm.extract.max_tokens,
+        "llm.classify.max_tokens（{}）必须小于 llm.extract.max_tokens（{}）—— \
+         看起来是把 [llm.extract] 整段抄过去了。打标的输出预算要贴着实际需求给\
+         （一批 50 条小对象，6000 已是 3 倍余量），跑飞才会秒撞 Truncated 让 \
+         extract_retry 重发；给成抽取那个数，跑飞就只剩 timeout_secs 喊停，\
+         每趟挂死几回。改 config.toml",
+        config.llm.classify.max_tokens,
+        config.llm.extract.max_tokens
     );
     let secrets_path = dir.join("secrets.toml");
     #[cfg(unix)]
@@ -339,6 +482,80 @@ fn require_owner_only(path: &Path) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_scheduling_values_are_rejected_before_loading_secrets() {
+        for (section, field) in [
+            ("ingest", "mirror_concurrency"),
+            ("ingest", "room_concurrency"),
+            ("classify", "concurrency"),
+            ("ingest", "raw_retention_months"),
+            ("extract", "segment_msgs"),
+        ] {
+            let mut value: toml::Value = toml::from_str(include_str!("../config.toml")).unwrap();
+            value[section][field] = toml::Value::Integer(0);
+            let dir = crate::testutil::fresh_root("config", field);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
+            let error = std::panic::catch_unwind(|| load_from_dir(&dir))
+                .err()
+                .unwrap();
+            let message = error.downcast_ref::<String>().map_or("", String::as_str);
+            assert!(
+                message.contains(field),
+                "应先指出非法配置 {field}：{message}"
+            );
+            assert!(!message.contains("secrets.toml"), "不应等到读取密钥才报错");
+        }
+    }
+
+    /// 两条**跨节**约束各自的失效形态 —— serde 一条都查不到。
+    ///
+    /// 它们防的都是「配置看起来完全正常、进程照常起来、坏事发生在几小时后」：
+    ///   * 池子小于两队之和 → 群在落库时等不到连接，报「落库失败」，
+    ///     而那时这个群的 token 已经烧完了。
+    ///   * 打标预算 ≥ 抽取预算 → 多半是把 `[llm.extract]` 整段抄过去只改了 model。
+    ///     跑飞时唯一会喊停的就只剩 `timeout_secs`，每趟挂死几回。
+    ///
+    /// **两条都只在启动期看得见，所以必须在这里钉住** —— 生产上没有任何后续步骤
+    /// 会再检查一遍。
+    #[test]
+    fn cross_section_constraints_are_rejected_at_startup() {
+        /// 改一处 config.toml，走一遍加载，返回 panic 文案。
+        fn rejected(tag: &str, edit: impl FnOnce(&mut toml::Value)) -> String {
+            let mut value: toml::Value = toml::from_str(include_str!("../config.toml")).unwrap();
+            edit(&mut value);
+            let dir = crate::testutil::fresh_root("config", tag);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
+            let error = std::panic::catch_unwind(|| load_from_dir(&dir))
+                .err()
+                .expect("非法配置必须 panic");
+            let message = error
+                .downcast_ref::<String>()
+                .map_or(String::new(), Clone::clone);
+            assert!(!message.contains("secrets.toml"), "不应等到读取密钥才报错");
+            message
+        }
+
+        // 池子小于两队之和：10 + 6 = 16，给 8 必然不够。
+        let message = rejected("pool", |v| {
+            v["mysql"]["max_connections"] = toml::Value::Integer(8);
+        });
+        assert!(
+            message.contains("max_connections") && message.contains("classify.concurrency"),
+            "报错要点出两个消费者都算进去了：{message}"
+        );
+
+        // 把 `[llm.extract]` 的输出上限整段抄给打标 —— 现实中最可能发生的那种错法。
+        let message = rejected("budget", |v| {
+            v["llm"]["classify"]["max_tokens"] = v["llm"]["extract"]["max_tokens"].clone();
+        });
+        assert!(
+            message.contains("llm.classify.max_tokens"),
+            "报错要点名打标那份预算：{message}"
+        );
+    }
+
     /// 仓库里那份 `config.toml` 必须能填满 [`Config`]。所有键必填、代码里没有默认值，
     /// 所以漏一个键就是**进程起不来** —— 让它在 `cargo test` 里炸，别留到跑批那天。
     #[test]
@@ -346,6 +563,72 @@ mod tests {
         let text =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml")).unwrap();
         toml::from_str::<Config>(&text).unwrap();
+    }
+
+    #[test]
+    fn web_startup_needs_only_read_dependencies() {
+        let mut value: toml::Value = toml::from_str(include_str!("../config.toml")).unwrap();
+        let table = value.as_table_mut().unwrap();
+        for key in ["daily", "extract", "classify", "llm"] {
+            table.remove(key);
+        }
+        value["ingest"] = toml::Value::Table(toml::map::Map::from_iter([(
+            "raw_root".into(),
+            "./data/raw".into(),
+        )]));
+        value["mysql"]["max_connections"] = 1.into();
+        let dir = crate::testutil::fresh_root("config", "web-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
+        let secret_path = dir.join("secrets.toml");
+        std::fs::write(
+            &secret_path,
+            "[mysql]\nurl = 'mysql://localhost/read_only'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (cfg, secrets) = load_web_from_dir(&dir);
+        assert_eq!(cfg.mysql.max_connections, 1);
+        assert_eq!(secrets.mysql.url, "mysql://localhost/read_only");
+        assert!(
+            std::panic::catch_unwind(|| load_from_dir(&dir)).is_err(),
+            "跑批仍必须具备完整配置"
+        );
+        value["web"]["max_rows"] = 0.into();
+        std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
+        assert!(std::panic::catch_unwind(|| load_web_from_dir(&dir)).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+    async fn mysql_read_pool_limits_server_execution_time() {
+        let url = std::env::var("CHAT2EVENTS_TEST_DATABASE_URL").unwrap();
+        let config = MysqlConfig {
+            max_connections: 1,
+            acquire_timeout_secs: 2,
+        };
+        let pool = mysql_read_pool(&config, &url, 1).await.unwrap();
+        let settings: (u64, String) =
+            sqlx::query_as("SELECT @@session.max_execution_time, @@session.time_zone")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(settings, (1000, "+08:00".into()));
+        let elapsed = std::time::Instant::now();
+        // SLEEP 被中断时 MySQL 可返回 1 或查询中断错误；两种都必须在服务器预算内结束。
+        let result = sqlx::query_scalar::<_, i32>("SELECT SLEEP(10)")
+            .fetch_one(&pool)
+            .await;
+        assert!(elapsed.elapsed() < Duration::from_secs(3));
+        match result {
+            Ok(value) => assert_eq!(value, 1),
+            Err(error) => assert!(error.as_database_error().is_some()),
+        }
+        pool.close().await;
     }
 
     /// 上一条的反面：**缺一个键必须是崩，不是走默认值。**

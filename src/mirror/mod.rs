@@ -7,7 +7,8 @@
 //! MySQL b_wecom_group_message_month_file          ← 谁、在哪、到第几字节
 //!           │ ndjson_object_key
 //!           ▼
-//! GET <download_base_url>/<object_key>            Range: bytes=<本地已有>-
+//! GET https://<bucket>.<endpoint>/<object_key>   OSS V4 签名
+//!                                              Range: bytes=<本地已有>-<position-1>
 //!           │ 只取到 ndjson_position 为止
 //!           ▼
 //! <raw_root>/<yyyyMM>/<corpId>/<roomId>.ndjson    追加，OSS 的字节级镜像
@@ -22,17 +23,16 @@
 //! 1. **严格只读到 `ndjson_position` 为止，一个字节都不多读。** 超过它的字节可能是
 //!    一次在飞的 AppendObject，末尾会是半行 JSON。这条从结构上消灭了「截断坏行」
 //!    那一整类失败，比事后检测干净得多。
-//! 2. **本地字节数必须等于 `ndjson_position`。** 端到端的完整性证明，同时是 CDN
-//!    陈旧缓存的唯一防线 —— 那条路径配了 30 天缓存，实测 `Cache-Control: no-cache`
-//!    和随机 query 参数都绕不掉。
+//! 2. **本地字节数必须等于 `ndjson_position`。** 端到端的完整性证明。
+//!    直连 OSS 后仍保留此校验，拒绝对象与索引不一致的数据。
 //! 3. **本地比上游还长 → 本地作废重拉。** 追加写不该出现这种事（上游删档重建才会），
 //!    但不处理就会每天校验失败、这个群永远跑不了。
 //!
-//! **瞬时失败共尝试 3 次**（重试 2 次，退避 1s → 2s）。1000 个群一轮就是 1000 次 GET，CDN 抖动
+//! **瞬时失败共尝试 3 次**（重试 2 次，退避 1s → 2s）。1000 个群一轮就是 1000 次 GET，下载抖动
 //! 0.5% 就是每天 5 个群从指标里静默消失 —— 不变量 3 让它一行不写，不变量 5 让那些
 //! 客服的 `metric_agent_daily` 整行缺失，主管直接 `SUM` 会得到一个偏小但看起来正常
 //! 的数字。只重端侧的临时状况（连接类 / 超时 / 5xx / 429 / 408，见
-//! `download::http_status_error`）；**上面那三道校验一次都不重**，那是旧副本，再要还是它。
+//! `download::http_status_error`）；**上面那三道校验一次都不重**，对象与索引不一致需排查上游。
 //!
 //! 失败按**群**隔离（承重不变量 3），与抽取失败同一条路径；**索引表本身查不到是
 //! 整轮失败** —— 那不是某个群的事。两种处置在类型上分开（[`error::MirrorError`]），
@@ -51,12 +51,14 @@
 //!   error.rs     MirrorError —— 「整轮死」与「群级跳过」两条通道的类型分界
 //!   index.rs     索引表知识：上游字段名 · MonthFile · index_sql!（读 MySQL）
 //!   download.rs  一个月文件怎么下：Range 请求 · 三道校验 · 瞬时失败重试
+//!   oss.rs       私有 OSS 客户端：对象路径编码 · V4 请求头签名
 //!   sync.rs      一轮怎么调度：JoinSet 背压 · 整轮 deadline · 汇总
 //! ```
 
 mod download;
 mod error;
 mod index;
+mod oss;
 mod sync;
 
 pub use sync::sync;

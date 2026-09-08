@@ -10,6 +10,7 @@ import {
   buildTaxonomyIndex,
   categoryRollup,
   coverage,
+  coverageLabel,
   dailyCounts,
   decorate,
   isBacklog,
@@ -25,7 +26,7 @@ const TAX: TaxonomyType[] = [
   { type_id: "urge_visit", parent_name: "履约催促", name: "催上门", description: "" },
   { type_id: "fee_refund", parent_name: "费用结算", name: "退款", description: "" },
 ];
-const tax = buildTaxonomyIndex(TAX);
+const tax = buildTaxonomyIndex(TAX, "v1");
 
 let seq = 0;
 function ev(over: Partial<EventRow> = {}): EventRow {
@@ -51,6 +52,14 @@ function ev(over: Partial<EventRow> = {}): EventRow {
   };
 }
 const dec = (rows: EventRow[]) => decorate(rows, tax);
+
+it("counts_pending_facts_without_publishing_them_as_a_category", () => {
+  const rows = dec([ev({ event_type: null, event_types: null, taxonomy_version: null })]);
+  expect(rows[0]!.level1).toBe("打标未完成");
+  expect(aggregate(rows, 1800, "2026-08-25").events).toBe(1);
+  expect(categoryRollup(rows, "level1", tax)).toEqual([]);
+  expect(categoryRollup(rows, "level2", tax)).toEqual([]);
+});
 
 describe("派生字段", () => {
   it("首响秒数按两个时间戳算；未回复保持 null，不折成 0", () => {
@@ -117,7 +126,7 @@ describe("首响口径：分母是商家发起事件数", () => {
     expect(agg.p90).toBe(300);
   });
 
-  it("未回复计入超时分子：T+1 下未回复必然已超过任何阈值", () => {
+  it("未回复计入超时分子：T+2 下未回复必然已超过任何阈值", () => {
     expect(agg.overdue).toBe(1);
     expect(agg.overdueRate).toBeCloseTo(1 / 2);
   });
@@ -163,6 +172,7 @@ describe("覆盖度：失败的群日必须能被看见", () => {
       first_reply_p50_sec: 300,
       first_reply_p90_sec: 900,
       extraction_status: "ok",
+      classification_status: "ok",
     },
     {
       corpid: "corp",
@@ -176,11 +186,30 @@ describe("覆盖度：失败的群日必须能被看见", () => {
       first_reply_p50_sec: null,
       first_reply_p90_sec: null,
       extraction_status: "failed",
+      classification_status: "failed",
     },
   ];
 
+  const roster = gd.map((row) => ({ roomid: row.roomid, alias: null }));
+
+  it("reports_label_progress_separately_from_extraction_coverage", () => {
+    for (const status of ["pending", "failed"] as const) {
+      const cov = coverage(
+        [{ ...gd[0]!, classification_status: status }],
+        new Set(["2026-08-25"]),
+        "R1",
+        roster,
+      );
+      expect(cov.known).toBe(1);
+      expect(cov.failed).toBe(0);
+      expect(cov.complete).toBe(false);
+      expect(cov.days).toContain("2026-08-25");
+      expect(coverageLabel(cov)).toContain(status === "pending" ? "待打标" : "打标失败");
+    }
+  });
+
   it("统计失败格数与涉及的群、日", () => {
-    const cov = coverage(gd, new Set(["2026-08-25"]), null);
+    const cov = coverage(gd, new Set(["2026-08-25"]), null, roster);
     expect(cov.complete).toBe(false);
     expect(cov.cells).toBe(2);
     expect(cov.failed).toBe(1);
@@ -188,13 +217,31 @@ describe("覆盖度：失败的群日必须能被看见", () => {
   });
 
   it("按群过滤后仍能判断该群自己完不完整", () => {
-    expect(coverage(gd, new Set(["2026-08-25"]), "R1").complete).toBe(true);
-    expect(coverage(gd, new Set(["2026-08-25"]), "R2").complete).toBe(false);
+    expect(coverage(gd, new Set(["2026-08-25"]), "R1", roster).complete).toBe(true);
+    expect(coverage(gd, new Set(["2026-08-25"]), "R2", roster).complete).toBe(false);
   });
 
   it("失败的群在消息级仍有数：msg_count 不依赖抽取", () => {
     expect(gd[1]?.msg_count).toBe(31);
     expect(gd[1]?.event_count).toBeNull();
+  });
+
+  it("缺记录不能被判为完整，也不能被计为抽取失败", () => {
+    const cov = coverage([gd[0]!], new Set(["2026-08-25", "2026-08-26"]), "R1", roster);
+    expect(cov.complete).toBe(false);
+    expect(cov.failed).toBe(0);
+    expect(cov.days).toContain("2026-08-26");
+    expect(coverage([], new Set(["2026-08-25"]), null, roster).complete).toBe(false);
+  });
+
+  it("旧成功记录不能覆盖后续处理结果未知的状态", () => {
+    const cov = coverage(
+      [{ ...gd[0]!, freshness: "unknown" }],
+      new Set(["2026-08-25"]),
+      "R1",
+      roster,
+    );
+    expect(cov).toMatchObject({ complete: false, known: 0, failed: 0, missing: 0, unknown: 1 });
   });
 });
 
@@ -217,6 +264,7 @@ describe("群维度汇总", () => {
       first_reply_p50_sec: 300,
       first_reply_p90_sec: 300,
       extraction_status: "ok",
+      classification_status: "ok",
     },
     {
       corpid: "c",
@@ -230,6 +278,7 @@ describe("群维度汇总", () => {
       first_reply_p50_sec: null,
       first_reply_p90_sec: null,
       extraction_status: "failed",
+      classification_status: "failed",
     },
     {
       corpid: "c",
@@ -243,6 +292,7 @@ describe("群维度汇总", () => {
       first_reply_p50_sec: null,
       first_reply_p90_sec: null,
       extraction_status: "failed",
+      classification_status: "failed",
     },
     {
       corpid: "c",
@@ -256,6 +306,7 @@ describe("群维度汇总", () => {
       first_reply_p50_sec: null,
       first_reply_p90_sec: null,
       extraction_status: "failed",
+      classification_status: "failed",
     },
   ];
   const rows = roomRollup({
@@ -327,6 +378,7 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
   const rows = agentRollup({
     events,
     groupDaily: [],
+    rooms: [{ roomid: "R1", alias: null }],
     agents: [
       { agent: "a1", alias: "甲" },
       { agent: "a2", alias: "乙" },
@@ -337,6 +389,59 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
     labelOf: (a) => a,
     query: "",
   });
+
+  it.each(["ok", "failed", "missing"] as const)(
+    "keeps_agent_coverage_unknown_for_unobserved_room_%s",
+    (status) => {
+      const success: GroupDailyRow = {
+        corpid: "corp",
+        roomid: "R1",
+        dt: days[0]!,
+        msg_count: 2,
+        sender_count: 2,
+        event_count: 1,
+        merchant_event_count: 1,
+        unreplied_count: 0,
+        first_reply_p50_sec: 300,
+        first_reply_p90_sec: 300,
+        extraction_status: "ok",
+        classification_status: "ok",
+      };
+      const other: GroupDailyRow =
+        status === "failed"
+          ? {
+              ...success,
+              roomid: "R2",
+              extraction_status: "failed",
+              classification_status: "failed",
+              event_count: null,
+              merchant_event_count: null,
+              unreplied_count: null,
+              first_reply_p50_sec: null,
+              first_reply_p90_sec: null,
+            }
+          : { ...success, roomid: "R2" };
+      const result = agentRollup({
+        events: dec([ev()]),
+        groupDaily: status === "missing" ? [success] : [success, other],
+        rooms: ["R1", "R2"].map((roomid) => ({ roomid, alias: null })),
+        agents: [{ agent: "a1", alias: null }],
+        days,
+        dayset: new Set(days),
+        slaSec: 1800,
+        labelOf: (agent) => agent,
+        query: "",
+      });
+      expect(result[0]).toMatchObject({
+        roomIds: ["R1"],
+        failedCells: 0,
+        involved: 1,
+        coverageUnknown: status !== "ok",
+        involvedSeries: [status === "ok" ? 1 : null],
+        ownedSeries: [status === "ok" ? 1 : null],
+      });
+    },
+  );
 
   it("多人协作各自计入参与量，所以各人相加会大于事件数", () => {
     const total = rows.reduce((s, r) => s + r.involved, 0);
@@ -365,6 +470,7 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
         }),
       ]),
       groupDaily: [],
+      rooms: [{ roomid: "R1", alias: null }],
       agents: ["a1", "a2", "a3"].map((agent) => ({ agent, alias: agent })),
       days,
       dayset: new Set(days),

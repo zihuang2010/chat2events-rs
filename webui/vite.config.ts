@@ -32,12 +32,11 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 900,
       rollupOptions: {
         output: {
-          // 三块体积差异很大且更新节奏不同，分开缓存。
+          // 图表和 React 分开缓存；AntD 按实际路由依赖自动分块。
           // 用函数形式而不是对象形式：对象形式在当前打包器上已不受支持。
           manualChunks(id: string): string | undefined {
             if (!id.includes("node_modules")) return undefined;
             if (id.includes("echarts") || id.includes("zrender")) return "echarts";
-            if (id.includes("antd") || id.includes("@ant-design") || id.includes("rc-")) return "antd";
             if (id.includes("react-router") || id.includes("/react-dom/") || id.includes("/react/")) {
               return "react";
             }

@@ -26,6 +26,16 @@ export function addDays(date: string, delta: number): string {
   return new Date(Date.UTC(Number(y), Number(m) - 1, Number(d) + delta)).toISOString().slice(0, 10);
 }
 
+/** 默认最近七天；显式日期保留，非法 URL 日期按未指定处理。days 由 meta 保证非空。 */
+export function windowBounds(days: readonly string[], from?: string | null, to?: string | null) {
+  const valid = (value: string | null | undefined) =>
+    value && /^\d{4}-\d{2}-\d{2}$/.test(value) && addDays(value, 0) === value ? value : null;
+  const end = valid(to) ?? days.at(-1)!;
+  const recent = addDays(end, -6);
+  const start = valid(from) ?? (recent < days[0]! ? days[0]! : recent);
+  return { from: start, to: end < start ? start : end };
+}
+
 /** 时长。**null 表示没有这个值**，由调用方决定怎么显示，这里绝不替它编 0。 */
 export function formatDuration(sec: number | null): string | null {
   if (sec === null) return null;

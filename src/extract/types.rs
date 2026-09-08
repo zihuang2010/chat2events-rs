@@ -47,14 +47,80 @@ pub(super) struct WireDraft {
 /// ④ `assemble` 拿到的永远是已经解析好的编号，不需要认识线上格式。
 ///
 /// `r#ref` 是原始标识符 —— `ref` 是 Rust 关键字。
+/// 外部适配器通过 [`EventDraft::new`] 构造，不能绕过校验或事后修改字段。
+///
+/// ```compile_fail
+/// use chat2events_rs::extract::EventDraft;
+/// let draft = EventDraft { r#ref: None, msg_indexes: vec![], summary: String::new(), still_open: false };
+/// ```
+///
+/// ```compile_fail
+/// use chat2events_rs::extract::EventDraft;
+/// use std::collections::BTreeSet;
+/// let mut draft = EventDraft::new(vec![1], "商家要求改期".into(), None, false, 1, &BTreeSet::new()).unwrap();
+/// draft.msg_indexes.clear();
+/// ```
 #[derive(Debug, Clone)]
 pub struct EventDraft {
     /// 接【进行中的事件】的编号；新事件是 `None`。
-    pub r#ref: Option<u32>,
+    pub(crate) r#ref: Option<u32>,
     /// 本段内构成该事件的消息行号 `#N`，已去重升序。
-    pub msg_indexes: Vec<usize>,
-    pub summary: String,
-    pub still_open: bool,
+    pub(crate) msg_indexes: Vec<usize>,
+    pub(crate) summary: String,
+    pub(crate) still_open: bool,
+}
+
+impl EventDraft {
+    /// 复用抽取的领域校验；段长与便签集合使用本次 SegmentModel::call 收到的值。
+    pub fn new(
+        msg_indexes: Vec<usize>,
+        summary: String,
+        reference: Option<u32>,
+        still_open: bool,
+        segment_size: usize,
+        open_refs: &std::collections::BTreeSet<u32>,
+    ) -> crate::Result<Self> {
+        let wire = WireDraft {
+            r#ref: reference.map(|r| format!("E{r}")),
+            msg_indexes,
+            summary,
+            still_open,
+        };
+        let mut drafts = super::model::validate(vec![wire], segment_size, open_refs)
+            .map_err(|e| crate::BoxError::from(e.to_string()))?;
+        Ok(drafts.pop().expect("单条输入校验成功后必有一条结果"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn public_draft_construction_enforces_the_same_domain_rules() {
+        let refs = BTreeSet::from([1]);
+        let good = EventDraft::new(
+            vec![2, 1, 2],
+            "商家要求改期".into(),
+            Some(1),
+            true,
+            2,
+            &refs,
+        )
+        .unwrap();
+        assert_eq!(good.msg_indexes, [1, 2]);
+        for indexes in [vec![], vec![0], vec![3]] {
+            assert!(
+                EventDraft::new(indexes, "商家要求改期".into(), None, false, 2, &refs).is_err()
+            );
+        }
+        assert!(EventDraft::new(vec![1], "商家要求改期".into(), Some(2), false, 2, &refs).is_err());
+        let error = EventDraft::new(vec![1], "联系18472625055改期".into(), None, false, 2, &refs)
+            .unwrap_err();
+        assert!(error.to_string().contains("手机号"));
+        assert!(!error.to_string().contains("18472625055"));
+    }
 }
 
 /// 跨段累积的事件草稿。**`idx` 是【全局】消息下标，不是段内行号。**

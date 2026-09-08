@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within, waitFor } from "@testing-library/react";
+import { cleanup, render, renderHook, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -7,18 +7,22 @@ import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import type { LoadedDataset } from "@/api/source";
 import { Providers } from "@/app/providers";
 import { Workbench } from "@/components/layout/Workbench";
-import { useFilters } from "@/features/filters/useFilters";
+import { parseFilters, useFilters } from "@/features/filters/useFilters";
 import { useAnalytics } from "@/features/filters/useAnalytics";
 import { EventsPage } from "@/features/events/EventsPage";
 import { AgentsPage } from "@/features/agents/AgentsPage";
+import { RoomsPage } from "@/features/rooms/RoomsPage";
 import { DetailPage } from "@/features/detail/DetailPage";
 import type { MessageRow } from "@/domain/schemas";
+import type * as Queries from "@/api/queries";
+import { formatInt } from "@/lib/format";
 
 const messages = vi.hoisted(() => {
   const data: MessageRow[] = [];
   return { mode: "empty", data, retry: vi.fn() };
 });
-vi.mock("@/api/queries", () => ({
+vi.mock("@/api/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof Queries>()),
   useEventMessages: () => ({
     data: messages.data,
     isPending: messages.mode === "loading",
@@ -32,6 +36,7 @@ vi.mock("@/components/charts/EChart", () => ({
   EChart: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} />,
 }));
 afterEach(cleanup);
+afterEach(() => vi.unstubAllGlobals());
 beforeEach(() => {
   messages.mode = "empty";
   messages.data = [];
@@ -56,7 +61,7 @@ beforeAll(() => {
 });
 
 const raw = buildMockDataset();
-const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy);
+const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
 const dataset: LoadedDataset = {
   ...raw,
   events: decorate(raw.events, taxIndex),
@@ -65,7 +70,7 @@ const dataset: LoadedDataset = {
   loadedAt: 0,
   fallbackReason: null,
 };
-const components = { events: EventsPage, agents: AgentsPage, detail: DetailPage };
+const components = { events: EventsPage, agents: AgentsPage, detail: DetailPage, rooms: RoomsPage };
 
 function Harness({ page, data }: { page: keyof typeof components; data: LoadedDataset }) {
   const api = useFilters();
@@ -94,18 +99,279 @@ function mount(page: keyof typeof components, search = "", data = dataset) {
   );
 }
 
-it.each(["events", "agents", "detail"] as const)("%s 全部抽取失败时指标不伪装成零", (page) => {
+it("shows_twenty_agents_per_page_by_default", async () => {
+  const user = userEvent.setup();
+  const source = dataset.events.find((event) => event.first_responder !== null)!;
+  const agents = Array.from({ length: 25 }, (_, index) => ({
+    agent: `agent-${index}`,
+    alias: `测试客服 ${index + 1}`,
+  }));
   const data: LoadedDataset = {
     ...dataset,
-    events: [],
-    groupDaily: dataset.groupDaily.map((row) => ({ ...row, extraction_status: "failed" })),
+    meta: { ...dataset.meta, agents },
+    events: agents.map(({ agent }, index) => ({
+      ...source,
+      id: index + 1,
+      agents: [agent],
+      first_responder: agent,
+    })),
   };
-  const view = mount(page, "", data);
-  const values = Array.from(view.container.querySelectorAll(".ia-metrics .od-metric-value"));
-  expect(values).toHaveLength(4);
-  expect(values.every((value) => value.textContent.startsWith("—"))).toBe(true);
-  expect(view.container.querySelector(".ag-response")).toBeNull();
+  const view = mount("agents", "", data);
+  expect(view.container.querySelectorAll(".ag-table .ia-table-link")).toHaveLength(20);
+  expect(view.container.querySelector(".ant-pagination-total-text")).toHaveTextContent(
+    "1 - 20 / 共 25 人",
+  );
+  await user.click(view.container.querySelector<HTMLElement>(".ant-pagination-item-2")!);
+  expect(view.container.querySelectorAll(".ag-table .ia-table-link")).toHaveLength(5);
 });
+
+it.each(["rooms", "agents"] as const)(
+  "paginates_rows_and_preserves_drawer_page_%s",
+  async (page) => {
+    const user = userEvent.setup();
+    const view = mount(page, "?size=5");
+    const selector = page === "rooms" ? ".ra-room-link" : ".ag-table .ia-table-link";
+    const firstPage = [...view.container.querySelectorAll(selector)].map((row) => row.textContent);
+    expect(firstPage).toHaveLength(5);
+    const total = view.container.querySelector(".ant-pagination-total-text")!.textContent;
+    await user.click(view.container.querySelector<HTMLElement>(".ant-pagination-item-2")!);
+    expect(screen.getByTestId("url")).toHaveTextContent("page=2");
+    const secondPage = [...view.container.querySelectorAll(selector)].map((row) => row.textContent);
+    expect(secondPage.length).toBeGreaterThan(0);
+    expect(secondPage.every((label) => !firstPage.includes(label))).toBe(true);
+    expect(view.container.querySelector(".ant-pagination-total-text")).toHaveTextContent(
+      total.split(" / ")[1]!,
+    );
+    await user.click(view.container.querySelector<HTMLButtonElement>(selector)!);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("url")).toHaveTextContent("page=2");
+    expect([...view.container.querySelectorAll(selector)].map((row) => row.textContent)).toEqual(
+      secondPage,
+    );
+    await user.click(screen.getByRole("columnheader", { name: page === "rooms" ? "群" : "客服" }));
+    expect(screen.getByTestId("url")).not.toHaveTextContent("page=2");
+    expect(view.container.querySelectorAll(selector)).toHaveLength(5);
+  },
+);
+
+it.each(["rooms", "agents"] as const)("clamps_out_of_range_page_%s", (page) => {
+  const view = mount(page, "?page=999&size=5");
+  const selector = page === "rooms" ? ".ra-room-link" : ".ag-table .ia-table-link";
+  expect(view.container.querySelectorAll(selector).length).toBeGreaterThan(0);
+  expect(view.container.querySelector(".ant-pagination-item-active")).not.toHaveTextContent("999");
+});
+
+it.each(["events", "agents", "detail"] as const)(
+  "orders_primary_metrics_consistently_%s",
+  (page) => {
+    const view = mount(page);
+    const labels = [
+      ...view.container.querySelectorAll(".ia-workbench > .ia-metrics .od-metric-label"),
+    ].map((label) => label.textContent);
+    const expected =
+      page === "events"
+        ? ["活跃群", "消息总量", "事件量"]
+        : page === "detail"
+          ? ["活跃群", "来源消息数", "事件量"]
+          : ["活跃群", "事件量"];
+    expect(labels.slice(0, expected.length)).toEqual(expected);
+  },
+);
+
+it("真实数据深链接按 ID 加载当前窗口之外的事件", async () => {
+  const event = dataset.events[0]!;
+  const fetch = vi.fn((url: URL) =>
+    Promise.resolve(
+      url.pathname === `/api/event/${event.id}`
+        ? Response.json(event)
+        : new Response(null, { status: 404 }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  mount("detail", `?drawer=${event.id}`, { ...dataset, source: "api", events: [] });
+  expect(await screen.findByText(event.summary)).toBeInTheDocument();
+  expect(screen.getByText("这条事件不在当前筛选结果里")).toBeInTheDocument();
+  expect(fetch.mock.calls.some(([url]) => url.pathname === `/api/event/${event.id}`)).toBe(true);
+  expect(screen.queryByText(`找不到事件 #${event.id}`)).not.toBeInTheDocument();
+});
+
+it("bounds_calendar_expansion_to_the_loaded_date_range", () => {
+  const filters = parseFilters(new URLSearchParams("from=0100-01-01&to=9999-12-31"));
+  const { result } = renderHook(() => useAnalytics(dataset, filters));
+  expect(result.current.days).toEqual(dataset.meta.days);
+  expect(result.current.events).toHaveLength(dataset.events.length);
+});
+
+it.each(["from=0100-01-01&to=0200-01-01", "from=9000-01-01&to=9999-12-31"])(
+  "keeps_disjoint_date_windows_empty_%s",
+  (search) => {
+    const filters = parseFilters(new URLSearchParams(search));
+    const { result } = renderHook(() => useAnalytics(dataset, filters));
+    expect(result.current.days).toEqual([]);
+    expect(result.current.events).toEqual([]);
+    expect(result.current.cov.cells).toBe(0);
+  },
+);
+
+it("preserves_explicit_overview_days_outside_the_loaded_range", () => {
+  const filters = parseFilters(new URLSearchParams("from=9000-01-01&to=9999-12-31"));
+  const windowDays = ["2026-08-24", ...dataset.meta.days];
+  const { result } = renderHook(() => useAnalytics(dataset, filters, windowDays));
+  expect(result.current.days).toEqual(windowDays);
+  expect(result.current.events).toHaveLength(dataset.events.length);
+});
+
+it("shows_unknown_agent_coverage_when_another_room_has_no_record", () => {
+  const event = dataset.events.find((row) => row.agents.length > 0)!;
+  const day = event.occurred_on;
+  const data: LoadedDataset = {
+    ...dataset,
+    meta: { ...dataset.meta, days: [day] },
+    events: [event],
+    groupDaily: dataset.groupDaily.filter((row) => row.roomid === event.roomid && row.dt === day),
+  };
+  const view = mount("agents", "", data);
+  expect(view.container.textContent).toContain("完整性未知");
+});
+
+it("preserves_unrecorded_calendar_days_in_agent_coverage", () => {
+  const day = dataset.meta.days[0]!;
+  const last = dataset.meta.days[2]!;
+  const event = dataset.events.find((row) => row.agents.length > 0 && row.occurred_on === day)!;
+  const data: LoadedDataset = {
+    ...dataset,
+    meta: { ...dataset.meta, days: [day, last], rooms: [{ roomid: event.roomid, alias: null }] },
+    events: [event],
+    groupDaily: dataset.groupDaily.filter(
+      (row) => row.roomid === event.roomid && [day, last].includes(row.dt),
+    ),
+  };
+  const view = mount("agents", "", data);
+  expect(view.container.textContent).toContain("完整性未知");
+});
+
+it("labels_v0_as_missing_taxonomy_in_the_category_view", () => {
+  const events = dataset.events.slice(0, 1).map((event) => ({
+    ...event,
+    taxonomy_version: "v0",
+    event_type: "__untyped__",
+    event_types: ["__untyped__"],
+  }));
+  const taxIndex = buildTaxonomyIndex([], "v0");
+  const view = mount("events", "", {
+    ...dataset,
+    meta: { ...dataset.meta, taxonomy_version: "v0", taxonomy: [] },
+    taxIndex,
+    events: decorate(events, taxIndex),
+  });
+  expect(view.container.textContent).toContain("未建词表事件");
+  expect(view.container.textContent).not.toContain("归不上去");
+});
+
+it.each(["events", "agents", "detail"] as const)(
+  "keeps_failed_event_metrics_unknown_%s",
+  (page) => {
+    const data: LoadedDataset = {
+      ...dataset,
+      events: [],
+      groupDaily: dataset.groupDaily.map((row) => ({ ...row, extraction_status: "failed" })),
+    };
+    const view = mount(page, "", data);
+    const values = Array.from(view.container.querySelectorAll(".ia-metrics .od-metric-value"));
+    expect(values).toHaveLength(page === "agents" ? 5 : 6);
+    if (page === "events") {
+      const messageMetric = screen.getByText("消息总量", { exact: true }).parentElement!;
+      expect(messageMetric.querySelector(".od-metric-value")).toHaveTextContent(
+        formatInt(data.groupDaily.reduce((sum, row) => sum + row.msg_count, 0)) + "条",
+      );
+      expect(
+        values
+          .filter((value) => !messageMetric.contains(value))
+          .every((value) => value.textContent.startsWith("—")),
+      ).toBe(true);
+    } else {
+      expect(values.every((value) => value.textContent.startsWith("—"))).toBe(true);
+    }
+    expect(view.container.querySelector(".ag-response")).toBeNull();
+  },
+);
+
+it.each(["", "&l1=missing&l2=missing&agent=missing&status=unreplied&overdue=1&q=missing"])(
+  "limits_message_total_to_date_and_room_only_%s",
+  (extra) => {
+    const cell = dataset.groupDaily[0]!;
+    const otherDay = dataset.meta.days.find((day) => day !== cell.dt)!;
+    const otherRoom = dataset.meta.rooms.find((room) => room.roomid !== cell.roomid)!.roomid;
+    mount("events", `?from=${cell.dt}&to=${cell.dt}&room=${cell.roomid}${extra}`, {
+      ...dataset,
+      events: [],
+      groupDaily: [
+        { ...cell, msg_count: 17, extraction_status: "failed" },
+        { ...cell, dt: otherDay, msg_count: 100 },
+        { ...cell, roomid: otherRoom, msg_count: 200 },
+      ],
+    });
+    const metric = screen.getByText("消息总量", { exact: true }).parentElement!;
+    expect(metric.querySelector(".od-metric-value")).toHaveTextContent("17条");
+    expect(metric).toHaveTextContent("仅按日期、群统计");
+  },
+);
+
+it.each(["events", "detail"] as const)("keeps_missing_message_data_unknown_%s", (page) => {
+  mount(page, "", { ...dataset, events: [], groupDaily: [] });
+  const label = page === "events" ? "消息总量" : "来源消息数";
+  const metric = screen.getByText(label, { exact: true }).parentElement!;
+  expect(metric.querySelector(".od-metric-value")).toHaveTextContent("—条");
+});
+
+it("marks_partial_message_total_as_known_only", () => {
+  const cell = dataset.groupDaily[0]!;
+  mount("events", "", {
+    ...dataset,
+    events: [],
+    groupDaily: [{ ...cell, msg_count: 17 }],
+  });
+  const metric = screen.getByText("消息总量", { exact: true }).parentElement!;
+  expect(metric.querySelector(".od-metric-value")).toHaveTextContent("17条");
+  expect(metric).toHaveTextContent("仅已知量");
+});
+
+it.each(["events", "detail"] as const)("shows_known_zero_messages_%s", (page) => {
+  mount(page, "", {
+    ...dataset,
+    events: [],
+    groupDaily: dataset.groupDaily.map((row) => ({ ...row, msg_count: 0 })),
+  });
+  const label = page === "events" ? "消息总量" : "来源消息数";
+  const metric = screen.getByText(label, { exact: true }).parentElement!;
+  expect(metric.querySelector(".od-metric-value")).toHaveTextContent(/^0条$/);
+});
+
+it.each(["all", "page", "room", "empty"] as const)(
+  "deduplicates_source_messages_across_matching_events_%s",
+  (scope) => {
+    const event = dataset.events[0]!;
+    const other = dataset.events.find((row) => row.roomid !== event.roomid)!;
+    const events = Array.from({ length: 21 }, (_, index) => ({
+      ...event,
+      id: 10000 + index,
+      source_msg_ids: ["shared", `message-${index}`, "shared"],
+    }));
+    events.push({ ...other, id: 10021, source_msg_ids: ["shared"] });
+    const search = {
+      all: "",
+      page: "?page=2&size=20",
+      room: `?room=${event.roomid}`,
+      empty: "?q=no-matching-source-event",
+    }[scope];
+    mount("detail", search, { ...dataset, events });
+    const metric = screen.getByText("来源消息数", { exact: true }).parentElement!;
+    const expected = scope === "empty" ? 0 : scope === "room" ? 22 : 23;
+    expect(metric.querySelector(".od-metric-value")).toHaveTextContent(`${expected}条`);
+  },
+);
 
 it("二级分类下钻清除冲突的一级条件，保留日期与群范围", async () => {
   const user = userEvent.setup();
@@ -240,7 +506,7 @@ it("客服页按摘要搜索仍保留参与客服，个人筛选不混入协作�
   await user.click(person);
   const dialog = await screen.findByRole("dialog");
   expect(dialog).toHaveTextContent("每日变化");
-  expect(dialog).toHaveTextContent("服务群明细");
+  expect(dialog).toHaveTextContent("活跃群明细");
   const target = new URL(
     within(dialog).getByRole("link", { name: "事件明细" }).getAttribute("href")!,
     "http://localhost",

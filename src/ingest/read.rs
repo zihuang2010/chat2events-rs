@@ -5,7 +5,7 @@
 //! `list_rooms` 只遍历目录、不碰 DuckDB，所以住在 `layout.rs`。
 
 use super::{
-    layout::{MONTH_FMT, files},
+    layout::{MONTH_FMT, files, synced_files},
     types::{Conversation, IngestError, Message, Result, Role},
 };
 use crate::window::Window;
@@ -65,7 +65,9 @@ static SEEN_UNKNOWN: LazyLock<Mutex<HashSet<String>>> =
 static DB: LazyLock<Mutex<duckdb::Connection>> = LazyLock::new(|| {
     let con = duckdb::Connection::open_in_memory().expect("建 DuckDB 实例");
     con.execute_batch(
-        "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
+        // 两个独立进程各自限制工作集，另为 Rust 会话、事件、JSON 留内存；这不是 RSS 硬上限。
+        "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; \
+         SET memory_limit = '512MB'; SET threads = 4; SET max_temp_directory_size = '1GB';",
     )
     .expect("关闭扩展自动加载");
     Mutex::new(con)
@@ -100,6 +102,7 @@ WITH src AS (
         make_timestamp(messageTime * 1000 + {tz_offset})     AS "at",
         sender.easyUserId                                AS sender_id,
         sender.identityType                              AS sender_role,
+        NULLIF(json_extract_string(to_json(sender), '$.officialUserId'), '') AS official_user_id,
         COALESCE(NULLIF(analysisText, ''), content)      AS text,
         semanticPayload.replyTo.sourceMessageId          AS reply_to,
         CAST(schemaVersion AS BIGINT)                    AS schema_version,
@@ -108,10 +111,11 @@ WITH src AS (
         filename                                         AS src_file
     FROM read_json_auto([{files}], format='newline_delimited', filename=true)
 )
-SELECT msg_id, room, corp, "at", sender_id, sender_role, text, reply_to,
+SELECT msg_id, room, corp, "at", sender_id, sender_role, official_user_id, text, reply_to,
        schema_version, parser_version, upstream_type, src_file
 FROM src
-WHERE CAST("at" AS DATE) BETWEEN DATE '{since}' AND DATE '{until}'{extra}
+-- 缺时间的行无法判断是否属于窗口，必须交给必填守卫，不能静默过滤。
+WHERE ("at" IS NULL OR CAST("at" AS DATE) BETWEEN DATE '{since}' AND DATE '{until}'){extra}
 ORDER BY "at", msg_id
 "#
     };
@@ -175,6 +179,7 @@ fn scan(
     let mut out: Vec<Message> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut dupes = 0usize;
+    let mut bytes = 0usize;
 
     while let Some(r) = rows.next()? {
         let m = message_from_row(r, &month_of, corp, room)?;
@@ -184,6 +189,19 @@ fn scan(
         if !seen.insert(m.msg_id.clone()) {
             dupes += 1;
             continue;
+        }
+        bytes += std::mem::size_of::<Message>()
+            + m.msg_id.len() * 2
+            + m.room.len()
+            + m.corp.len()
+            + m.sender_id.len()
+            + m.text.len()
+            + m.reply_to.as_ref().map_or(0, String::len)
+            + m.official_user_id.as_ref().map_or(0, String::len);
+        if bytes > 32 * 1024 * 1024 {
+            return Err(IngestError::Room(
+                "单群会话超过 32 MiB 读取预算，停止整群处理而非截断消息".into(),
+            ));
         }
         out.push(m);
     }
@@ -307,6 +325,11 @@ fn message_from_row(
         at,
         sender_id,
         sender_role,
+        official_user_id: if sender_role == Role::Internal {
+            r.get("official_user_id")?
+        } else {
+            None
+        },
         text,
         reply_to,
     })
@@ -331,6 +354,27 @@ fn counts(msgs: &[Message]) -> BTreeMap<NaiveDate, (usize, usize)> {
 /// 路径只用来收窄 I/O，正确性靠 SQL 里那个 `BETWEEN`。
 pub fn read_room(raw_root: &Path, corp: &str, room: &str, w: &Window) -> Result<Conversation> {
     let msgs = scan(&files(raw_root, corp, room, w), w, None, corp, room)?;
+    Ok(Conversation {
+        msg_counts: counts(&msgs),
+        msgs,
+    })
+}
+
+/// 跑批读取本轮索引确认的月份；其他历史文件仅供本地检查和原文下钻。
+pub(crate) fn read_synced_room(
+    raw_root: &Path,
+    corp: &str,
+    room: &str,
+    w: &Window,
+    months: &[String],
+) -> Result<Conversation> {
+    let msgs = scan(
+        &synced_files(raw_root, corp, room, months),
+        w,
+        None,
+        corp,
+        room,
+    )?;
     Ok(Conversation {
         msg_counts: counts(&msgs),
         msgs,

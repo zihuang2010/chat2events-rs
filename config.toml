@@ -6,10 +6,14 @@
 [daily]
 # 整轮墙钟预算（秒）。到点后不再启动新的下载 / 新的群，在飞的跑完就收工，
 # 进程非零码退出（本轮没跑完必须看得见，不能绿灯过去）。
-# ⚠️ 失控护栏，不是调优旋钮：正常一轮分钟级。它防的是「OSS 半死不活、每个文件
-#    都读到一半断」—— 那时每个文件要耗满 3 × 120s，1000 群能跑 12 小时。
-# 没跑完的群下一轮重来：lookback_days ≥ 2 时漏掉的那天还在窗口里。
-round_deadline_secs = 21600 # 6 小时
+# ⚠️ **失控护栏，不是产能规划。** 它防的是「OSS 半死不活、每个文件都读到一半断」
+#    —— 那时每个文件要耗满 3 × 120s，1000 群能跑 12 小时。
+#    **抬它不解决产能问题，只是别让护栏先开火**：产能由 room_concurrency 和端点
+#    吞吐决定，抬这个数只是把「护栏误伤正常跑批」的概率降下去。
+#    真实可用窗口是「今晚到明早」，10 小时贴着它给，比此前的 6 小时保守值宽。
+# 没跑完的群下一轮重来：lookback_days ≥ 2 时漏掉的那天还在窗口里，
+# 且队首每天挪一大步（见 daily::run 的 STRIDE），不会总是同一批群被砍。
+round_deadline_secs = 36000 # 10 小时
 
 # ① 摄取 —— 本地 raw 区是 OSS 的字节级镜像
 [ingest]
@@ -25,29 +29,26 @@ raw_root = "./data/raw"
 # N=2 ⇒ 磁盘上界约 2 个月（1000 群约 36 GB）。此前没有任何清理，一年 216 GB 且永不回落。
 raw_retention_months = 2
 
-# 下载根地址（CDN）。拼上索引表的 ndjson_object_key 就是月文件的 URL。
-# 不是密钥 —— 公开域名，所以在这里而不是 secrets.toml。
-# ⚠️ 这条路径配了 30 天 CDN 缓存，Cache-Control 和随机 query 参数都绕不掉。
-#    兜底是字节数校验：拿到旧副本 = 该群本轮失败，数据不会写坏。
-download_base_url = "https://filet.jdd51.com"
+# 直连私有 OSS；服务端点不含 bucket，客户端会加上 bucket 子域名。
+# 内网端点示例：https://oss-cn-hangzhou-internal.aliyuncs.com。
+# AccessKey 放在 secrets.toml 的 [oss] 节。
+oss = { endpoint = "https://oss-cn-zhangjiakou.aliyuncs.com", bucket = "jdd-rh-wechat", region = "cn-zhangjiakou" }
 
 # 同时在飞的月文件下载数。无默认值，缺失即报错。
-# ⚠️ 它同时是内存旋钮：响应整包进内存，峰值 = 这个数 × 最大月文件
-#    （月末冷启动 8 × 18 MB ≈ 144 MB）。往上调之前先乘一遍。
+# ⚠️ 每个下载增量最多 64 MiB；正文峰值按并发乘上限计，8 路最多 512 MiB。
 # 瞬时失败（连接类 / 超时 / 5xx / 429 / 408）在 mirror/download.rs 里重试 3 次、退避 1s→2s，
 # 这些是常量不是配置项 —— 没有第二个用例。
 mirror_concurrency = 8
 
-# 同时在处理的群数。无默认值，缺失即报错。
-# 段之间仍然串行，并行只加在群与群之间。
-# 曾测拐点在 8：100 群 / 555 MB / 12 核，串行 9.81s → k=8 2.48s，k=12 起不再变快。
-# ⚠️ **这个数在第六轮之后失效了**：它是「每个群新开一条 DuckDB 连接」时代量的，
-#   而共享实例把单群读取成本压掉一个数量级（10 群 957ms → 71ms），拐点必然前移。
-#   重量之前别拿它当依据 —— 何况 ③ 接上后约束本来就变成端点 TPM。
-# ⚠️ ③ 抽取接上之后，约束就从「本机核数」变成「端点 TPM」，调之前先看限流。
-room_concurrency = 8
+# 同时读取、抽取和保存的群数。段之间串行，打标另用 classify.concurrency。
+# ⚠️ **抽取和打标打的是两个不同的端点**（[llm.extract] / [llm.classify]），
+#    两队各自的并发互不相干，不必核对对方。各自的上界由各自端点的配额定 ——
+#    而那个配额今天**没有量过**：上量时按这个数跑一轮，grep 日志里 429 的 warn。
+# ⚠️ 它同时约束 MySQL 连接峰值：见 [mysql].max_connections 那条（要 ≥ 本值 + classify.concurrency）。
+room_concurrency = 10
 
-# 回看窗口 N：读 [T-N, T-1]
+# 回看窗口 N：跳过当天和昨天，读 [T-(N+1), T-2]。
+# N=2 时，9 月 7 日跑批读取 9 月 4 日、5 日。
 # ⚠️ N=2 时「周五提问、周一回复」永远拼不起来，损失系统性落在周五值班的人头上。
 # 拿到真实数据后按周几分别量，跨 2 天以上才闭合的占比 > 5% 立刻调 4。
 lookback_days = 2
@@ -60,56 +61,69 @@ lookback_days = 2
 # 撑爆了不靠这个数救 —— extract 会按运行时信号（截断 / 超时）自适应二分，
 # 没有阈值参数可调。无默认值，缺失即报错。
 # 实测：3742 条 → ceil(3742/400) = 10 段，单段输出 5.5~6.3k token，
-# 对着 llm.max_tokens = 64000 有 10× 余量。
+# 对着 llm.extract.max_tokens = 64000 有 10× 余量。
 # ⚠️ 调大换墙钟是空的：墙钟由输出吞吐定（实测 105~116 tok/s），全群输出总量不随分段变。
 segment_msgs = 400
 
-# ⑤ 分类 —— 打标结果缓存
+# ⑤ 分类 —— 独立批次并发与结果缓存
 [classify]
-# <cache_dir>/<taxonomy_version>.ndjson：sha256(summary) -> type_id，只增不减。
+concurrency = 6                # 全局打标批次并发，独立于抽取群并发（两队端点不同）
+# <cache_dir>/<taxonomy_version>-<策略指纹>.sqlite：sha256(summary) -> 标签全集；旧 NDJSON 首次导入并保留。
 # ⚠️ **承重件，不是优化。** 模型打标不保证同输入同输出（temperature=0 也不保证），
-#    而非冻结区每天重写 [T-2, T-1]、同一批 event 会被反复打标 —— 没有这个缓存，
+#    而非冻结区每天重写 [T-3, T-2]、同一批 event 会被反复打标 —— 没有这个缓存，
 #    报表就会「抖动而非修正」，正是承重不变量 1 要防的那件事。删它 = 报表不可用于同比环比。
-# 一个词表版本一个文件：v0 的答案绝不能拿来当 v1 的答案。
-# 体量：10 万条约 12 MB（每行 = 64 字符 hex + type_id）。不清理。
-# ⚠️ **这个目录不是「只有 hash」。** 上面那句只说了 ndjson；同目录的
-#    `*-nearest.json`（下面 margin 那节）里 `vocab` 是字符 bigram，数字抹成 `#` 但
-#    **姓名和地址不掩**（承重不变量 7），拼接可读回片段。它按 0600 落盘，
-#    ndjson 不需要。别把这两个文件当同一个密级搬运或归档。
+# 指纹包含词表、提示词与模型请求配置；不同策略不会混用答案。
+# 页缓存目标 2 MiB，历史答案按键读盘；不要删除数据库后重新问模型。
+# 同一缓存文件只允许一个进程写入，daily / recompute / review 不要重叠使用同一策略。
+# 历史 *-nearest.json 不再读取，也不会自动删除；其中可能含姓名片段，仍按 0600 保管。
 cache_dir = "./data/taxonomy_cache"
 
-# 本地类心（字符 bigram + IDF，见 src/nearest.rs）敢不敢用的门槛：
-# 最近类心与次近之差达到它才用本地答案，否则回落去问模型 —— **绝不硬塞最近的类**。
-# 模型文件是 <cache_dir>/<版本>-<指纹>-nearest.json，由 examples/recompute.rs 训练并写出；
-# 文件不存在 = 还没训练过，两条路都退回全部问模型（v0 和首次重打标之前的正常状态）。
-# ⚠️ **daily 和 recompute 必须同一个值**，否则冻结区和 [T-2, T-1] 用两套口径，
-#    边界上同类事件标签不同 —— 承重不变量 1 要防的那种抖动。所以它在这里不在命令行。
-# ⚠️ **这个 0.05 是占位，不是实测值。** 跑一次 recompute，看日志里
-#    「留出集（margin / 覆盖率 / 一致率）」那张表再定：一致率是质量，覆盖率是省下的钱。
-#    设成 1.0 等于关掉本地类心。
-# ⚠️ **现在就是 1.0 = 关掉本地类心**，为的是 v1 首次重打标的探路趟拿到纯模型真值和
-#    那张留出集表。看完表定出真值再改回来 —— 别把 1.0 带进全量趟。
-margin = 1.0
-
+# ③ 抽取和 ⑤ 打标是**两个不同的模型**，见下面两个子节。
+# 这里的键是**两队共用**的：连接、响应、总预算都属于调用处置，推理与温度同样共用。
+# ⚠️ **共用键必须写在 [llm.extract] / [llm.classify] 节头之前** ——
+#    TOML 的节头一开，后面的键就全归那个子节，写在后面会静默变成子节的字段。
 [llm]
-model = "qwen3.8-flash"
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-# 推理默认关。抽取任务不需要它，实测答一个"2"开着要 45 token、关了 1 token。
+# 推理默认关。两队都不需要它，实测答一个"2"开着要 45 token、关了 1 token。
 # 可选值：none / minimal / low / medium / high / xhigh
 reasoning_effort = "none"
 
-# 抽取要可复现，不是创作
+# 抽取要可复现，不是创作。
+# ⚠️ **打标那条线还额外靠它**：结果缓存是承重件（承重不变量 1），
+#    temperature 一非零，「同 summary 同答案」就从高概率退成偶然。
 temperature = 0.0
-
-# ⚠️ 跟着模型变：qwen3.8-flash 收 64000，qwen-plus 只到 32768（超了直接报 range 错）
-max_tokens = 64000
 
 # 单次调用实测 118~168s，留 2 倍余量
 timeout_secs = 300
 
+# 包含 Retry-After、SDK 重试与分类重发的总预算；到期按调用失败处理，不触发切段。
+request_timeout_secs = 1200
+
 # 只管 TCP+TLS 握手：让「端点连不上」几秒内失败，不耗满上面按分钟计的超时
 connect_timeout_secs = 10
+
+# ③ 抽取那一队
+[llm.extract]
+model = "qwen3.8-flash"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# ⚠️ 跟着模型变：qwen3.8-flash 收 64000，qwen-plus 只到 32768（超了直接报 range 错）。
+# 这一队要的就是「模型收得下的最大值」：Truncated / Timeout 正是 extract 对半切的
+# 信号，压小会改掉切分行为。
+max_tokens = 64000
+
+# ⑤ 打标那一队 —— recompute 重打标、taxonomy review 试打也走这一节
+[llm.classify]
+model = "qwen3.8-flash"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# ⚠️ **承重数字，不是旋钮。**（从 classify.rs 的 CLASSIFY_MAX_TOKENS 搬来 ——
+# 那里此前是无条件钳位，会让这个文件里的数变成谎言，改成由 config.rs 的断言拒绝。）
+# 一批 classify::BATCH = 50 条 × 每条一个小对象，正常输出不过 2000 token，6000 是 3 倍余量。
+# **绝不能抄上面那个 64000**：上限一大，模型跑飞（strict JSON schema 下随机陷入重复
+# 生成，实测中招率约三分之一）就没有任何东西拦得住，只能安静生成到撞满 timeout_secs，
+# 再报一个无从下手的 Timeout —— 试打 870 条是 18 批，按这个中招率几乎每趟都要挂死几回，
+# 正是「归纳跑一半卡住五分钟然后整趟报废」的主因。贴着实际需求给，跑飞秒撞 Truncated，
+# extract_retry 重发即可。config.rs 的 load_from_dir 有一条 assert 拦「≥ 抽取那份」。
+max_tokens = 6000
 
 [log]
 # error / warn / info / debug / trace
@@ -124,9 +138,22 @@ level = "info"
 # ⚠️ **它同时是 `examples/recompute.rs` 并发度的上界**（那边会 assert 拦住）。
 #    重打标要压进 1 小时需要并发 16（4.5M 输出 token ÷ 单流 ~110 tok/s ≈ 11.4 流·小时），
 #    跑之前把这个数一起抬到 16 —— 池是懒建连接的，daily 用不到那么多，抬上界不花代价。
-# ⚠️ **必须 ≥ room_concurrency**：小于它就会有群在写库时排队等连接，
-#    acquire_timeout 一到，报出来的是「落库失败」—— 那个群整轮作废、
-#    刚烧完的 token 白花。room_concurrency 仍是 8，这里的 16 是为 recompute 抬的，两条都满足。
-max_connections = 16
+# ⚠️ **必须 ≥ room_concurrency + classify.concurrency**：抽取和打标是**两个**消费者，
+#    各自持连接互不相让 —— 抽取侧 room_concurrency 个群同时在 write_room 的事务里，
+#    打标侧 classify.concurrency 个群同时在 read_events / update_event_labels /
+#    finish_classification 上。小于这个和就会有群在写库时排队等连接，acquire_timeout
+#    一到，报出来的是「落库失败」—— 那个群整轮作废、刚烧完的 token 白花。
+#    ⚠️ 这条规则此前写的是「≥ room_concurrency」，那是**打标队列独立出来之前**的形状，
+#       只算了两个消费者里的一个。10 + 6 = 16，24 留 8 的余量。
+max_connections = 24
 # 池子满了、等一条空闲连接的上限。超时报错，不无限挂着
 acquire_timeout_secs = 30
+
+# 只读后端独立预算。结果超限明确报错，不以残缺明细生成完整报表。
+# 以下为保守起点，部署时结合两个进程的 RSS 和最大查询范围验收。
+[web]
+concurrency = 4
+scan_concurrency = 2
+max_response_bytes = 16777216 # 16 MiB；同时限制数据库文档累计字节与最终 JSON
+max_rows = 20000
+query_timeout_secs = 30

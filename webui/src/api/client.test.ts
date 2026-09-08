@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchMessages, probeMeta } from "./client";
+import { fetchEvent, fetchMessages, probeMeta } from "./client";
+import { buildMockDataset } from "./mock/generator";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +8,29 @@ afterEach(() => {
 });
 
 describe("只读接口边界", () => {
+  it("补读事件不能与当前页面词表混版", async () => {
+    const dataset = buildMockDataset();
+    const event = dataset.events[0]!;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(Response.json(event))),
+    );
+    expect((await fetchEvent(event.id, dataset.meta.taxonomy_version)).id).toBe(event.id);
+    await expect(fetchEvent(event.id, "v-next")).rejects.toMatchObject({
+      kind: "contract",
+      path: `/event/${event.id}`,
+    });
+  });
+  it("保留后端受控的原文缺失原因", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(Response.json({ error: "原文已超过保留期" }, { status: 410 }))),
+    );
+    await expect(fetchMessages(7)).rejects.toMatchObject({
+      status: 410,
+      detail: "原文已超过保留期",
+    });
+  });
   it("成功响应校验后返回，不发送写请求", async () => {
     const fetch = vi.fn(() => Promise.resolve(Response.json([])));
     vi.stubGlobal("fetch", fetch);

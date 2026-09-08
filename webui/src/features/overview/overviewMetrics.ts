@@ -53,7 +53,7 @@ export function msgRollup(a: Analytics, api: FiltersApi): MsgRollup {
   };
 }
 
-/** 无响应事件已经等了多久。基准是数据窗口末日 24:00，不是当前墙钟 —— T+1 跑批的
+/** 无响应事件已经等了多久。基准是数据窗口末日 24:00，不是当前墙钟 —— 每日跑批的
  *  数据可能是几天前的，用 now() 会把等待时长算成「从那天到今天」。 */
 export function waitedSecFrom(boundaryDay: string, firstMsgTime: string): number {
   const end = parseDateTime(addDays(boundaryDay, 1)).getTime();

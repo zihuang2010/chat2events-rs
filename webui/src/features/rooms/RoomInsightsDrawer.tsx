@@ -1,5 +1,7 @@
 import { ArrowRightOutlined } from "@ant-design/icons";
 import { Drawer, Segmented, Tag, Tooltip } from "antd";
+import { useWindowDataset } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Analytics } from "@/features/filters/useAnalytics";
@@ -48,6 +50,36 @@ function RoomInsightsContent({
   analytics: Analytics;
   api: FiltersApi;
 }) {
+  const query = useWindowDataset(
+    analytics.dataset.source,
+    null,
+    null,
+    analytics.dataset.source === "api",
+  );
+  if (analytics.dataset.source === "api") {
+    if (query.isPending) return <PageSkeleton />;
+    if (query.isError)
+      return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
+    return (
+      <RoomInsightsReady
+        roomId={roomId}
+        analytics={{ ...analytics, dataset: query.data }}
+        api={api}
+      />
+    );
+  }
+  return <RoomInsightsReady roomId={roomId} analytics={analytics} api={api} />;
+}
+
+function RoomInsightsReady({
+  roomId,
+  analytics,
+  api,
+}: {
+  roomId: string;
+  analytics: Analytics;
+  api: FiltersApi;
+}) {
   const [level, setLevel] = useState<"level1" | "level2">("level1");
   const model = useMemo(
     () => buildRoomInsights(analytics.dataset, roomId, analytics.slaSec),
@@ -87,12 +119,18 @@ function RoomInsightsContent({
       </div>
       <p className="ri-room-id">
         {roomId}
-        {!analytics.aliasIsAuthoritative ? " · 群名为占位别名" : ""}
+        {roomId && !analytics.roomAliasIsAuthoritative(roomId) ? " · 群名待补" : ""}
       </p>
-      {model.failed || model.missing ? (
+      {model.failed || model.missing || model.unknown ? (
         <p className="ri-coverage" role="status">
+          {model.unknown ? `${model.unknown} 天最新处理结果未知 · ` : ""}
           {model.failed} 天抽取失败 · {model.missing}{" "}
-          天无记录。事件统计仅含完整日期，缺失日期留空；失败日的消息量仍保留。
+          天无记录。事件统计仅含完整日期，缺失日期留空；失败日的消息总量仍保留。
+        </p>
+      ) : model.pendingLabels || model.failedLabels ? (
+        <p className="ri-coverage" role="status">
+          {model.pendingLabels} 天待打标 · {model.failedLabels}{" "}
+          天打标失败。事实指标可用，分类统计未完成。
         </p>
       ) : (
         <p className="ri-complete">7 天数据完整</p>
@@ -100,24 +138,26 @@ function RoomInsightsContent({
       <div className="ri-charts">
         <section aria-labelledby="ri-messages-title">
           <div className="ri-section-head">
-            <h3 id="ri-messages-title">消息指标</h3>
+            <h3 id="ri-messages-title">消息总量</h3>
             <Tooltip title={METRIC.msgCount}>
               <span className="ri-total">
                 {count(model.msgs)} <small>条</small>
               </span>
             </Tooltip>
           </div>
-          <EChart option={charts.messages} height={240} ariaLabel="近7天每日消息数与发言人数" />
-          <p className="od-footnote">发言人数按日去重，不跨日相加；消息量不受事件抽取成败影响。</p>
+          <EChart option={charts.messages} height={240} ariaLabel="近7天每日消息总量与发言人数" />
+          <p className="od-footnote">
+            发言人数按日去重，不跨日相加；消息总量不受事件抽取成败影响。
+          </p>
         </section>
         <section aria-labelledby="ri-events-title">
           <div className="ri-section-head">
-            <h3 id="ri-events-title">事件指标</h3>
+            <h3 id="ri-events-title">事件量</h3>
             <span className="ri-total">
               {count(model.metrics?.events)} <small>起</small>
             </span>
           </div>
-          <EChart option={charts.events} height={240} ariaLabel="近7天每日事件数与无响应事件数" />
+          <EChart option={charts.events} height={240} ariaLabel="近7天每日事件量与无响应事件数" />
           <p className="od-footnote">
             商家发起 {count(model.metrics?.merchant)} 起 · 平台发起 {count(model.metrics?.push)} 起
             · 无响应 {count(model.metrics?.unreplied)} 起
@@ -184,9 +224,9 @@ function RoomInsightsContent({
             <thead>
               <tr>
                 <th>日期</th>
-                <th>消息数</th>
+                <th>消息总量</th>
                 <th>发言人数</th>
-                <th>事件数</th>
+                <th>事件量</th>
                 <th>无响应</th>
                 <th>首响 P50</th>
                 <th>首响 P90</th>
@@ -206,7 +246,17 @@ function RoomInsightsContent({
                   <td>{formatDuration(day.metrics?.p90 ?? null) ?? "—"}</td>
                   <td>{formatPercent(day.metrics?.overdueRate ?? null) ?? "—"}</td>
                   <td>
-                    {day.status === "ok" ? "完整" : day.status === "failed" ? "抽取失败" : "无记录"}
+                    {day.status === "ok"
+                      ? day.classificationStatus === "pending"
+                        ? "待打标"
+                        : day.classificationStatus === "failed"
+                          ? "打标失败"
+                          : "完整"
+                      : day.status === "failed"
+                        ? "抽取失败"
+                        : day.status === "unknown"
+                          ? "最新结果未知"
+                          : "无记录"}
                   </td>
                 </tr>
               ))}

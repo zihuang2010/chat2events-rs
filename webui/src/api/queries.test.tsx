@@ -51,5 +51,23 @@ it("URL 数据源改变后重新装载数据集", async () => {
     await result.current.navigate("/detail?source=api");
   });
   await waitFor(() => expect(result.current.query.data?.source).toBe("api"));
-  expect(loadDataset).toHaveBeenCalledWith("api");
+  expect(loadDataset).toHaveBeenCalledWith("api", { from: null, to: null });
+});
+
+it("URL 日期改变后按新范围重新读取，抽屉参数不重读数据集", async () => {
+  const { result } = renderHook(() => ({ query: useDataset(), navigate: useNavigate() }), {
+    wrapper: Wrapper,
+  });
+  await waitFor(() => expect(result.current.query.data?.source).toBe("mock"));
+  await act(async () => {
+    await result.current.navigate("/detail?source=api&from=2026-08-25&to=2026-08-26");
+  });
+  await waitFor(() =>
+    expect(loadDataset).toHaveBeenCalledWith("api", { from: "2026-08-25", to: "2026-08-26" }),
+  );
+  vi.mocked(loadDataset).mockClear();
+  await act(async () => {
+    await result.current.navigate("/detail?source=api&from=2026-08-25&to=2026-08-26&drawer=1");
+  });
+  expect(loadDataset).not.toHaveBeenCalled();
 });

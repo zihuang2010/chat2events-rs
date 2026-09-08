@@ -1,8 +1,10 @@
 import { LeftOutlined, RightOutlined } from "@ant-design/icons";
-import { Alert, Button, Drawer, Tabs, Tag } from "antd";
+import { Alert, Button, Drawer, Skeleton, Tabs, Tag } from "antd";
+import { useStoredEvent } from "@/api/queries";
+import { ErrorState } from "@/components/states";
 import { useEffect, useRef } from "react";
 import type { DecoratedEvent } from "@/domain/schemas";
-import { isMerchant, statusOf } from "@/domain/metrics";
+import { decorate, isMerchant, statusOf } from "@/domain/metrics";
 import { DurationOrNull, StatusTag } from "@/components/primitives";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
@@ -11,9 +13,9 @@ import { EventProperties, EventBasis } from "./EventEvidence";
 import "./event-drawer.css";
 
 export function EventDrawer({
-  event,
+  event: loadedEvent,
   missingId,
-  outsideFilter,
+  outsideFilter: filteredOut,
   analytics,
   onClose,
   position,
@@ -29,6 +31,14 @@ export function EventDrawer({
   onPrevious?: (() => void) | undefined;
   onNext?: (() => void) | undefined;
 }) {
+  const query = useStoredEvent(
+    analytics.dataset.source,
+    loadedEvent ? null : (missingId ?? null),
+    analytics.dataset.meta.taxonomy_version,
+  );
+  const outsideFilter = filteredOut || (!loadedEvent && query.data !== undefined);
+  const event =
+    loadedEvent ?? (query.data ? decorate([query.data], analytics.taxIndex)[0] : undefined);
   const navigationButton = useRef<HTMLElement | null>(null);
   useEffect(() => {
     // 首尾按钮禁用时把焦点交给另一按钮，保持连续浏览与 Escape 可用。
@@ -103,6 +113,10 @@ export function EventDrawer({
           analytics={analytics}
           outsideFilter={outsideFilter}
         />
+      ) : analytics.dataset.source === "api" && query.isPending ? (
+        <Skeleton active />
+      ) : query.isError ? (
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} />
       ) : (
         <div className="ed-panel">
           <Alert

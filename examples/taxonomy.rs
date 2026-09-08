@@ -70,7 +70,8 @@ async fn main() -> Result<()> {
         "review" => {
             let (since, until) = dates(3)?;
             let out = Path::new(a.get(5).map_or(".", String::as_str));
-            let llm = Llm::new(&cfg.llm, secrets.llm.api_key)?;
+            // 试打走的是 ⑤ 的打标路径，用打标那一队的模型。
+            let llm = Llm::new(&cfg.llm, &cfg.llm.classify, secrets.llm.api_key)?;
             let d = taxonomy::Draft::load(Path::new(a.get(2).expect(usage)))?;
             let sums = taxonomy::summaries(&pool, since, until).await?;
             let p = taxonomy::review_draft(&cfg, &llm, &d, &sums, out).await?;

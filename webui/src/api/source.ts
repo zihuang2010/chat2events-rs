@@ -7,7 +7,14 @@
 
 import { buildTaxonomyIndex, decorate, type TaxonomyIndex } from "@/domain/metrics";
 import type { Dataset, MessageRow } from "@/domain/schemas";
-import { ApiError, fetchDataset, fetchMessages, probeMeta, type RawDataset } from "./client";
+import {
+  ApiError,
+  fetchDataset,
+  fetchMessages,
+  probeMeta,
+  type RawDataset,
+  type DatasetWindow,
+} from "./client";
 import type { MockDataset } from "./mock/generator";
 
 export type SourceKind = "api" | "mock";
@@ -35,7 +42,18 @@ function assemble(
   raw: RawDataset,
   fallbackReason: string | null,
 ): LoadedDataset {
-  const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy);
+  const mismatch = raw.events.find(
+    (event) =>
+      event.taxonomy_version !== null && event.taxonomy_version !== raw.meta.taxonomy_version,
+  );
+  if (mismatch) {
+    throw new ApiError("事件与词表版本不一致", {
+      kind: "contract",
+      path: "/events",
+      detail: `事件 ${mismatch.id} 使用 ${mismatch.taxonomy_version}，当前词表为 ${raw.meta.taxonomy_version}；请完成重打标后重试`,
+    });
+  }
+  const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
   return {
     source,
     fallbackReason,
@@ -44,12 +62,13 @@ function assemble(
     meta: raw.meta,
     events: decorate(raw.events, taxIndex),
     groupDaily: raw.groupDaily,
-    agentDaily: raw.agentDaily,
-    failures: raw.failures,
   };
 }
 
-export async function loadDataset(forced: SourcePreference = "auto"): Promise<LoadedDataset> {
+export async function loadDataset(
+  forced: SourcePreference = "auto",
+  period: DatasetWindow = {},
+): Promise<LoadedDataset> {
   if (forced === "mock") {
     return assemble("mock", await getMock(), "URL 指定 source=mock");
   }
@@ -71,7 +90,7 @@ export async function loadDataset(forced: SourcePreference = "auto"): Promise<Lo
         : "真接口不可用";
     return assemble("mock", await getMock(), reason);
   }
-  return assemble("api", await fetchDataset(meta), null);
+  return assemble("api", await fetchDataset(meta, period), null);
 }
 
 export async function loadMessages(source: SourceKind, eventId: number): Promise<MessageRow[]> {

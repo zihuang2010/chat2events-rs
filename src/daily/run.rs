@@ -4,7 +4,7 @@
 //! 结局和记账在 `tally.rs`。
 
 use super::{
-    classify::{ClassifyTask, classify_room, run_classification},
+    labeling::{ClassifyTask, classify_room, run_classification},
     tally::{Outcome, Tally},
 };
 use crate::{

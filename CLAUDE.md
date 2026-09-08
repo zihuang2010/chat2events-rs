@@ -15,7 +15,7 @@
 | ② | 会话 | 同 ①，**不独立成模块**（分组必须下推给源） | `read_room()` | `Conversation` |
 | ③ | 抽取 | `extract/` | `SegmentModel` —— 2 个适配器 = **真**接缝 | `EventDraft` |
 | ④ | 装配 | `extract/assemble.rs` | **无，且不该有**（溯源守卫） | `Event`（只有事实列） |
-| ⑤ | 分类 | `classify.rs` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
+| ⑤ | 分类 | `classify/` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
 | ⑥ | 指标 | `metrics/` | 无（纯函数） | 指标行 |
 | ⑦ | 落库 | `store.rs` | 无（已排除，MySQL 是唯一目标） | — |
 

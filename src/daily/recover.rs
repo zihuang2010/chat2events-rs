@@ -1,6 +1,6 @@
 //! 人工恢复已保存事实的未完成分类；按群日补齐，不重新抽取冻结事实。
 
-use super::classify::{ClassifyTask, classify_room};
+use super::labeling::{ClassifyTask, classify_room};
 use crate::{
     Result,
     classify::{CURRENT_VERSION, Classifier},

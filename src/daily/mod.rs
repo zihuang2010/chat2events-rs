@@ -17,14 +17,16 @@
 //! ```text
 //! daily/
 //!   run.rs       两阶段编排、抽取群并发与事实保存
-//!   classify.rs  群任务消费、全局批次并发、独立标签更新与指标发布
+//!   labeling.rs  群任务消费、全局批次并发、独立标签更新与指标发布
+//!                （**不叫 classify.rs**：⑤ 是 `crate::classify`，同名会让
+//!                 `use super::classify` 和 `use crate::classify` 挤在同一屏）
 //!   tally.rs     抽取结果与预算记账
 //! ```
 //!
 //! [`run`] 是日常跑批（窗口 `[T-(N+1), T-2]`）；[`run_span`] 让调用方自己给窗口，
 //! 补跑历史走它（`examples/backfill.rs`）。
 
-mod classify;
+mod labeling;
 mod recover;
 pub use recover::recover;
 mod run;

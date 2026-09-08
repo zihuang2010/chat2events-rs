@@ -4,7 +4,7 @@
 //! 生产的 [`run_room`] 在读完之后才接上抽取与落库（要真端点真库），
 //! 所以这里传一个只读的「一个群干什么」进去。
 
-use super::{classify::*, run::*, tally::*};
+use super::{labeling::*, run::*, tally::*};
 use crate::{
     ingest::{self, IngestError},
     testutil,

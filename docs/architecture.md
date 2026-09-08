@@ -149,7 +149,7 @@ trait SegmentModel {
 结构化输出、校验不过回灌报错重问一次。最多 3 个标签，第一个是主类，副类不重复计入指标。
 `daily` 与 `recompute` 都在启动时按指定版本从 MySQL 读取一次词表，交给同一个 `Classifier`。
 数据库词表和人工草稿共用 `classify::check_types` 校验；只有显式 v0 允许空词表，正式版本缺失直接失败。
-日常跑批先独立保存事实，再通过有界 channel 交接给 `daily/classify.rs`。
+日常跑批先独立保存事实，再通过有界 channel 交接给 `daily/labeling.rs`。
 
 ```text
 ingest.room_concurrency 个群：读取 → 段串行抽取 → write_room 保存事实

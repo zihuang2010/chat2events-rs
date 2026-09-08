@@ -30,7 +30,7 @@
 
 ### 落到代码里的 SQL 写法（受同一份规范管）
 
-- **一律不写 `SELECT *`**，列名必须写明 —— `store.rs` 用 `EVENT_COLS` 这类常量。
+- **一律不写 `SELECT *`**，列名必须写明 —— `store/sql.rs` 用 `EVENT_COLS` 这类常量。
 - 统计行数用 `COUNT(*)`，不用 `COUNT(列名)` / `COUNT(常量)`。
 - **禁存储过程。**
 - `IN (...)` 的集合控制在 1000 以内 —— 本仓库最大的 `IN` 是 `occurred_on IN (窗口天数)`，个位数。

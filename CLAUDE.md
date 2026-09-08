@@ -17,7 +17,7 @@
 | ④ | 装配 | `extract/assemble.rs` | **无，且不该有**（溯源守卫） | `Event`（只有事实列） |
 | ⑤ | 分类 | `classify/` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
 | ⑥ | 指标 | `metrics/` | 无（纯函数） | 指标行 |
-| ⑦ | 落库 | `store.rs` | 无（已排除，MySQL 是唯一目标） | — |
+| ⑦ | 落库 | `store/` | 无（已排除，MySQL 是唯一目标） | — |
 
 **端口判据：一个适配器 = 假想接缝，两个 = 真接缝。** 逐个论证 → `docs/architecture.md`。
 

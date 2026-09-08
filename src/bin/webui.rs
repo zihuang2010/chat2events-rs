@@ -9,9 +9,9 @@ async fn main() -> Result<()> {
         (2..=3).contains(&args.len()),
         "用法：webui <config_dir> <corpid> [监听地址，默认 127.0.0.1:8787]"
     );
-    let (config, secrets) = config::load_web_from_dir(std::path::Path::new(&args[0]));
+    let (config, secrets) = web::config::load_from_dir(std::path::Path::new(&args[0]));
     config::init_logging(&config.log);
-    let pool = config::mysql_read_pool(
+    let pool = web::config::read_pool(
         &config.mysql,
         &secrets.mysql.url,
         config.web.query_timeout_secs,

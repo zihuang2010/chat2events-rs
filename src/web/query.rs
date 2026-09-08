@@ -3,10 +3,12 @@
 //! **全部是 `SELECT`，且事务显式声明 `READ ONLY`**：webUI 是只读旁路，
 //! 写库 SQL 一条都不许出现在这个文件里（`store/` 才是 MySQL 的唯一写入方）。
 
-use super::budget::{WebError, too_large};
+use super::{
+    budget::{WebError, too_large},
+    config::WebLimits,
+};
 use crate::{
     classify::{self, CURRENT_VERSION, TaxonomyType},
-    config::WebLimits,
     store,
 };
 use axum::http::StatusCode;

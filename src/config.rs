@@ -30,54 +30,6 @@ pub struct Config {
     pub log: LogConfig,
 }
 
-/// 只读入口只解析自己的运行参数，不要求模型、OSS 凭据或跑批并发关系。
-#[derive(Deserialize)]
-pub struct WebConfig {
-    pub ingest: WebIngestConfig,
-    pub mysql: MysqlConfig,
-    pub log: LogConfig,
-    pub web: WebLimits,
-}
-
-#[derive(Deserialize)]
-pub struct WebIngestConfig {
-    pub raw_root: PathBuf,
-}
-
-#[derive(Clone, Deserialize)]
-pub struct WebLimits {
-    pub concurrency: usize,
-    pub scan_concurrency: usize,
-    pub max_response_bytes: usize,
-    pub max_rows: usize,
-    pub query_timeout_secs: u64,
-}
-
-#[derive(Deserialize)]
-pub struct WebSecrets {
-    pub mysql: MysqlSecrets,
-}
-
-pub fn load_web_from_dir(dir: &Path) -> (WebConfig, WebSecrets) {
-    let config: WebConfig = load(&dir.join("config.toml"), false);
-    assert!(
-        config.mysql.max_connections > 0 && config.mysql.acquire_timeout_secs > 0,
-        "MySQL 连接数与等待时间必须大于零"
-    );
-    assert!(
-        config.web.concurrency > 0
-            && config.web.scan_concurrency > 0
-            && config.web.max_response_bytes > 0
-            && config.web.max_rows > 0
-            && config.web.query_timeout_secs > 0,
-        "只读查询名额、结果预算与超时必须大于零"
-    );
-    let secrets = dir.join("secrets.toml");
-    #[cfg(unix)]
-    require_owner_only(&secrets);
-    (config, load(&secrets, true))
-}
-
 #[derive(Deserialize)]
 pub struct LogConfig {
     /// error / warn / info / debug / trace，也接受 EnvFilter 的分模块写法。
@@ -276,7 +228,7 @@ pub struct MysqlConfig {
 /// ⚠️ **这不影响任何业务时间列。** `first_msg_time` 那几列是 `DATETIME`（MySQL 对它
 /// 不做时区转换）且由代码显式绑 `NaiveDateTime` —— 那条链上本来就没有会话时区的事。
 /// 这里修的只是 MySQL 自己算的那两个审计列。
-const SET_SESSION_TZ: &str = "SET time_zone = '+08:00'";
+pub(crate) const SET_SESSION_TZ: &str = "SET time_zone = '+08:00'";
 
 /// 建连接池。
 ///
@@ -295,33 +247,6 @@ pub async fn mysql_pool(cfg: &MysqlConfig, url: &str) -> Result<MySqlPool, sqlx:
         })
         .connect(url)
         .await
-}
-
-/// HTTP 超时之外，数据库本身也限制只读语句执行时间，避免客户端离开后慢查询继续占资源。
-pub async fn mysql_read_pool(
-    cfg: &MysqlConfig,
-    url: &str,
-    timeout_secs: u64,
-) -> crate::Result<MySqlPool> {
-    let timeout_ms = timeout_secs
-        .checked_mul(1000)
-        .filter(|n| *n > 0 && *n <= u32::MAX as u64)
-        .ok_or("只读查询超时超出 MySQL 支持范围")?;
-    Ok(MySqlPoolOptions::new()
-        .max_connections(cfg.max_connections)
-        .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
-        .after_connect(move |conn, _| {
-            Box::pin(async move {
-                sqlx::Executor::execute(&mut *conn, SET_SESSION_TZ).await?;
-                sqlx::query("SET SESSION max_execution_time = ?")
-                    .bind(timeout_ms)
-                    .execute(&mut *conn)
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(url)
-        .await?)
 }
 
 #[derive(Deserialize)]
@@ -444,7 +369,7 @@ pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
 /// 0600 权限检查挡不住 stderr —— 它会落进 `run.log`、journald、cron 邮件、
 /// CI 输出和终端 scrollback。`Secrets` 本身没有 `Debug` / `Serialize`，
 /// `Llm` 也没有 `Debug`，这条路是仅剩的泄漏点。
-fn load<T: DeserializeOwned>(path: &Path, redact: bool) -> T {
+pub(crate) fn load<T: DeserializeOwned>(path: &Path, redact: bool) -> T {
     let text =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()));
     toml::from_str(&text).unwrap_or_else(|e| {
@@ -462,7 +387,7 @@ fn load<T: DeserializeOwned>(path: &Path, redact: bool) -> T {
 
 /// 密钥文件必须 0600 —— 组或其他人有任何一位权限就拒绝加载（照 ssh 对私钥的规矩）。
 #[cfg(unix)]
-fn require_owner_only(path: &Path) {
+pub(crate) fn require_owner_only(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path)
         .unwrap_or_else(|e| panic!("读不到 {}：{e}", path.display()))
@@ -563,72 +488,6 @@ mod tests {
         let text =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml")).unwrap();
         toml::from_str::<Config>(&text).unwrap();
-    }
-
-    #[test]
-    fn web_startup_needs_only_read_dependencies() {
-        let mut value: toml::Value = toml::from_str(include_str!("../config.toml")).unwrap();
-        let table = value.as_table_mut().unwrap();
-        for key in ["daily", "extract", "classify", "llm"] {
-            table.remove(key);
-        }
-        value["ingest"] = toml::Value::Table(toml::map::Map::from_iter([(
-            "raw_root".into(),
-            "./data/raw".into(),
-        )]));
-        value["mysql"]["max_connections"] = 1.into();
-        let dir = crate::testutil::fresh_root("config", "web-only");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
-        let secret_path = dir.join("secrets.toml");
-        std::fs::write(
-            &secret_path,
-            "[mysql]\nurl = 'mysql://localhost/read_only'\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        let (cfg, secrets) = load_web_from_dir(&dir);
-        assert_eq!(cfg.mysql.max_connections, 1);
-        assert_eq!(secrets.mysql.url, "mysql://localhost/read_only");
-        assert!(
-            std::panic::catch_unwind(|| load_from_dir(&dir)).is_err(),
-            "跑批仍必须具备完整配置"
-        );
-        value["web"]["max_rows"] = 0.into();
-        std::fs::write(dir.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
-        assert!(std::panic::catch_unwind(|| load_web_from_dir(&dir)).is_err());
-    }
-
-    #[tokio::test]
-    #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
-    async fn mysql_read_pool_limits_server_execution_time() {
-        let url = std::env::var("CHAT2EVENTS_TEST_DATABASE_URL").unwrap();
-        let config = MysqlConfig {
-            max_connections: 1,
-            acquire_timeout_secs: 2,
-        };
-        let pool = mysql_read_pool(&config, &url, 1).await.unwrap();
-        let settings: (u64, String) =
-            sqlx::query_as("SELECT @@session.max_execution_time, @@session.time_zone")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(settings, (1000, "+08:00".into()));
-        let elapsed = std::time::Instant::now();
-        // SLEEP 被中断时 MySQL 可返回 1 或查询中断错误；两种都必须在服务器预算内结束。
-        let result = sqlx::query_scalar::<_, i32>("SELECT SLEEP(10)")
-            .fetch_one(&pool)
-            .await;
-        assert!(elapsed.elapsed() < Duration::from_secs(3));
-        match result {
-            Ok(value) => assert_eq!(value, 1),
-            Err(error) => assert!(error.as_database_error().is_some()),
-        }
-        pool.close().await;
     }
 
     /// 上一条的反面：**缺一个键必须是崩，不是走默认值。**

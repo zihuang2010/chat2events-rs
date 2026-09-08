@@ -3,11 +3,12 @@
 //! 全部 `GET`、无登录版（内网可达即可看）。限额与错误映射在 `budget`，
 //! 取数与 SQL 在 `query`；这里只负责把两边接起来。
 
+use super::config::WebLimits;
 use super::{
     budget::{ReadBudget, WebError, admit, bounded_json, too_large},
     query::{EVENT_SELECT, Period, read_meta, snapshot},
 };
-use crate::{classify::CURRENT_VERSION, config::WebLimits, ingest, store, window::Window};
+use crate::{classify::CURRENT_VERSION, ingest, store, window::Window};
 use axum::{
     Router,
     extract::{Path as Id, Query, State},

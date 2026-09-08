@@ -1,5 +1,6 @@
+use super::config::WebLimits;
 use super::{budget::*, query::*, serve::*};
-use crate::{config::WebLimits, testutil};
+use crate::testutil;
 use axum::{
     Router,
     extract::{Path as Id, State},
@@ -86,7 +87,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
         pool: pool.clone(),
         raw_root: root.clone(),
         corp: "C".into(),
-        limits: toml::from_str::<crate::config::WebConfig>(include_str!("../../config.toml"))
+        limits: toml::from_str::<super::config::WebConfig>(include_str!("../../config.toml"))
             .unwrap()
             .web,
         requests: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),

@@ -8,8 +8,9 @@
 //! 超限一律是显式错误 —— 截断会让主管拿到一个偏小但看起来正常的数字，
 //! 跟承重不变量 4「绝不用 0 表示没算出来」同一个形状。
 
+use super::config::WebLimits;
 use super::serve::WebState;
-use crate::{BoxError, config::WebLimits};
+use crate::BoxError;
 use axum::{
     Json,
     extract::{Request, State},

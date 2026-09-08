@@ -1,0 +1,24 @@
+src/daily/mod.rs
+  s_8fa49603801f24::t_362e3d7f25d6ca 23,35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "820cbebc7b251081ec92ee103edc60f831254f71",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_8fa49603801f24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bfa351f-6f43-4e02-a2bb-54570c9558c6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -94,6 +94,26 @@ describe("群聊分析筛选", () => {
     view.unmount();
   });
 
+  it("selecting_a_child_category_clears_the_parent_and_preserves_other_filters", async () => {
+    const user = userEvent.setup();
+    const parent = meta.taxonomy[0]!.parent_name;
+    const child = meta.taxonomy.find((type) => type.parent_name !== parent)!;
+    mount(`?l1=${encodeURIComponent(parent)}&room=R-test&overdue=1&page=3`);
+    await user.click(screen.getByRole("button", { name: "更多筛选（2）" }));
+    await user.click(screen.getByRole("combobox", { name: "二级分类" }));
+    await user.click(
+      screen.getByText(`${child.parent_name} / ${child.name}`, {
+        exact: true,
+        selector: ".ant-select-item-option-content",
+      }),
+    );
+    expect(params().get("l2")).toBe(child.type_id);
+    expect(params().has("l1")).toBe(false);
+    expect(params().get("room")).toBe("R-test");
+    expect(params().get("overdue")).toBe("1");
+    expect(params().has("page")).toBe(false);
+  });
+
   it("关键词保持回车提交，重置与浏览器返回同步输入框", async () => {
     const user = userEvent.setup();
     const view = mount("?q=原关键词&status=unreplied");

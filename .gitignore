@@ -27,18 +27,21 @@
 # 本地一次性排查用的 example **默认忽略**，写进仓库的那几个逐个放行。
 # ⚠️ 用 `/examples/*` 不是 `/examples`：目录本身被排除时，里面的文件**再也否定不回来**
 #    （git 不会下降到被排除的目录里），`!` 那几行会全部失效。
-# 放行的判据是「有没有文档指着它」—— 下面这些在 CLAUDE.md / docs/ / ADR 里都是
-# 写明的验证路径或运维入口，不是排查用的草稿。
+# 放行的判据是「有没有文档指着它」—— 下面这三个在 docs/deploy.md 的「验证命令」里
+# 写明，是不写库的诊断工具，不是排查用的草稿。
+#
+# ⚠️ **运维入口不在这里，在 `src/bin/`**（backfill / recompute / recover / taxonomy）。
+# 判据是「写不写生产库」：写库的进 bin，随 release 产物发出去；不写库的留 example。
+# `src/` 不在任何忽略规则内，那四个不需要放行行。
 /examples/*
 !/examples/dry.rs
 !/examples/smoke.rs
 !/examples/tzcheck.rs
-!/examples/backfill.rs
-!/examples/taxonomy.rs
-!/examples/recompute.rs
-!/examples/recover.rs
 
 # 离线实验（probe/）：构建产物和模型权重不进 git。
 # 代码本身进 —— 它是独立 crate，父仓库的 cargo / CI 看不见它。
 /probe/*/target
 /probe/*/models
+
+# 本地 scratch：spec 与 ticket 草稿，不进版本库
+.scratch/

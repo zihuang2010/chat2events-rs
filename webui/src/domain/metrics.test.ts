@@ -8,7 +8,7 @@ import {
   aggregate,
   agentRollup,
   buildTaxonomyIndex,
-  categoryRollup,
+  categoryRows,
   coverage,
   coverageLabel,
   dailyCounts,
@@ -20,6 +20,9 @@ import {
   roomRollup,
   statusOf,
 } from "./metrics";
+// 聚合口径已经搬进 SQL；`mock/aggregate` 是它在前端的对照实现，
+// 也是这些测试的输入来源 —— 于是「拼接」和「口径」各自被测到。
+import { mockAgentAggs, mockCategories, mockRoomAggs } from "@/api/mock/aggregate";
 import type { EventRow, GroupDailyRow, TaxonomyType } from "./schemas";
 
 const TAX: TaxonomyType[] = [
@@ -45,6 +48,8 @@ function ev(over: Partial<EventRow> = {}): EventRow {
     agents: ["a1"],
     first_responder: "a1",
     summary: "客户已在家等候，要求尽快安排师傅上门。",
+    last_msg_role: "EXTERNAL",
+    followup_wait_max_sec: null,
     event_type: "urge_visit",
     event_types: ["urge_visit"],
     taxonomy_version: "v1",
@@ -52,13 +57,46 @@ function ev(over: Partial<EventRow> = {}): EventRow {
   };
 }
 const dec = (rows: EventRow[]) => decorate(rows, tax);
+/** 一级分类，**下标即 `groups` 下标** —— 与 `useAnalytics.parentGroups` 同一套排序。 */
+const PARENTS = [
+  { name: "履约催促", types: ["urge_visit"] },
+  { name: "费用结算", types: ["fee_refund"] },
+];
 
 it("counts_pending_facts_without_publishing_them_as_a_category", () => {
-  const rows = dec([ev({ event_type: null, event_types: null, taxonomy_version: null })]);
+  const raw = [ev({ event_type: null, event_types: null, taxonomy_version: null })];
+  const rows = dec(raw);
   expect(rows[0]!.level1).toBe("打标未完成");
   expect(aggregate(rows, 1800, "2026-08-25").events).toBe(1);
-  expect(categoryRollup(rows, "level1", tax)).toEqual([]);
-  expect(categoryRollup(rows, "level2", tax)).toEqual([]);
+  // 打标未完成的事件**整个排除在分类之外**，不能凑成一个「未归类」分类：
+  // 那会把「还没算」显示成一个真实的业务类别。后端 `e.event_type IS NOT NULL` 同义。
+  const cells: GroupDailyRow[] = [
+    {
+      corpid: "corp",
+      roomid: "R1",
+      dt: "2026-08-25",
+      msg_count: 1,
+      sender_count: 1,
+      event_count: 1,
+      merchant_event_count: 1,
+      unreplied_count: 0,
+      first_reply_p50_sec: 300,
+      first_reply_p90_sec: 300,
+      extraction_status: "ok",
+      classification_status: "ok",
+    },
+  ];
+  const window = { from: "2026-08-25", to: "2026-08-25", slaSec: 1800 };
+  expect(mockCategories(raw, cells, tax, window)).toEqual([]);
+  expect(
+    mockCategories(
+      raw,
+      cells,
+      tax,
+      window,
+      PARENTS.map((p) => p.types),
+    ),
+  ).toEqual([]);
 });
 
 describe("派生字段", () => {
@@ -69,6 +107,25 @@ describe("派生字段", () => {
     ]);
     expect(replied?.firstReplySec).toBe(300);
     expect(unreplied?.firstReplySec).toBeNull();
+  });
+
+  it("首响走工作时段口径，时段外的等待不计", () => {
+    // 23:00 发问、次日 09:00 回：墙钟 36000 秒，工作时段只有次日 08:30→09:00。
+    const [overnight] = dec([
+      ev({
+        first_msg_time: "2026-08-25 23:00:00",
+        first_agent_reply_time: "2026-08-26 09:00:00",
+      }),
+    ]);
+    expect(overnight?.firstReplySec).toBe(1800);
+    // 整段都在打烊之后：0，不是负数也不是墙钟差。
+    const [closed] = dec([
+      ev({
+        first_msg_time: "2026-08-25 21:30:00",
+        first_agent_reply_time: "2026-08-25 23:00:00",
+      }),
+    ]);
+    expect(closed?.firstReplySec).toBe(0);
   });
 
   it("跨天只按开始日归属，不在两天各算一次", () => {
@@ -203,8 +260,13 @@ describe("覆盖度：失败的群日必须能被看见", () => {
       expect(cov.known).toBe(1);
       expect(cov.failed).toBe(0);
       expect(cov.complete).toBe(false);
-      expect(cov.days).toContain("2026-08-25");
       expect(coverageLabel(cov)).toContain(status === "pending" ? "待打标" : "打标失败");
+      // ⚠️ **打标未完成不进 `days` / `rooms`**：那两个说的是「事件计数不可信」，
+      // 而事件数是抽取的产物，跟标签算没算完无关。混进去的话，一个群日 `pending`
+      // 就能让 `EventTrends` 把那天所有分类的折线断成 null，而那里的解释文案只认
+      // `cov.failed`（此时是 0）—— 图空一片、一个字解释都没有。
+      expect(cov.days).toEqual([]);
+      expect(cov.rooms).toEqual([]);
     }
   });
 
@@ -309,15 +371,16 @@ describe("群维度汇总", () => {
       classification_status: "failed",
     },
   ];
+  const window = { from: days[0]!, to: days[days.length - 1]!, slaSec: 1800 };
+  const roomEvents = [ev({ roomid: "R1" })];
   const rows = roomRollup({
-    events: dec([ev({ roomid: "R1" })]),
+    aggs: mockRoomAggs(roomEvents, gd, tax, window),
     groupDaily: gd,
     rooms,
     days,
     dayset: new Set(days),
-    slaSec: 1800,
-    lastDay: "2026-08-26",
     labelOf: (id) => rooms.find((r) => r.roomid === id)?.alias ?? id,
+    parents: PARENTS,
     query: "",
   });
 
@@ -340,52 +403,70 @@ describe("群维度汇总", () => {
     expect(rows.find((r) => r.key === "R2")?.msgs).toBe(20);
   });
 
-  it("主要事件类型按数量降序保留四类，不补齐缺少的类别", () => {
+  it("主要事件类型按数量降序，不补齐缺少的类别", () => {
+    // 每类的条数不同，用来钉住降序；截前四由后端 `ROW_NUMBER` 做，
+    // 这里的对照实现（`mockRoomAggs`）用同一条规则。
+    const many = [
+      ...Array.from({ length: 5 }, () =>
+        ev({ roomid: "R1", event_type: "fee_refund", event_types: ["fee_refund"] }),
+      ),
+      ...Array.from({ length: 2 }, () => ev({ roomid: "R1" })),
+    ];
     const ranked = roomRollup({
-      events: [1, 5, 3, 4, 2].flatMap((count, index) =>
-        dec(Array.from({ length: count }, () => ev({ roomid: "R1" }))).map((event) => ({
-          ...event,
-          level1: `类别${index + 1}`,
-        })),
+      aggs: mockRoomAggs(
+        many,
+        gd,
+        tax,
+        window,
+        PARENTS.map((p) => p.types),
       ),
       groupDaily: gd,
       rooms,
       days,
       dayset: new Set(days),
-      slaSec: 1800,
-      lastDay: "2026-08-26",
       labelOf: (id) => id,
+      parents: PARENTS,
       query: "",
     });
     expect(ranked.find((r) => r.key === "R1")?.topLevel1).toEqual([
-      { name: "类别2", count: 5 },
-      { name: "类别4", count: 4 },
-      { name: "类别3", count: 3 },
-      { name: "类别5", count: 2 },
+      { name: "费用结算", count: 5 },
+      { name: "履约催促", count: 2 },
     ]);
     expect(ranked.find((r) => r.key === "R2")?.topLevel1).toEqual([]);
-    expect(rows.find((r) => r.key === "R1")?.topLevel1).toHaveLength(1);
   });
 });
 
 describe("客服维度：参与量与首响归属量是两个口径", () => {
   const days = ["2026-08-25"];
-  const events = dec([
+  const window = { from: days[0]!, to: days[0]!, slaSec: 1800 };
+  /** 只有「本轮已知成功」的群日才进聚合 —— 与后端 `OK_DAYS` 同一条规矩。 */
+  const okCell = (roomid: string, dt: string): GroupDailyRow => ({
+    corpid: "corp",
+    roomid,
+    dt,
+    msg_count: 2,
+    sender_count: 2,
+    event_count: 1,
+    merchant_event_count: 1,
+    unreplied_count: 0,
+    first_reply_p50_sec: 300,
+    first_reply_p90_sec: 300,
+    extraction_status: "ok",
+    classification_status: "ok",
+  });
+  const cells = [okCell("R1", days[0]!)];
+  const raw = [
     ev({ agents: ["a1", "a2"], first_responder: "a1" }), // 两人协作，a1 首响
     ev({ agents: ["a2"], first_responder: "a2" }),
     ev({ first_agent_reply_time: null, agents: [], first_responder: null }), // 没人接
-  ]);
+  ];
+  const events = dec(raw);
   const rows = agentRollup({
-    events,
-    groupDaily: [],
+    aggs: mockAgentAggs(raw, cells, tax, window),
+    groupDaily: cells,
     rooms: [{ roomid: "R1", alias: null }],
-    agents: [
-      { agent: "a1", alias: "甲" },
-      { agent: "a2", alias: "乙" },
-    ],
     days,
     dayset: new Set(days),
-    slaSec: 1800,
     labelOf: (a) => a,
     query: "",
   });
@@ -421,14 +502,13 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
               first_reply_p90_sec: null,
             }
           : { ...success, roomid: "R2" };
+      const gd = status === "missing" ? [success] : [success, other];
       const result = agentRollup({
-        events: dec([ev()]),
-        groupDaily: status === "missing" ? [success] : [success, other],
+        aggs: mockAgentAggs([ev()], gd, tax, window),
+        groupDaily: gd,
         rooms: ["R1", "R2"].map((roomid) => ({ roomid, alias: null })),
-        agents: [{ agent: "a1", alias: null }],
         days,
         dayset: new Set(days),
-        slaSec: 1800,
         labelOf: (agent) => agent,
         query: "",
       });
@@ -455,26 +535,25 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
   });
 
   it("个人样本与超时分母排除平台发起、协作和未归属事件", () => {
+    const mine = [
+      ev(),
+      ev({ first_agent_reply_time: "2026-08-25 11:00:00" }),
+      ev({ asker_role: "INTERNAL", first_agent_reply_time: "2026-08-25 10:00:00" }),
+      ev({ agents: ["a1", "a2"], first_responder: "a2" }),
+      ev({ first_agent_reply_time: null, agents: [], first_responder: null }),
+      ev({
+        agents: ["a3"],
+        first_responder: "a3",
+        asker_role: "INTERNAL",
+        first_agent_reply_time: "2026-08-25 10:00:00",
+      }),
+    ];
     const result = agentRollup({
-      events: dec([
-        ev(),
-        ev({ first_agent_reply_time: "2026-08-25 11:00:00" }),
-        ev({ asker_role: "INTERNAL", first_agent_reply_time: "2026-08-25 10:00:00" }),
-        ev({ agents: ["a1", "a2"], first_responder: "a2" }),
-        ev({ first_agent_reply_time: null, agents: [], first_responder: null }),
-        ev({
-          agents: ["a3"],
-          first_responder: "a3",
-          asker_role: "INTERNAL",
-          first_agent_reply_time: "2026-08-25 10:00:00",
-        }),
-      ]),
-      groupDaily: [],
+      aggs: mockAgentAggs(mine, cells, tax, window),
+      groupDaily: cells,
       rooms: [{ roomid: "R1", alias: null }],
-      agents: ["a1", "a2", "a3"].map((agent) => ({ agent, alias: agent })),
       days,
       dayset: new Set(days),
-      slaSec: 1800,
       labelOf: (agent) => agent,
       query: "",
     });
@@ -499,19 +578,44 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
 });
 
 describe("分类汇总只按主类", () => {
-  const events = dec([
+  const days = ["2026-08-25"];
+  const window = { from: days[0]!, to: days[0]!, slaSec: 1800 };
+  const cells: GroupDailyRow[] = [
+    {
+      corpid: "corp",
+      roomid: "R1",
+      dt: days[0]!,
+      msg_count: 2,
+      sender_count: 2,
+      event_count: 2,
+      merchant_event_count: 2,
+      unreplied_count: 0,
+      first_reply_p50_sec: 300,
+      first_reply_p90_sec: 300,
+      extraction_status: "ok",
+      classification_status: "ok",
+    },
+  ];
+  const raw = [
     ev({ event_type: "urge_visit", event_types: ["urge_visit", "fee_refund"] }), // 带副类
     ev({ event_type: "fee_refund", event_types: ["fee_refund"] }),
-  ]);
+  ];
 
   it("副类不进指标，否则合计会大于事件数", () => {
-    const l2 = categoryRollup(events, "level2", tax);
+    const l2 = categoryRows(mockCategories(raw, cells, tax, window), "level2", tax, PARENTS, 2);
     expect(l2.reduce((s, c) => s + c.count, 0)).toBe(2);
     expect(l2.find((c) => c.key === "fee_refund")?.count).toBe(1);
   });
 
-  it("一级由二级 JOIN 词表得到", () => {
-    const l1 = categoryRollup(events, "level1", tax);
+  it("一级的 key 是分组下标，由前端换回父类名 —— 后端不认识词表", () => {
+    const groups = PARENTS.map((parent) => parent.types);
+    const l1 = categoryRows(
+      mockCategories(raw, cells, tax, window, groups),
+      "level1",
+      tax,
+      PARENTS,
+      2,
+    );
     expect(l1.map((c) => c.key).sort()).toEqual(["履约催促", "费用结算"]);
   });
 });

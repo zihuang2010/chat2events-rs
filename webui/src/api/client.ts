@@ -7,12 +7,23 @@
 
 import { z, type ZodType } from "zod";
 import { windowBounds } from "@/lib/format";
+import { RESPONSE_BIN_EDGES } from "@/domain/definitions";
 import {
   rawDatasetSchema,
   eventSchema,
   messageListSchema,
   metaSchema,
+  summarySchema,
+  roomAggListSchema,
+  agentAggListSchema,
+  categoryAggListSchema,
+  eventsPageSchema,
+  type SummaryRow,
+  type RoomAgg,
+  type AgentAgg,
+  type CategoryAgg,
   type EventRow,
+  type EventsPage,
   type GroupDailyRow,
   type MessageRow,
   type Meta,
@@ -129,9 +140,9 @@ async function get<T>(
 /** 探活。只有这一个请求成功，才认为真接口可用。 */
 export const probeMeta = (): Promise<Meta> => get("/meta", metaSchema, undefined, PROBE_TIMEOUT_MS);
 
+/** 页面上下文：meta ＋ 群日记录。**不含事件明细**（理由见 `rawDatasetSchema`）。 */
 export interface RawDataset {
   meta: Meta;
-  events: EventRow[];
   groupDaily: GroupDailyRow[];
 }
 
@@ -145,7 +156,123 @@ export async function fetchDataset(meta: Meta, period: DatasetWindow = {}): Prom
   return get("/dataset", rawDatasetSchema, { from, to });
 }
 
-/** 消息原文。真接口走摄取端口的 read_by_ids，可见范围受 raw 区保留期限制。 */
+/**
+ * 聚合接口共用的一组筛选参数 —— **和后端 `web::query::Filters` 一一对应**。
+ *
+ * ⚠️ **`level1`（父类）不在这里**：词表在前端手上，父类展开成 `types=a,b,c` 再传，
+ * 免得后端每条 SQL 都 join 一次词表、多出一处能和前端打架的口径。
+ *
+ * ⚠️ **`q` 只匹配事件摘要**。搜索框还会命中群名 / 客服名 / 类型名，那些是前端的
+ * 标签映射 —— 由调用方先解析成 id 集合，走 `room` / `agent` / `types` 传。
+ */
+export interface QueryFilters {
+  from?: string | null;
+  to?: string | null;
+  room?: string | null;
+  /** 参与过（`agents[]` 里有他） */
+  agent?: string | null;
+  /** **首响归属**给他。与 `agent` 是两个口径，可以同时给 */
+  responder?: string | null;
+  types?: readonly string[];
+  /** **排除**这些 type_id。「未归类」只能这么表达 —— 词表外的编码列不出名单 */
+  typesExclude?: readonly string[];
+  status?: string | null;
+  overdueOnly?: boolean | null;
+  q?: string | null;
+  slaSec?: number;
+}
+
+/** 只保留真正给了值的键 —— 空值进 URL 会让缓存键分叉，同一份数据取两遍。 */
+function params(f: QueryFilters): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (f.from) out.from = f.from;
+  if (f.to) out.to = f.to;
+  if (f.room) out.room = f.room;
+  if (f.agent) out.agent = f.agent;
+  if (f.responder) out.responder = f.responder;
+  if (f.types?.length) out.types = f.types.join(",");
+  if (f.typesExclude?.length) out.types_exclude = f.typesExclude.join(",");
+  if (f.status) out.status = f.status;
+  if (f.overdueOnly !== null && f.overdueOnly !== undefined)
+    out.overdue_only = String(f.overdueOnly);
+  if (f.q) out.q = f.q;
+  if (f.slaSec !== undefined) out.sla_sec = String(f.slaSec);
+  return out;
+}
+
+/**
+ * 概览 KPI ＋ 按天 / 按小时序列 ＋ 首响直方图。数据库算完只送数字，
+ * **行数不随窗口变大**。
+ *
+ * 直方图的桶边界随请求发上去（`RESPONSE_BIN_EDGES`）—— 后端不自带一份，
+ * 自带的那份会在这里改了之后继续沉默地按老边界分。
+ */
+export const fetchSummary = (f: QueryFilters): Promise<SummaryRow> =>
+  get("/summary", summarySchema, {
+    ...params(f),
+    buckets: RESPONSE_BIN_EDGES.join(","),
+  });
+
+/**
+ * 分类汇总。不给 `groups` 就按 `type_id` 分组（二级）；
+ * 给了就按分组下标分（一级），**下标顺序必须与调用方自己的父类顺序一致**。
+ *
+ * ⚠️ 一级的分位数只能这样拿 —— 分位数不可加，把几个二级的 p50 合起来是错的。
+ */
+export const fetchCategories = (
+  f: QueryFilters,
+  groups?: readonly (readonly string[])[],
+): Promise<CategoryAgg[]> =>
+  get("/categories", categoryAggListSchema, {
+    ...params(f),
+    ...(groups?.length ? { groups: groups.map((g) => g.join("|")).join(",") } : {}),
+  });
+
+/**
+ * 按群一行，最多「群数」行。`groups` 只决定 `topGroups` 按什么分类聚 ——
+ * 和 `/api/categories` 是同一套父类分组，后端一样不 join 词表。
+ */
+export const fetchRoomAggs = (
+  f: QueryFilters,
+  groups?: readonly (readonly string[])[],
+): Promise<RoomAgg[]> =>
+  get("/rooms", roomAggListSchema, {
+    ...params(f),
+    ...(groups?.length ? { groups: groups.map((g) => g.join("|")).join(",") } : {}),
+  });
+
+/** 按客服一行，最多「客服数」行。 */
+export const fetchAgentAggs = (f: QueryFilters): Promise<AgentAgg[]> =>
+  get("/agents", agentAggListSchema, params(f));
+
+/** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按归属日。 */
+export interface EventSorting {
+  sort?: string | null;
+  dir?: "asc" | "desc" | null;
+}
+
+/**
+ * 事件明细的一页 —— **行、总数、页数、截断标志一起回来**。
+ *
+ * 服务端延迟关联翻页，`page` 1~200、`pageSize` 1~100，越界 400；
+ * 页码在护栏之内但越过实际页数时返回**空数组**，不是错误。
+ *
+ * **排序也在服务端**：白名单之外的键那边直接 400，不静默退回默认序。
+ */
+export const fetchEventsPage = (
+  f: QueryFilters,
+  page: number,
+  pageSize: number,
+  sorting: EventSorting = {},
+): Promise<EventsPage> =>
+  get("/events", eventsPageSchema, {
+    ...params(f),
+    page: String(page),
+    page_size: String(pageSize),
+    ...(sorting.sort ? { sort: sorting.sort, dir: sorting.dir ?? "asc" } : {}),
+  });
+
+/** 消息原文。抽取时落在 b_merchant_group_event.source_messages，与事件同寿；410 = 该事件早于原文留存。 */
 export const fetchMessages = (eventId: number): Promise<MessageRow[]> =>
   get(`/event/${encodeURIComponent(String(eventId))}/messages`, messageListSchema);
 

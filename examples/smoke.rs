@@ -9,9 +9,9 @@
 //! 接的是**生产的 `LiveModel`**，不是另开一条路径 —— 否则验的就不是要跑的东西。
 //! 不连 MySQL、不写任何表。
 use chat2events_rs::{
-    config, extract,
-    ingest::{Message, Role},
-    llm::Llm,
+    boot::Boot,
+    stage::extract,
+    stage::ingest::{Message, Role},
 };
 use chrono::NaiveDate;
 use std::collections::BTreeSet;
@@ -28,6 +28,7 @@ fn msg(i: usize, at: (u32, u32, u32), role: Role, who: &str, text: &str) -> Mess
         sender_id: who.into(),
         official_user_id: None,
         sender_role: role,
+        msg_type: Some("TEXT".into()),
         text: text.into(),
         reply_to: None,
     }
@@ -35,10 +36,10 @@ fn msg(i: usize, at: (u32, u32, u32), role: Role, who: &str, text: &str) -> Mess
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (cfg, secrets) = config::load_from_dir(&config::dir_from_args());
-    config::init_logging(&cfg.log);
-    // 冒烟只打 ③ 抽取那条线。
-    let llm = Llm::new(&cfg.llm, &cfg.llm.extract, secrets.llm.api_key)?;
+    let b = Boot::from_args();
+    let cfg = &b.config;
+    // 冒烟只打 ③ 抽取那条线 —— 不建打标那队，所以不走 `llms()`。
+    let llm = b.extract_llm()?;
     let model = extract::LiveModel::new(llm);
 
     let msgs = vec![

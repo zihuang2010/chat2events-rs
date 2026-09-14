@@ -3,29 +3,37 @@
 从企业微信会话存档的群聊日志中抽取**结构化业务事件**，产出群 / 客服维度指标，落库 MySQL。
 
 不是聊天机器人，不是问答系统。**T+2 跑批，跳过当天和昨天，跑完即退出，没有常驻服务。**
-**webUI 是唯一旁路，且只读** —— 只从 MySQL 和 ① 取数，不写表、不调模型，跑批不知道它存在。
+**webUI 是唯一旁路，且只读** —— **只从 MySQL 取数**（原文下钻读 `source_messages` 展示列，
+不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
 
 ## 七个阶段
 
 `OSS → mirror → ingest → extract/assemble → 保存事实 → channel → classify → 更新标签与分类指标 → webUI(只读)`
 
+**六个阶段模块全在 `src/stage/` 下**，三个进程编排在 `src/process/`，只读旁路 `src/web/`，
+内核（`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）留 crate 根 ——
+四类东西写在路径上，不靠注释区分。判据见 `src/lib.rs` 顶注。
+
 | # | 阶段 | 模块 | 端口 | 出口类型 |
 |---|---|---|---|---|
-| ① | 摄取 | `mirror/` ＋ `ingest/` | 无（契约是 `ingest/mod.rs` 的 `//!`） | `Message` |
+| ① | 摄取 | `stage/mirror/` ＋ `stage/ingest/` | 无（契约是 `ingest/mod.rs` 的 `//!`） | `Message` |
 | ② | 会话 | 同 ①，**不独立成模块**（分组必须下推给源） | `read_room()` | `Conversation` |
-| ③ | 抽取 | `extract/` | `SegmentModel` —— 2 个适配器 = **真**接缝 | `EventDraft` |
-| ④ | 装配 | `extract/assemble.rs` | **无，且不该有**（溯源守卫） | `Event`（只有事实列） |
-| ⑤ | 分类 | `classify/` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
-| ⑥ | 指标 | `metrics/` | 无（纯函数） | 指标行 |
-| ⑦ | 落库 | `store/` | 无（已排除，MySQL 是唯一目标） | — |
+| ③ | 抽取 | `stage/extract/` | `SegmentModel` —— 2 个适配器 = **真**接缝 | `EventDraft` |
+| ④ | 装配 | `stage/extract/assemble.rs` | **无，且不该有**（溯源守卫） | `Event`（只有事实列） |
+| ⑤ | 分类 | `stage/classify/` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
+| ⑥ | 指标 | `stage/metrics.rs` | 无（纯函数） | 指标行 |
+| ⑦ | 落库 | `stage/store/` | 无（已排除，MySQL 是唯一目标） | — |
 
 **端口判据：一个适配器 = 假想接缝，两个 = 真接缝。** 逐个论证 → `docs/architecture.md`。
 
-`daily/` 是把七阶段串起来的**编排**，不是阶段；`main.rs` 只读配置、起日志、建资源、调 `daily::run`。
+`process/daily/` 是把七阶段串起来的**编排**，不是阶段；`main.rs` 只做两件事：
+`boot::Boot` 起进程、调 `process::daily::run`。
 另有两个**人工触发**进程，都不写 `b_merchant_group_event`、不参与跑批：
-`taxonomy/`（**词表由人手写** → `review` 试打 → `emit-sql` → 人工执行；机器归纳两条路都已放弃）·
-`recompute.rs`（升版重打标，只写标注列）。
-入口在 `examples/`，**编排住在 lib 里**。
+`process/taxonomy/`（**词表由人手写** → `review` 试打 → `emit-sql` → 人工执行；机器归纳两条路都已放弃）·
+`process/recompute.rs`（升版重打标，只写标注列）。
+入口在 `src/bin/`（写生产库的运维入口，随 release 发布）；`examples/` 只剩
+`dry` / `smoke` / `tzcheck` 三个不写库的诊断工具。**编排住在 lib 里**，
+入口只负责 `boot::Boot` 起进程再调它 —— `Boot::llms()` 建两队模型时一并打启动日志。
 
 ## 文档地图
 
@@ -62,7 +70,7 @@
 - **按群控制内存** —— 读取下推 DuckDB；抽取由 `ingest.room_concurrency` 限制群数。有界 channel 只传企业、群和事件数；打标按群查库，群数和全局批次名额由 `classify.concurrency` 限制。
 - **抽取段串行、打标批次并行** —— 抽取后一段读取前一段便签；模型吃不下才对半切。打标批次之间无便签依赖，最多 50 条摘要一批，跨群共享并发名额。
 - **保存与打标独立提交** —— 先保存事件，再发送群任务；抽取收尾后排空打标队列。标签未完成是 NULL，不能写成 `__untyped__`。内存 channel 不承诺跨重启恢复。
-- **人工补标恢复** —— `examples/recover.rs` 从群日状态补齐未完成分类（含零事件），保留已有标签与冻结事实；自动调度仍不跨重启恢复。首次缺失标签的补齐与词表升版重打是两种操作。
+- **人工补标恢复** —— `src/bin/recover.rs` 从群日状态补齐未完成分类（含零事件），保留已有标签与冻结事实；自动调度仍不跨重启恢复。首次缺失标签的补齐与词表升版重打是两种操作。
 - **事实新鲜度只认事实凭据** —— `fact_completed_time` 仅由成功保存事实推进；标签更新不能恢复旧事实新鲜度。升级后的未知历史凭据保持 NULL。
 - **代码风格交给 rustfmt** —— 没有 `rustfmt.toml`，**不加是有意的**。提交前 `cargo fmt --check` 必须干净。
 - **抽取实现必须可替换** —— 模型名 / API key / prompt 都是 ③ 的内部细节，换模型只换一个 `SegmentModel` 适配器。
@@ -84,12 +92,18 @@
 
 验证命令与适用范围见 `docs/deploy.md` 的「上线前的检查」：默认测试覆盖离线逻辑与本地 HTTP 模型协议；`mysql_` 测试在隔离 MySQL 上验证事务和只读取数，CI 显式执行。
 真实 OSS 测试仍需手动启用；离线协议通过不能代替真实模型业务质量验收。
+
+⚠️ **指标口径有两份实现**（后端 SQL ＋ 前端 `domain/metrics`，后者是模拟数据源与视图测试的对照物），
+由 `webui/src/domain/parity-vectors.json` 的**金标向量**钉住：Rust 侧
+`mysql_summary_matches_the_frontend_definitions` 跑真 SQL，前端 `api/mock/parity.test.ts`
+跑 `mockSummary`，各自断言等于同一组 `expected`。**改口径必须同时改两边并更新金标**——
+分家是静默的，页面照样显示一个看起来合理的数字。
 ⚠️ **样本会被就地替换**，文档里带条数的实测数字必须注明是哪一版样本量的。
 
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（915 节点 / 3447 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已建索引（1895 节点 / 8309 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。

@@ -89,7 +89,7 @@ export function EventMessageThread({
                 {messages.error instanceof ApiError && messages.error.detail ? (
                   <p>{messages.error.detail}</p>
                 ) : null}
-                <p className="ed-field-note">原文可见范围受保留期限制，事件统计记录仍保留。</p>
+                <p className="ed-field-note">该事件早于原文留存，事件统计记录仍保留。</p>
                 <Button
                   className="ed-retry"
                   icon={<ReloadOutlined />}
@@ -183,9 +183,6 @@ export function EventMessageThread({
                 );
               })}
             </ol>
-            <p className="ed-thread-end">
-              <InfoCircleOutlined aria-hidden="true" /> 解决状态暂无数据来源
-            </p>
           </>
         )}
       </div>

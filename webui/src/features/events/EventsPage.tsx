@@ -1,22 +1,20 @@
 /**
  * 一个分类层级驱动构成、响应对照与每日趋势；下钻保持当前事件集合的边界。
  */
+import { MetricInfo as InsightInfo } from "@/components/Metric";
 import { ArrowRightOutlined, LineChartOutlined, TableOutlined } from "@ant-design/icons";
 import { Segmented, Table, Tabs } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { METRIC } from "@/domain/definitions";
-import { categoryRollup, dailyCounts, type CategoryRow } from "@/domain/metrics";
-import {
-  InsightsLayout,
-  InsightMetrics,
-  InsightSection,
-  InsightInfo,
-} from "@/features/insights/InsightsLayout";
+import { categoryRows, type CategoryRow } from "@/domain/metrics";
+import { useCategories, useSummary } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
+import { InsightsLayout, InsightMetrics } from "@/features/insights/InsightsLayout";
 import { DurationOrNull, PercentOrNull } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
-import { Sparkline } from "@/components/charts/Sparkline";
+import { EventTrends } from "./EventTrends";
 import { formatInt, formatPercent } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi, FilterPatch } from "@/features/filters/useFilters";
@@ -24,27 +22,41 @@ import { msgRollup } from "@/features/overview/overviewMetrics";
 import "./events.css";
 
 export function EventsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
-  const { events, days, cov, agg, taxIndex, dataset } = analytics;
+  const { cov, taxIndex, dataset, parents } = analytics;
   const { filters, hrefWith, reset } = api;
-  const messages = msgRollup(analytics, api);
+  const source = dataset.source;
+  const messages = msgRollup(analytics);
   const [level, setLevel] = useState<"level1" | "level2">("level1");
-  const categories = useMemo(
-    () => ({
-      level1: categoryRollup(events, "level1", taxIndex),
-      level2: categoryRollup(events, "level2", taxIndex),
-    }),
-    [events, taxIndex],
+  const summary = useSummary(source, analytics.q);
+  // ⚠️ **一级和二级是两次请求，不能由一次拆出来** —— 分位数不可加，
+  // 一级的 P50 只能由数据库按父类现算（后端 `read_categories` 的 `groups`）。
+  const level1 = useCategories(
+    source,
+    analytics.q,
+    useMemo(() => parents.map((p) => p.types), [parents]),
   );
-  const rows = categories[level];
+  const level2 = useCategories(source, analytics.q);
+  const total = summary.data?.events ?? 0;
+  const rows = useMemo(
+    () =>
+      level === "level1"
+        ? categoryRows(level1.data ?? [], "level1", taxIndex, parents, total)
+        : categoryRows(level2.data ?? [], "level2", taxIndex, parents, total),
+    [level, level1.data, level2.data, taxIndex, parents, total],
+  );
   const withoutTaxonomy = dataset.meta.taxonomy_version === "v0";
   const unclassifiedInfo = withoutTaxonomy
     ? "尚未建立词表，分类暂不可用；事件总量与首响指标仍可用。"
     : METRIC.unclassified;
-  const unclassified = events.filter((event) => event.level1 === "未归类").length;
-  const knownLevel1 = new Set(dataset.meta.taxonomy.map((type) => type.parent_name));
-  const knownLevel2 = new Set(dataset.meta.taxonomy.map((type) => type.type_id));
-  const appearedLevel1 = categories.level1.filter((row) => knownLevel1.has(row.key)).length;
-  const appearedLevel2 = categories.level2.filter((row) => knownLevel2.has(row.key)).length;
+  // 「未归类」是一个真实的一级分类（`buildTaxonomyIndex` 造的 `__untyped__` 落在它下面），
+  // 所以直接读一级汇总那一行，不再自己数一遍。
+  const unclassified = useMemo(
+    () =>
+      categoryRows(level1.data ?? [], "level1", taxIndex, parents, total).find(
+        (row) => row.label === "未归类",
+      )?.count ?? 0,
+    [level1.data, taxIndex, parents, total],
+  );
   const unrepliedStatus = filters.status === "backlog" ? "backlog" : "unreplied";
 
   const categoryPatch = (row: CategoryRow): FilterPatch =>
@@ -61,20 +73,6 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       },
       "/detail",
     );
-
-  const trends = useMemo(
-    () =>
-      rows.map((row) => ({
-        row,
-        values: dailyCounts(
-          events.filter(
-            (event) => (level === "level1" ? event.level1 : event.event_type) === row.key,
-          ),
-          days,
-        ).map((value, index) => (cov.days.includes(days[index] ?? "") ? null : value)),
-      })),
-    [rows, events, level, days, cov.days],
-  );
 
   const columns: ColumnsType<CategoryRow> = [
     {
@@ -228,6 +226,12 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
     },
   ];
 
+  const failed = [summary, level1, level2].find((query) => query.isError);
+  if (failed?.error)
+    return <ErrorState error={failed.error} onRetry={() => void failed.refetch()} />;
+  if (!summary.data) return <PageSkeleton />;
+  const agg = summary.data;
+
   return (
     <InsightsLayout
       title="事件洞察"
@@ -280,7 +284,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
             value: formatInt(agg.unreplied),
             unit: "起",
             info: METRIC.unreplied,
-            tone: agg.unreplied ? "bad" : undefined,
+            tone: agg.unreplied ? "risk" : undefined,
             note: "占商家事件 " + (formatPercent(agg.unrepliedRate) ?? "—"),
             to: agg.unreplied
               ? hrefWith({ status: unrepliedStatus, focusAgent: null }, "/detail")
@@ -300,133 +304,77 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
           },
         ]}
       />
-      <div className="ev-taxonomy" role="region" aria-label="分类覆盖">
-        <span>
-          已出现 <b>{appearedLevel1}</b> / {knownLevel1.size} 个一级分类
-        </span>
-        <span>
-          <b>{appearedLevel2}</b> / {knownLevel2.size} 个二级分类
-        </span>
-        <span>词表 {dataset.meta.taxonomy_version}</span>
-        <InsightInfo label="分类统计口径" text={METRIC.primaryOnly} />
-      </div>
-      {events.length === 0 ? (
+      {agg.events === 0 ? (
         <EmptyState
           title="当前范围内没有事件"
           description="当前筛选条件下没有事件。抽取失败不代表业务量为零。"
           onReset={reset}
         />
       ) : (
-        <div className="ev-analysis">
-          <InsightSection
-            title="分类分析"
-            subtitle={rows.length + " 项 · 当前筛选范围" + (unclassified ? " · 含未归类" : "")}
-            extra={
-              <Segmented
-                aria-label="分类分析层级"
-                value={level}
-                options={[
-                  { label: "一级分类", value: "level1" },
-                  { label: "二级分类", value: "level2" },
-                ]}
-                onChange={setLevel}
-              />
-            }
-            footer="事件占比以当前事件总数为分母；无响应率以该分类的商家事件数为分母。平台发起事件不进入首响与无响应指标。"
-          >
-            <Tabs
-              animated={false}
-              defaultActiveKey="comparison"
-              items={[
-                {
-                  key: "comparison",
-                  label: "构成与响应",
-                  icon: <TableOutlined aria-hidden="true" />,
-                  children: (
-                    <Table<CategoryRow>
-                      key={level}
-                      className="ev-table"
-                      rowKey="key"
-                      size="small"
-                      columns={columns}
-                      dataSource={rows}
-                      pagination={{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }}
-                      scroll={{ x: 1245 }}
-                    />
-                  ),
-                },
-                {
-                  key: "trends",
-                  label: "每日趋势",
-                  icon: <LineChartOutlined aria-hidden="true" />,
-                  children: (
-                    <div className="ev-trends-view">
-                      <div className="ev-trend-context">
-                        <span>
-                          {days[0]} 至 {days.at(-1)} · {days.length} 天
-                        </span>
-                        <span>各分类独立刻度 · 仅比较走势</span>
-                      </div>
-                      {cov.failed ? (
-                        <p className="ev-trend-gap">抽取失败日留空；区间事件量仅含已抽取记录。</p>
-                      ) : null}
-                      <div className="ev-trends">
-                        {trends.map(({ row, values }) => (
-                          <section
-                            key={row.key}
-                            className="ev-trend"
-                            aria-label={row.label + "每日趋势"}
-                          >
-                            <header>
-                              <Link title={row.label} to={categoryHref(row)}>
-                                {row.label}
-                              </Link>
-                              <b>
-                                {formatInt(row.count)}
-                                <small>起</small>
-                              </b>
-                            </header>
-                            <span className="ev-trend-parent">
-                              {row.parent ?? "一级分类"} · 占比 {formatPercent(row.share)}
-                            </span>
-                            <div
-                              role="img"
-                              aria-label={
-                                row.label +
-                                "每日事件量：" +
-                                values
-                                  .map(
-                                    (value, index) => days[index] + " " + (value ?? "数据不完整"),
-                                  )
-                                  .join("，")
-                              }
-                            >
-                              <Sparkline values={values} />
-                            </div>
-                            <div className="ev-trend-range">
-                              <span>{days[0]?.slice(5)}</span>
-                              <span>{days.at(-1)?.slice(5)}</span>
-                            </div>
-                          </section>
-                        ))}
-                      </div>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          </InsightSection>
-        </div>
+        <section
+          className="ev-analysis ia-section ia-tabbed-section"
+          aria-labelledby="ev-analysis-title"
+        >
+          <Tabs
+            animated={false}
+            defaultActiveKey="comparison"
+            renderTabBar={(props, DefaultTabBar) => (
+              <div className="ia-tabs-toolbar">
+                <h2 className="ia-tabs-heading" id="ev-analysis-title">
+                  分类分析
+                </h2>
+                <DefaultTabBar {...props} />
+                <Segmented
+                  className="ia-tabs-extra"
+                  aria-label="分类分析层级"
+                  value={level}
+                  options={[
+                    { label: "一级分类", value: "level1" },
+                    { label: "二级分类", value: "level2" },
+                  ]}
+                  onChange={setLevel}
+                />
+              </div>
+            )}
+            items={[
+              {
+                key: "comparison",
+                label: "构成与响应",
+                icon: <TableOutlined aria-hidden="true" />,
+                children: (
+                  <Table<CategoryRow>
+                    key={level}
+                    className="ev-table"
+                    rowKey="key"
+                    size="small"
+                    columns={columns}
+                    dataSource={rows}
+                    pagination={{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }}
+                    scroll={{ x: 1245 }}
+                  />
+                ),
+              },
+              {
+                key: "trends",
+                label: "每日趋势",
+                icon: <LineChartOutlined aria-hidden="true" />,
+                children: (
+                  <EventTrends rows={rows} analytics={analytics} categoryHref={categoryHref} />
+                ),
+              },
+            ]}
+          />
+          <p className="od-footnote">
+            事件占比以当前事件总数为分母；无响应率以该分类的商家事件数为分母。平台发起事件不进入首响与无响应指标。
+          </p>
+        </section>
       )}
       <details className="ev-definitions">
         <summary>统计口径与数据边界</summary>
         <dl>
           <div>
             <dt>分类与占比</dt>
-            <dd>
-              {METRIC.primaryOnly}{" "}
-              事件占比的分母为当前筛选范围事件总数；分类覆盖数仅统计当前词表中的已知分类。
-            </dd>
+            <dd>{METRIC.primaryOnly} 事件占比的分母为当前筛选范围事件总数。</dd>
           </div>
           <div>
             <dt>首响与样本</dt>
@@ -443,7 +391,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
           <div>
             <dt>每日趋势</dt>
             <dd>
-              事件按开始日归属，各分类以自身最大值缩放；当前范围内存在抽取失败的日期保留缺口。
+              事件按开始日归属，各分类使用独立的零起点刻度；当前范围内存在抽取失败的日期保留缺口。
               {METRIC.coverage}
             </dd>
           </div>

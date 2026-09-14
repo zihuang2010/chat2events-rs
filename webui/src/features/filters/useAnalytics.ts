@@ -1,26 +1,29 @@
 /**
- * 视图的统一上下文：把「数据集 + 筛选条件」算成各视图直接可用的形态。
- * 每个视图都从这里拿数，所以**筛选结果在图表和表格之间天然一致**，
- * 不存在某张图自己再过滤一遍导致对不上的情况。
+ * 视图的统一上下文：把「群日记录 + 筛选条件」算成各视图直接可用的形态，
+ * 并把 URL 上的筛选条件翻译成**聚合接口认识的那一组参数**。
+ *
+ * ⚠️ **这里不再持有事件明细，也不再现算任何指标。** 指标由 `/api/summary`、
+ * `/api/rooms`、`/api/agents`、`/api/categories` 在数据库里算完只送数字，
+ * 明细由 `/api/events` 一页一页翻。留在这里的只有三样东西：
+ *   1. **群日记录**派生的覆盖度与消息量 —— 只有它答得了「这个格子是真的 0
+ *      还是抽取失败」，聚合接口替代不了；
+ *   2. **标签映射**（群名 / 客服名 / 类型名）—— 词表和名册在前端手上；
+ *   3. **`q`**：所有视图共用的同一组后端筛选参数，于是「图表和表格用的是同一批事件」
+ *      这条保证从前端的一次 `filter()` 搬到了 SQL 的同一个 `WHERE` 上。
  */
 
 import { useMemo } from "react";
 import type { LoadedDataset } from "@/api/source";
-import {
-  aggregate,
-  coverage,
-  groupDayStatus,
-  isBacklog,
-  isMerchant,
-  isOverdue,
-  isUnreplied,
-  type Aggregate,
-  type Coverage,
-  type TaxonomyIndex,
-} from "@/domain/metrics";
-import type { DecoratedEvent } from "@/domain/schemas";
+import type { QueryFilters } from "@/api/client";
+import { coverage, groupDayStatus, type Coverage, type TaxonomyIndex } from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
 import type { Filters } from "./useFilters";
+
+/** 一级分类。**数组下标即 `/api/categories` 的 `groups` 下标**，顺序不能变。 */
+export interface ParentGroup {
+  name: string;
+  types: string[];
+}
 
 export interface Analytics {
   dataset: LoadedDataset;
@@ -28,20 +31,40 @@ export interface Analytics {
   days: string[];
   dayset: ReadonlySet<string>;
   lastDay: string;
-  /** 只按日期窗口筛出来的事件，与其他条件无关 */
-  windowEvents: DecoratedEvent[];
-  /** 应用了全部筛选条件的事件，视图一律用它 */
-  events: DecoratedEvent[];
-  agg: Aggregate;
+  /** 窗口内每天的群日记录，按天求和后给消息量图用 */
+  cells: readonly LoadedDataset["groupDaily"][number][];
   cov: Coverage;
   slaSec: number;
   query: string;
   aliasIsAuthoritative: boolean;
+  parents: readonly ParentGroup[];
+  /** 传给每个聚合接口的同一组筛选参数 */
+  q: QueryFilters;
   roomLabel: (roomId: string) => string;
   roomAliasIsAuthoritative: (roomId: string) => boolean;
   agentLabel: (agentId: string) => string;
   typeLabel: (typeId: string) => string;
 }
+
+/** 词表按父类分组。**排序固定**（按父类名），否则 `groups` 下标会在两次请求间漂移。 */
+export function parentGroups(dataset: LoadedDataset): ParentGroup[] {
+  const byParent = new Map<string, string[]>();
+  for (const type of dataset.meta.taxonomy) {
+    const bucket = byParent.get(type.parent_name);
+    if (bucket) bucket.push(type.type_id);
+    else byParent.set(type.parent_name, [type.type_id]);
+  }
+  // ⚠️ **「未归类」不在这里**：它不是词表里的一个父类，而是「以上都不是」——
+  // `__untyped__` 加上词表外的历史编码，后者根本列不出名单。聚合接口把它们
+  // 归进**下标等于组数**的兜底桶（后端 `read_categories` 那个 `ELSE`），
+  // 由 `categoryRows` 解释成「未归类」。
+  return [...byParent]
+    .map(([name, types]) => ({ name, types }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh"));
+}
+
+/** 兜底桶的下标：等于真实父类的个数。 */
+export const UNCLASSIFIED = "未归类";
 
 export function useAnalytics(
   dataset: LoadedDataset,
@@ -79,41 +102,33 @@ export function useAnalytics(
     const agentLabel = (id: string) => agentAlias.get(id) ?? id;
     const typeLabel = (id: string) => dataset.taxIndex.get(id)?.name ?? id;
 
-    const query = filters.query.trim().toLowerCase();
-    const matches = (e: DecoratedEvent, boundary: string): boolean => {
-      if (filters.room && e.roomid !== filters.room) return false;
-      if (filters.agent && !e.agents.includes(filters.agent)) return false;
-      if (filters.level1 && e.level1 !== filters.level1) return false;
-      if (filters.level2 && e.event_type !== filters.level2) return false;
-      if (filters.overdueOnly !== null && isOverdue(e, filters.slaSec) !== filters.overdueOnly)
-        return false;
-      if (filters.status === "unreplied" && !isUnreplied(e)) return false;
-      if (filters.status === "replied" && !(isMerchant(e) && e.first_agent_reply_time !== null))
-        return false;
-      if (filters.status === "push" && isMerchant(e)) return false;
-      if (filters.status === "backlog" && !isBacklog(e, boundary)) return false;
-      if (query) {
-        const hay =
-          `${e.summary} ${roomLabel(e.roomid)} ${e.roomid} ${e.level1} ${e.level2} ${e.agents
-            .map(agentLabel)
-            .join(" ")}`.toLowerCase();
-        if (!hay.includes(query)) return false;
-      }
-      return true;
-    };
+    const parents = parentGroups(dataset);
+    // 父类只是词表里的一个分组，SQL 不认识它 —— 展开成 `types=a,b,c` 再下推，
+    // 后端因此不用 join 词表，也就不会多出一处能和前端打架的口径。
+    //
+    // ⚠️ **展开不出东西时用父类名本身占位**：那是个必然不存在的 `type_id`，
+    // 于是结果为空。留空数组的话 `types` 根本不会进 URL，筛选会**静默失效成「全部」**。
+    const known = parents.flatMap((parent) => parent.types);
+    const types = filters.level2
+      ? [filters.level2]
+      : filters.level1 && filters.level1 !== UNCLASSIFIED
+        ? (parents.find((p) => p.name === filters.level1)?.types ?? [filters.level1])
+        : undefined;
+    // 「未归类」是**排除式**的：词表外的编码没有名单，只能反着说。
+    const typesExclude = !filters.level2 && filters.level1 === UNCLASSIFIED ? known : undefined;
 
-    const knownByRoom = new Map<string, Set<string>>();
-    for (const cell of dataset.groupDaily) {
-      if (groupDayStatus(cell) !== "ok") continue;
-      const known = knownByRoom.get(cell.roomid) ?? new Set<string>();
-      known.add(cell.dt);
-      knownByRoom.set(cell.roomid, known);
-    }
-    // 失败重跑保留旧事实供核实，但这些事实不能作为本轮已知成功的指标。
-    const windowEvents = dataset.events.filter(
-      (e) => dayset.has(e.occurred_on) && knownByRoom.get(e.roomid)?.has(e.occurred_on),
-    );
-    const events = windowEvents.filter((e) => matches(e, lastDay));
+    const q: QueryFilters = {
+      from: days[0] ?? from,
+      to: lastDay,
+      room: filters.room,
+      agent: filters.agent,
+      ...(types ? { types } : {}),
+      ...(typesExclude ? { typesExclude } : {}),
+      status: filters.status,
+      overdueOnly: filters.overdueOnly,
+      q: filters.query.trim() || null,
+      slaSec: filters.slaSec,
+    };
 
     return {
       dataset,
@@ -121,17 +136,31 @@ export function useAnalytics(
       days,
       dayset,
       lastDay,
-      windowEvents,
-      events,
-      agg: aggregate(events, filters.slaSec, lastDay),
+      cells: dataset.groupDaily.filter(
+        (row) => dayset.has(row.dt) && (!filters.room || row.roomid === filters.room),
+      ),
       cov: coverage(dataset.groupDaily, dayset, filters.room, dataset.meta.rooms),
       slaSec: filters.slaSec,
-      query,
+      query: filters.query.trim().toLowerCase(),
       aliasIsAuthoritative: dataset.meta.alias_is_authoritative,
+      parents,
+      q,
       roomLabel,
       roomAliasIsAuthoritative,
       agentLabel,
       typeLabel,
     };
   }, [dataset, filters, windowDays]);
+}
+
+/** 窗口内某一天是否「本轮已知成功」。热力图与折线用它决定哪些格子该断成缺口。 */
+export function knownDays(analytics: Analytics): ReadonlySet<string> {
+  const byDay = new Map<string, { total: number; ok: number }>();
+  for (const cell of analytics.cells) {
+    const slot = byDay.get(cell.dt) ?? { total: 0, ok: 0 };
+    slot.total += 1;
+    if (groupDayStatus(cell) === "ok") slot.ok += 1;
+    byDay.set(cell.dt, slot);
+  }
+  return new Set([...byDay].filter(([, s]) => s.ok > 0).map(([day]) => day));
 }

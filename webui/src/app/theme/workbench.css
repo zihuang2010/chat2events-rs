@@ -13,12 +13,6 @@
   font-family: inherit;
 }
 
-/* 筛选条和上下文条沿用 D 工作台令牌。 */
-.pv .c2e-contextbar {
-  max-width: 1600px;
-  padding: 14px 28px 0;
-}
-
 .pv .ant-table-cell-align-right {
   font-family: var(--pv-font-mono);
   font-variant-numeric: tabular-nums;

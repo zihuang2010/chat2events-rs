@@ -15,15 +15,15 @@
 //! cargo run --example tzcheck
 //! ```
 
-use chat2events_rs::{Result, config};
+use chat2events_rs::{Result, boot::Boot};
 use sqlx::Row;
 
 const TABLE: &str = "b_merchant_group_event";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (cfg, secrets) = config::load_from_dir(&config::dir_from_args());
-    let pool = config::mysql_pool(&cfg.mysql, &secrets.mysql.url).await?;
+    let b = Boot::from_args();
+    let pool = b.pool().await?;
 
     // ① 会话/服务器时区，以及 MySQL 自己的两个「现在」。
     //    两者差 8 小时 = 服务器在 UTC，`CURRENT_TIMESTAMP` 默认列会比北京时间早 8 小时。
@@ -70,12 +70,13 @@ async fn main() -> Result<()> {
         println!("  {name:<24} {ty}{note}");
     }
 
-    // ③ 四张表各有多少行 —— 「时间不对」之前先确认「有没有行」。
+    // ③ 五张表各有多少行 —— 「时间不对」之前先确认「有没有行」。
     println!("\n── 各表行数 ──");
     for t in [
         "b_merchant_group_event",
         "b_merchant_group_metric_daily",
         "b_merchant_group_agent_metric_daily",
+        "b_merchant_group_agent_msg_daily",
         "b_merchant_group_run_failure",
     ] {
         let n: i64 = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {t}")))

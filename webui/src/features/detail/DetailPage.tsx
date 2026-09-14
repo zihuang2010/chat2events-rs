@@ -1,11 +1,19 @@
-/** 明细追溯：全字段表格、真分页、点行开抽屉看消息链路与统计依据。 */
+/**
+ * 明细追溯：全字段表格、**服务端分页与服务端排序**、点行开抽屉看消息链路与统计依据。
+ *
+ * ⚠️ **排序在服务端，而且只有几列能排**（`EVENT_SORTS`，与后端白名单同一份）。
+ * 在浏览器里排只会把**当前这一页**重排一遍，而表头看起来像排了全部 ——
+ * 那种错没人看得出来，所以不在索引里的列宁可不给排，也不给一个假的。
+ */
 
 import { Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useState } from "react";
-import { METRIC } from "@/domain/definitions";
-import { statusOf } from "@/domain/metrics";
+import { useMemo } from "react";
+import { EVENT_SORTS, MAX_PAGE, METRIC, PAGE_SIZE_MAX, type EventSort } from "@/domain/definitions";
+import { decorate, statusOf } from "@/domain/metrics";
 import type { DecoratedEvent } from "@/domain/schemas";
+import { useEventsPage, useSummary } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
 import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
 import { formatInt, formatPercent } from "@/lib/format";
 import { DataGap, DurationOrNull, NullValue, StatusTag } from "@/components/primitives";
@@ -16,45 +24,48 @@ import { EventDrawer } from "./EventDrawer";
 import "./detail.css";
 
 export function DetailPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
-  const { events, agg, roomLabel, agentLabel, slaSec } = analytics;
+  const { roomLabel, agentLabel, slaSec } = analytics;
   const { filters, patch, reset } = api;
-  const sourceMessages = useMemo(
-    () =>
-      new Set(
-        events.flatMap((event) =>
-          event.source_msg_ids.map((id) => JSON.stringify([event.corpid, event.roomid, id])),
-        ),
-      ).size,
-    [events],
+  const source = analytics.dataset.source;
+  const summary = useSummary(source, analytics.q);
+  // 翻页护栏与后端 `Paging::window` 同一组数：越界那边是 **400 不是截断**，先在这边拦住。
+  // ⚠️ 这两个 `Math.min` 夹的是**请求参数**，不是页数 —— 页数由后端算好（`pages`），
+  // 这里一个算术都不做。手改 URL 到 `?page=999` 因此看到的是空表（越过实际页数的空一页），
+  // 不是一屏 `ErrorState`：一次误操作不该长得像故障。
+  const pageSize = Math.min(PAGE_SIZE_MAX, filters.pageSize);
+  const sorting = useMemo(
+    () => ({ sort: filters.sort, dir: filters.dir }),
+    [filters.sort, filters.dir],
   );
-  const [sort, setSort] = useState<{ key: string; order: "ascend" | "descend" | null }>({
-    key: "first_msg_time",
-    order: "descend",
-  });
-  const pageSize = Math.min(200, filters.pageSize);
-  const currentPage = Math.min(filters.page, Math.max(1, Math.ceil(events.length / pageSize)));
+  const currentPage = Math.min(filters.page, MAX_PAGE);
+  const pageQuery = useEventsPage(source, analytics.q, currentPage, pageSize, sorting);
+  // ⚠️ **总数、页数都来自 `/api/events` 自己**，不再借 `/api/summary` 的事件量。
+  // 那个数只算**已知成功群日**上的事件，而明细表翻的是窗口内全部事件 ——
+  // 窗口里一有抽取失败的群日，两个数就不等，取较小值那步把人夹在更早的页码上，
+  // 尾部的行永远翻不到，而页面看起来一切正常。页数由后端夹好护栏，这里不做算术。
+  const page = pageQuery.data;
+  const total = page?.total ?? 0;
+  const events = useMemo(
+    () => decorate(page?.rows ?? [], analytics.taxIndex),
+    [page, analytics.taxIndex],
+  );
+  // 抽屉里的事件**按 id 单独取**，不在当前页里找：别人把 ?drawer=123 发给你，
+  // 哪怕它不在这一页、不在你的筛选范围内，也必须能打开（`EventDrawer` 自己会拉）。
+  const openedEvent = events.find((e) => e.id === filters.drawer);
 
-  // 抽屉里的事件在**全量数据**里找，不在筛选结果里找。
-  // 可追溯的链接不该被筛选条件吞掉：别人把 ?drawer=123 发给你，
-  // 哪怕它不在你当前的筛选范围内，也必须能打开，只是要说明这一点。
-  const openedEvent = useMemo(
-    () =>
-      filters.drawer === null
-        ? undefined
-        : analytics.dataset.events.find((e) => e.id === filters.drawer),
-    [analytics.dataset.events, filters.drawer],
-  );
-  const openedOutsideFilter =
-    openedEvent !== undefined && !events.some((e) => e.id === openedEvent.id);
+  // antd 的三态排序（升→降→无）直接映射成 URL 上的 sort/dir。
+  const sortOrderOf = (key: EventSort) =>
+    filters.sort === key ? (filters.dir === "desc" ? "descend" : "ascend") : null;
 
   const columns: ColumnsType<DecoratedEvent> = [
     {
       title: "开始时间",
       dataIndex: "first_msg_time",
       key: "first_msg_time",
+      sorter: true,
+      sortOrder: sortOrderOf("time"),
       fixed: "left",
       width: 112,
-      sorter: (a, b) => a.first_msg_time.localeCompare(b.first_msg_time),
       render: (v: string) => (
         <span className="c2e-mono" title={`${v} UTC+8`}>
           {v.slice(5, 16)}
@@ -66,7 +77,6 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       dataIndex: "summary",
       key: "summary",
       width: 340,
-      sorter: (a, b) => a.summary.localeCompare(b.summary, "zh"),
       render: (_, e) => (
         <div className="ia-trace-summary">
           <span className="ia-trace-id" title={`事件 #${e.id}`}>
@@ -106,7 +116,6 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       dataIndex: "level1",
       key: "level1",
       width: 104,
-      sorter: (a, b) => a.level1.localeCompare(b.level1, "zh"),
       render: (v: string) => (
         <span className="ia-trace-category ia-trace-ellipsis" title={v}>
           {v}
@@ -118,14 +127,14 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       dataIndex: "level2",
       key: "level2",
       width: 112,
-      sorter: (a, b) => a.level2.localeCompare(b.level2, "zh"),
     },
     {
       title: "群",
       dataIndex: "roomid",
       key: "roomid",
+      sorter: true,
+      sortOrder: sortOrderOf("room"),
       width: 144,
-      sorter: (a, b) => roomLabel(a.roomid).localeCompare(roomLabel(b.roomid), "zh"),
       render: (v: string) => (
         <span className="ia-trace-ellipsis" title={roomLabel(v)}>
           {roomLabel(v)}
@@ -150,9 +159,9 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       title: "首响时间",
       dataIndex: "first_agent_reply_time",
       key: "first_agent_reply_time",
+      sorter: true,
+      sortOrder: sortOrderOf("reply"),
       width: 112,
-      sorter: (a, b) =>
-        (a.first_agent_reply_time ?? "").localeCompare(b.first_agent_reply_time ?? ""),
       render: (v: string | null) =>
         v === null ? (
           <NullValue reason="NULL：无响应，不是 0 秒" />
@@ -164,9 +173,10 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       title: <Tooltip title={METRIC.p50}>首响耗时</Tooltip>,
       dataIndex: "firstReplySec",
       key: "firstReplySec",
+      sorter: true,
+      sortOrder: sortOrderOf("wait"),
       align: "right",
       width: 104,
-      sorter: (a, b) => (a.firstReplySec ?? Infinity) - (b.firstReplySec ?? Infinity),
       render: (v: number | null, event) => (
         <strong className="ia-trace-duration" data-status={statusOf(event, slaSec)}>
           {v === null ? "未响应" : <DurationOrNull value={v} />}
@@ -180,23 +190,68 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       render: (_, e) => <StatusTag status={statusOf(e, slaSec)} />,
     },
     {
-      title: "已解决",
-      key: "resolved",
-      width: 88,
-      render: () => <DataGap />,
+      title: <Tooltip title={METRIC.tail}>尾部</Tooltip>,
+      dataIndex: "last_msg_role",
+      key: "last_msg_role",
+      width: 104,
+      render: (v: "EXTERNAL" | "INTERNAL" | null, e) =>
+        v === null ? (
+          <DataGap detail="加这一列之前抽取的历史行，冻结区不可回填。" />
+        ) : (
+          <span title={`末条来源消息 ${e.last_msg_time} UTC+8`}>
+            {v === "EXTERNAL" ? "商家最后" : "客服收尾"}
+          </span>
+        ),
+    },
+    {
+      title: <Tooltip title={METRIC.followupWait}>后续等待</Tooltip>,
+      dataIndex: "followup_wait_max_sec",
+      key: "followup_wait_max_sec",
+      width: 120,
+      render: (v: number | null) =>
+        v === null ? (
+          <DataGap detail="加这一列之前抽取的历史行，冻结区不可回填。" />
+        ) : v === 0 ? (
+          // 0 是算出来的事实，不是缺数据 —— 显示成「0 秒」会让人以为秒回。
+          <span title="首响之后没有第二轮">无后续轮次</span>
+        ) : (
+          <span title="最长的一次「商家说话 → 客服接话」，只算 08:30–21:00 之内的时间">
+            <DurationOrNull value={v} />
+          </span>
+        ),
     },
   ];
 
-  const comparator = columns.find((column) => column.key === sort.key)?.sorter;
-  const ordered =
-    sort.order && typeof comparator === "function"
-      ? [...events].sort(
-          (a, b) => comparator(a, b, sort.order) * (sort.order === "ascend" ? 1 : -1),
-        )
-      : events;
-  const openedIndex = openedEvent ? ordered.findIndex((event) => event.id === openedEvent.id) : -1;
-  const previous = openedIndex > 0 ? ordered[openedIndex - 1] : undefined;
-  const next = openedIndex >= 0 ? ordered[openedIndex + 1] : undefined;
+  // 上一条 / 下一条**要能跨页**：抽屉是用来连续核对的，走到页尾就断掉等于把这件事废掉。
+  // 相邻页各多取一次 —— 行数是一页，缓存也顺带把翻页预热了。
+  const openedIndex = openedEvent ? events.findIndex((event) => event.id === openedEvent.id) : -1;
+  const previous = openedIndex > 0 ? events[openedIndex - 1] : undefined;
+  const next = openedIndex >= 0 ? events[openedIndex + 1] : undefined;
+  const prevPage = useEventsPage(
+    currentPage > 1 ? source : undefined,
+    analytics.q,
+    currentPage - 1,
+    pageSize,
+    sorting,
+  );
+  const nextPage = useEventsPage(
+    currentPage < (page?.pages ?? 0) ? source : undefined,
+    analytics.q,
+    currentPage + 1,
+    pageSize,
+    sorting,
+  );
+  const previousAcross =
+    previous ?? (openedIndex === 0 ? prevPage.data?.rows[pageSize - 1] : undefined);
+  const nextAcross =
+    next ?? (openedIndex === events.length - 1 ? nextPage.data?.rows[0] : undefined);
+
+  if (summary.isError)
+    return <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />;
+  if (pageQuery.isError)
+    return <ErrorState error={pageQuery.error} onRetry={() => void pageQuery.refetch()} />;
+  if (!summary.data || !page) return <PageSkeleton />;
+  const agg = summary.data;
 
   return (
     <InsightsLayout
@@ -219,7 +274,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
           {
             key: "sourceMessages",
             label: "来源消息数",
-            value: formatInt(sourceMessages),
+            value: formatInt(agg.sourceMessages),
             unit: "条",
             info: METRIC.sourceMessages,
             note: "当前匹配事件 · 按消息去重",
@@ -245,7 +300,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             label: "无响应",
             value: formatInt(agg.unreplied),
             unit: "起",
-            tone: agg.unreplied ? "bad" : undefined,
+            tone: agg.unreplied ? "risk" : undefined,
             info: METRIC.unreplied,
             note: `无响应率 ${formatPercent(agg.unrepliedRate) ?? "—"}`,
           },
@@ -254,7 +309,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             label: "超时事件",
             value: formatInt(agg.overdue),
             unit: "起",
-            tone: agg.overdue ? "mid" : undefined,
+            tone: agg.overdue ? "warn" : undefined,
             info: METRIC.overdue,
             note: `超时率 ${formatPercent(agg.overdueRate) ?? "—"}`,
           },
@@ -263,9 +318,15 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       <InsightSection
         title="事件明细"
         info="一行是一个事件，可能由多条消息组成。首响耗时是 first_agent_reply_time 减 first_msg_time。平台发起的事件首响恒 0 秒，不进任何首响指标。"
-        footer="首响按自然时间计算；平台发起事件不计入首响指标。已解决状态暂无数据来源。"
+        footer={
+          // ⚠️ 被翻页护栏夹过时要说一句**能让人知道该怎么做**的话 ——
+          // 否则「只能翻到这里」看起来就是「数据到头了」，而那两件事差得很远。
+          page.truncated
+            ? `结果超过可翻页的范围，只能翻到第 ${page.pages} 页（共 ${total} 起）；请缩小日期范围或加筛选。首响按工作时段 08:30–21:00 计算，时段外的等待不计；平台发起事件不计入首响指标。`
+            : "首响按工作时段 08:30–21:00 计算，时段外的等待不计；平台发起事件不计入首响指标。"
+        }
       >
-        {events.length === 0 ? (
+        {total === 0 ? (
           <EmptyState
             title="没有匹配的事件"
             description="当前筛选条件下没有事件。抽取失败不代表业务量为零。"
@@ -277,28 +338,33 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             size="small"
             tableLayout="fixed"
             rowKey="id"
-            columns={columns.map((column) => ({
-              ...column,
-              ellipsis: true,
-              sortOrder: column.key === sort.key ? sort.order : null,
-            }))}
+            columns={columns.map((column) => ({ ...column, ellipsis: true }))}
+            onChange={(_, __, sorter) => {
+              const picked = Array.isArray(sorter) ? sorter[0] : sorter;
+              const key = String(picked?.columnKey ?? "");
+              const column = (Object.keys(EVENT_SORTS) as EventSort[]).find(
+                (name) => EVENT_SORTS[name] === key,
+              );
+              // 取消排序（antd 的第三态）回到默认的归属日序，不是「保持上一列」。
+              patch(
+                picked?.order && column
+                  ? { sort: column, dir: picked.order === "descend" ? "desc" : "asc", page: 1 }
+                  : { sort: null, dir: null, page: 1 },
+              );
+            }}
             dataSource={events}
+            loading={pageQuery.isFetching}
             scroll={{ x: 1464 }}
             sticky
-            onChange={(_, __, sorter) => {
-              const selected = Array.isArray(sorter) ? sorter[0] : sorter;
-              setSort({
-                key: String(selected?.columnKey ?? "first_msg_time"),
-                order: selected?.order ?? null,
-              });
-            }}
             pagination={{
               current: currentPage,
               pageSize,
-              total: events.length,
+              // 总数来自**这一页自己那条响应**，与表格必然同集合。
+              total,
               showSizeChanger: true,
-              pageSizeOptions: [20, 50, 100, 200],
-              showTotal: (total, range) => `${range[0]} - ${range[1]} / 共 ${total} 起`,
+              // 上限跟后端的 `PAGE_SIZE_MAX` 走，200 那一档会被那边 400 掉。
+              pageSizeOptions: [20, 50, 100],
+              showTotal: (n, range) => `${range[0]} - ${range[1]} / 共 ${n} 起`,
               onChange: (page, size) =>
                 patch({ page: size === pageSize ? page : 1, pageSize: size }),
             }}
@@ -313,19 +379,25 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
 
       <EventDrawer
         event={openedEvent}
-        missingId={filters.drawer !== null && openedEvent === undefined ? filters.drawer : null}
-        outsideFilter={openedOutsideFilter}
+        missingId={filters.drawer}
         analytics={analytics}
-        position={openedIndex >= 0 ? `${openedIndex + 1} / ${ordered.length}` : undefined}
+        position={
+          openedIndex >= 0
+            ? `${(currentPage - 1) * pageSize + openedIndex + 1} / ${total}`
+            : undefined
+        }
         onPrevious={
-          previous
+          previousAcross
             ? () =>
-                patch({ drawer: previous.id, page: Math.floor((openedIndex - 1) / pageSize) + 1 })
+                patch({
+                  drawer: previousAcross.id,
+                  page: previous ? currentPage : currentPage - 1,
+                })
             : undefined
         }
         onNext={
-          next
-            ? () => patch({ drawer: next.id, page: Math.floor((openedIndex + 1) / pageSize) + 1 })
+          nextAcross
+            ? () => patch({ drawer: nextAcross.id, page: next ? currentPage : currentPage + 1 })
             : undefined
         }
         onClose={() => patch({ drawer: null, page: currentPage })}

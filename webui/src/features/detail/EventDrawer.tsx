@@ -1,5 +1,6 @@
 import { LeftOutlined, RightOutlined } from "@ant-design/icons";
 import { Alert, Button, Drawer, Skeleton, Tabs, Tag } from "antd";
+import { ApiError } from "@/api/client";
 import { useStoredEvent } from "@/api/queries";
 import { ErrorState } from "@/components/states";
 import { useEffect, useRef } from "react";
@@ -11,6 +12,10 @@ import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
 import { EventMessageThread } from "./EventMessageThread";
 import { EventProperties, EventBasis } from "./EventEvidence";
 import "./event-drawer.css";
+
+/** 404＝这一行不存在，与「取数出问题」不是一回事：前者要说清 ID，后者要给重试。 */
+const isMissing = (error: unknown): boolean =>
+  error instanceof ApiError && error.kind === "http" && error.status === 404;
 
 export function EventDrawer({
   event: loadedEvent,
@@ -113,9 +118,9 @@ export function EventDrawer({
           analytics={analytics}
           outsideFilter={outsideFilter}
         />
-      ) : analytics.dataset.source === "api" && query.isPending ? (
+      ) : query.isPending ? (
         <Skeleton active />
-      ) : query.isError ? (
+      ) : query.isError && !isMissing(query.error) ? (
         <ErrorState error={query.error} onRetry={() => void query.refetch()} />
       ) : (
         <div className="ed-panel">

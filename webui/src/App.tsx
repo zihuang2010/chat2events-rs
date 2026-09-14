@@ -7,7 +7,6 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { lazy, Suspense } from "react";
 import { useDataset } from "@/api/queries";
 import { AppShell } from "@/components/layout/AppShell";
-import { CapabilityFooter } from "@/components/layout/CapabilityFooter";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { useAnalytics } from "@/features/filters/useAnalytics";
 import { useFilters } from "@/features/filters/useFilters";
@@ -79,7 +78,6 @@ function Loaded({
           </Routes>
         </Suspense>
       </Workbench>
-      <CapabilityFooter source={dataset.source} fallbackReason={dataset.fallbackReason} />
     </AppShell>
   );
 }

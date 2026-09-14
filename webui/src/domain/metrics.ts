@@ -8,9 +8,19 @@
  *   3. null 表示「没算出来」，一路保持 null，绝不在中途兜底成 0。
  */
 
-import { dayOf, parseDateTime } from "@/lib/format";
+import { dayOf } from "@/lib/format";
 import { UNTYPED } from "./definitions";
-import type { DecoratedEvent, EventRow, GroupDailyRow, Meta, TaxonomyType } from "./schemas";
+import { workSecsBetween } from "./worktime";
+import type {
+  AgentAgg,
+  CategoryAgg,
+  DecoratedEvent,
+  EventRow,
+  GroupDailyRow,
+  Meta,
+  RoomAgg,
+  TaxonomyType,
+} from "./schemas";
 
 export type TaxonomyIndex = ReadonlyMap<string, TaxonomyType>;
 
@@ -47,15 +57,12 @@ export function decorate(events: readonly EventRow[], tax: TaxonomyIndex): Decor
     const type = e.event_type === null ? undefined : tax.get(e.event_type);
     return {
       ...e,
+      // 首响走**工作时段口径**（`domain/worktime`），不是墙钟差 —— 与后端
+      // `metric_daily.first_reply_p*_sec` 和 webUI 取数的 SQL 是同一份定义。
       firstReplySec:
         e.first_agent_reply_time === null
           ? null
-          : Math.max(
-              0,
-              (parseDateTime(e.first_agent_reply_time).getTime() -
-                parseDateTime(e.first_msg_time).getTime()) /
-                1000,
-            ),
+          : workSecsBetween(e.first_msg_time, e.first_agent_reply_time),
       level1: e.event_type === null ? "打标未完成" : (type?.parent_name ?? "未归类"),
       level2: type?.name ?? e.event_type ?? "打标未完成",
       crossDay: dayOf(e.last_msg_time) !== e.occurred_on,
@@ -151,7 +158,14 @@ export interface Coverage {
   complete: boolean;
 }
 
-/** 没有群日记录只能判未知，不能推断当天应该处理或已经成功。 */
+/**
+ * 没有群日记录只能判未知，不能推断当天应该处理或已经成功。
+ *
+ * ⚠️ 返回 `"ok"` 就是术语表里的**已知成功群日**（`CONTEXT.md`「术语」一节）——
+ * 承重不变量 5 的分母边界。**后端那份实现是 `src/web/query.rs` 的 `KNOWN_OK_DAYS`**，
+ * 改这里必须一起看那边：两边分家是静默的，页面照样显示一个看起来合理的数字。
+ * （`freshness` 那一列由后端算好随群日记录下发，见 `read_group_days`。）
+ */
 export function groupDayStatus(
   row: GroupDailyRow | undefined,
 ): "missing" | "failed" | "unknown" | "ok" {
@@ -197,13 +211,15 @@ export function coverage(
     for (const day of dayset) {
       const row = byDay.get(day);
       const status = groupDayStatus(row);
+      // ⚠️ **打标状态不进 `uncertainRooms` / `uncertainDays`。** 那两个集合的含义是
+      // 「这个群日的**事件计数**不可信」，而事件数是抽取的产物，跟标签算没算完无关：
+      // 抽取成功的群日，事件日计数就是可信的。混进来的后果是静默的 —— 一个群日
+      // `pending` 就能让 `EventTrends` 把那天**所有分类**的折线断成 null，而那里的
+      // 解释文案条件是 `cov.failed`（此时为 0），于是图空一片、一个字解释都没有。
+      // 标签的缺口由 `pendingLabels` / `failedLabels` 单独表达，也照旧让 `complete` 为假。
       if (row?.extraction_status === "ok") {
         if (row.classification_status === "pending") pendingLabels += 1;
         if (row.classification_status === "failed") failedLabels += 1;
-        if (row.classification_status !== "ok") {
-          uncertainRooms.add(id);
-          uncertainDays.add(day);
-        }
       }
       if (status === "ok") known += 1;
       else {
@@ -275,20 +291,33 @@ export interface RoomRow {
   topLevel1: { name: string; count: number }[];
 }
 
+/**
+ * 群表的一行 = **聚合接口的一行 ＋ 群日记录**，这里只做拼接，不再算任何指标。
+ *
+ * 分工是硬的，不是偏好：
+ *   * `events` / `merchant` / 分位数 / `overdue` / `backlog` / `series` / `topGroups`
+ *     必须由数据库算（分位数不可加、超时线是查询期参数），来自 `/api/rooms`；
+ *   * `msgs` / `senders` / 各类失败天数只在 `b_merchant_group_metric_daily` 里，
+ *     而群日记录是「群数 × 天数」，本来就不会爆，所以留在前端拼。
+ *
+ * ⚠️ **整段抽取失败的群，计数一律给 `null` 而不是 0**（承重不变量 4 的形状）：
+ * 聚合接口只统计「本轮已知成功」的群日，所以那种群在 `/api/rooms` 里根本没有行 ——
+ * 拿「没有行」当 0 会把一个抽取失败的群显示成一个很清静的群。
+ */
 export function roomRollup(params: {
-  events: readonly DecoratedEvent[];
+  aggs: readonly RoomAgg[];
   groupDaily: readonly GroupDailyRow[];
   rooms: Meta["rooms"];
   days: readonly string[];
   dayset: ReadonlySet<string>;
-  slaSec: number;
-  lastDay: string;
   labelOf: (roomid: string) => string;
+  /** 一级分类，**下标必须与请求 `/api/rooms` 时传的 `groups` 一致** */
+  parents: readonly { name: string }[];
   query: string;
 }): RoomRow[] {
-  const { events, groupDaily, rooms, days, dayset, slaSec, lastDay, labelOf, query } = params;
+  const { aggs, groupDaily, rooms, days, dayset, labelOf, parents, query } = params;
   const out: RoomRow[] = [];
-  const eventsByRoom = groupBy(events, (event) => event.roomid);
+  const aggByRoom = new Map(aggs.map((agg) => [agg.roomid, agg]));
   const cellsByRoom = groupBy(
     groupDaily.filter((row) => dayset.has(row.dt)),
     (row) => row.roomid,
@@ -296,33 +325,27 @@ export function roomRollup(params: {
 
   for (const r of rooms) {
     const cells = cellsByRoom.get(r.roomid) ?? [];
-    const mine = eventsByRoom.get(r.roomid) ?? [];
+    const agg = aggByRoom.get(r.roomid);
     const label = labelOf(r.roomid);
-    if (query && !`${label} ${r.roomid}`.toLowerCase().includes(query) && mine.length === 0)
-      continue;
+    if (query && !`${label} ${r.roomid}`.toLowerCase().includes(query) && !agg) continue;
 
-    const agg = aggregate(mine, slaSec, lastDay);
     const cov = coverage(cells, dayset, r.roomid, [r]);
     const allFailed = cov.known === 0;
-    const l1 = new Map<string, number>();
-    for (const e of mine) {
-      if (e.event_type !== null) l1.set(e.level1, (l1.get(e.level1) ?? 0) + 1);
-    }
     const cellsByDay = new Map(cells.map((cell) => [cell.dt, cell]));
-    const counts = dailyCounts(mine, days);
+    const seriesByDay = new Map((agg?.series ?? []).map((point) => [point.day, point.events]));
 
     out.push({
       key: r.roomid,
       label,
-      events: allFailed ? null : agg.events,
-      merchant: allFailed ? null : agg.merchant,
-      unreplied: allFailed ? null : agg.unreplied,
-      unrepliedRate: agg.unrepliedRate,
-      p50: agg.p50,
-      p90: agg.p90,
-      overdue: agg.overdue,
-      overdueRate: agg.overdueRate,
-      backlog: agg.backlog,
+      events: allFailed ? null : (agg?.events ?? 0),
+      merchant: allFailed ? null : (agg?.merchant ?? 0),
+      unreplied: allFailed ? null : (agg?.unreplied ?? 0),
+      unrepliedRate: agg?.unrepliedRate ?? null,
+      p50: agg?.p50 ?? null,
+      p90: agg?.p90 ?? null,
+      overdue: agg?.overdue ?? 0,
+      overdueRate: agg?.overdueRate ?? null,
+      backlog: agg?.backlog ?? 0,
       msgs: cells.length ? cells.reduce((s, c) => s + c.msg_count, 0) : null,
       senders: cells.length ? Math.max(...cells.map((c) => c.sender_count)) : null,
       failedDays: cov.failed,
@@ -331,15 +354,14 @@ export function roomRollup(params: {
       missingDays: cov.missing,
       unknownDays: cov.unknown,
       totalDays: days.length,
-      series: days.map((d, index) => {
-        const cell = cellsByDay.get(d);
-        if (groupDayStatus(cell) !== "ok") return null;
-        return counts[index]!;
-      }),
-      topLevel1: [...l1]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
-        .map(([name, count]) => ({ name, count })),
+      // 那一天抽取没成，格子就是缺口不是 0 —— 只有群日表答得了这件事。
+      series: days.map((d) =>
+        groupDayStatus(cellsByDay.get(d)) === "ok" ? (seriesByDay.get(d) ?? 0) : null,
+      ),
+      topLevel1: (agg?.topGroups ?? []).map((group) => ({
+        name: parents[Number(group.key)]?.name ?? group.key,
+        count: group.count,
+      })),
     });
   }
   return out;
@@ -362,34 +384,32 @@ export interface AgentRow {
   p90: number | null;
   overdue: number;
   overdueRate: number | null;
-  unreplied: number;
   involvedSeries: (number | null)[];
   ownedSeries: (number | null)[];
   failedCells: number;
   coverageUnknown: boolean;
 }
 
+/**
+ * 客服表的一行 = **`/api/agents` 的一行 ＋ 群日记录**。这里只做拼接与缺口判定。
+ *
+ * ⚠️ **`involved`（参与）与 `owned`（首响归属）是两个口径，不能互相替代** ——
+ * 把参与当归属，同一起事件的工作量会重复计到每个参与者头上。后端 `read_agents`
+ * 分开算，这里也分开放。
+ *
+ * ⚠️ **缺口按「那天有没有群日不完整」整天判**，不按客服判：没有独立的客服 × 群归属
+ * 记录，失败或缺失的群日是否涉及这个人，无法从成功事件反推。宁可整天留空。
+ */
 export function agentRollup(params: {
-  events: readonly DecoratedEvent[];
+  aggs: readonly AgentAgg[];
   groupDaily: readonly GroupDailyRow[];
-  agents: Meta["agents"];
   rooms: Meta["rooms"];
   days: readonly string[];
   dayset: ReadonlySet<string>;
-  slaSec: number;
   labelOf: (agent: string) => string;
   query: string;
 }): AgentRow[] {
-  const { events, groupDaily, agents, rooms, days, dayset, slaSec, labelOf, query } = params;
-  const out: AgentRow[] = [];
-  const eventsByAgent = new Map<string, DecoratedEvent[]>();
-  for (const event of events) {
-    for (const agent of new Set(event.agents)) {
-      const bucket = eventsByAgent.get(agent);
-      if (bucket) bucket.push(event);
-      else eventsByAgent.set(agent, [event]);
-    }
-  }
+  const { aggs, groupDaily, rooms, days, dayset, labelOf, query } = params;
   const cells = groupDaily.filter((row) => dayset.has(row.dt));
   const cellsByDay = groupBy(cells, (row) => row.dt);
   const failedByRoom = new Map<string, number>();
@@ -398,7 +418,6 @@ export function agentRollup(params: {
       failedByRoom.set(cell.roomid, (failedByRoom.get(cell.roomid) ?? 0) + 1);
     }
   }
-  // 没有独立的客服群归属，失败或缺失群日是否涉及该客服无法从成功事件反推。
   const unknownDays = new Set(
     days.filter((day) => {
       const recorded = new Map((cellsByDay.get(day) ?? []).map((row) => [row.roomid, row]));
@@ -408,38 +427,31 @@ export function agentRollup(params: {
       );
     }),
   );
-  const knownCounts = (mine: readonly DecoratedEvent[]) =>
-    dailyCounts(mine, days).map((count, index) => (unknownDays.has(days[index]!) ? null : count));
 
-  for (const ag of agents) {
-    const mine = eventsByAgent.get(ag.agent) ?? [];
-    if (mine.length === 0) continue;
-    const label = labelOf(ag.agent);
-    if (query && !`${label} ${ag.agent}`.toLowerCase().includes(query)) continue;
-
-    const owned = mine.filter((e) => e.first_responder === ag.agent);
-    const ownedMerchant = owned.filter(isMerchant);
-    const secs = repliedSecsAsc(ownedMerchant);
-    const roomIds = [...new Set(mine.map((e) => e.roomid))];
-    const overdue = ownedMerchant.filter((e) => isOverdue(e, slaSec)).length;
+  const out: AgentRow[] = [];
+  for (const agg of aggs) {
+    const label = labelOf(agg.agent);
+    if (query && !`${label} ${agg.agent}`.toLowerCase().includes(query)) continue;
+    const byDay = new Map(agg.series.map((point) => [point.day, point]));
+    const known = (pick: (point: { involved: number; owned: number }) => number) =>
+      days.map((day) => (unknownDays.has(day) ? null : byDay.has(day) ? pick(byDay.get(day)!) : 0));
 
     out.push({
-      key: ag.agent,
+      key: agg.agent,
       label,
-      roomIds,
-      rooms: roomIds.length,
-      involved: mine.length,
-      owned: owned.length,
-      merchantOwned: ownedMerchant.length,
-      replySamples: secs.length,
-      p50: quantile(secs, 0.5),
-      p90: quantile(secs, 0.9),
-      overdue,
-      overdueRate: ownedMerchant.length ? overdue / ownedMerchant.length : null,
-      unreplied: mine.filter(isUnreplied).length,
-      involvedSeries: knownCounts(mine),
-      ownedSeries: knownCounts(owned),
-      failedCells: roomIds.reduce((sum, room) => sum + (failedByRoom.get(room) ?? 0), 0),
+      roomIds: agg.roomIds,
+      rooms: agg.rooms,
+      involved: agg.involved,
+      owned: agg.owned,
+      merchantOwned: agg.merchantOwned,
+      replySamples: agg.replySamples,
+      p50: agg.p50,
+      p90: agg.p90,
+      overdue: agg.overdue,
+      overdueRate: agg.overdueRate,
+      involvedSeries: known((point) => point.involved),
+      ownedSeries: known((point) => point.owned),
+      failedCells: agg.roomIds.reduce((sum, room) => sum + (failedByRoom.get(room) ?? 0), 0),
       coverageUnknown: unknownDays.size > 0,
     });
   }
@@ -457,50 +469,47 @@ export interface CategoryRow {
   p50: number | null;
   p90: number | null;
   share: number;
+  /** 每日事件量。**缺的天不在数组里**，由视图按覆盖度决定补零还是断成缺口 */
+  series: readonly { day: string; events: number }[];
 }
 
-/** 分类汇总。**只按主类 event_type 统计**，副类不进任何指标。 */
-export function categoryRollup(
-  events: readonly DecoratedEvent[],
+/**
+ * 把 `/api/categories` 的行补成视图要的形态 —— **名字、父类、占比全在前端补**。
+ *
+ * 后端不认识词表（见 `web/query.rs` 的 `read_categories`），所以它回的 `key`：
+ *   * 二级是 `type_id`，在这里查词表拿显示名与父类名；
+ *   * 一级是**请求时传上去的分组下标**，在这里按同一个 `parents` 数组换回父类名。
+ *     两边必须是同一个数组同一个顺序，否则名字会错位到另一个父类上。
+ *
+ * `share` 的分母是**当前筛选范围的事件总数**（含打标未完成的），来自 `/api/summary`
+ * 的 `events`；分类行只统计已打标的，所以合计不足 100% 是对的。
+ */
+export function categoryRows(
+  rows: readonly CategoryAgg[],
   level: "level1" | "level2",
   tax: TaxonomyIndex,
+  parents: readonly { name: string }[],
+  total: number,
 ): CategoryRow[] {
-  interface Bucket {
-    count: number;
-    merchant: number;
-    unreplied: number;
-    secs: number[];
-  }
-  const m = new Map<string, Bucket>();
-  for (const e of events) {
-    if (e.event_type === null) continue;
-    const key = level === "level1" ? e.level1 : e.event_type;
-    let b = m.get(key);
-    if (!b) {
-      b = { count: 0, merchant: 0, unreplied: 0, secs: [] };
-      m.set(key, b);
-    }
-    b.count += 1;
-    if (isMerchant(e)) b.merchant += 1;
-    if (isUnreplied(e)) b.unreplied += 1;
-    if (e.firstReplySec !== null && isMerchant(e)) b.secs.push(e.firstReplySec);
-  }
-  const total = events.length || 1;
-  return [...m]
-    .map(([key, b]) => {
-      const type = level === "level2" ? tax.get(key) : undefined;
-      b.secs.sort((a, x) => a - x);
+  return rows
+    .map((row) => {
+      const type = level === "level2" ? tax.get(row.key) : undefined;
+      // 一级的 `key` 是分组下标；**等于组数的那个是兜底桶** —— 词表外的编码与
+      // `__untyped__` 都在里面，统一叫「未归类」（见 `useAnalytics.parentGroups`）。
+      const label =
+        level === "level1" ? (parents[Number(row.key)]?.name ?? "未归类") : (type?.name ?? row.key);
       return {
-        key,
-        label: level === "level1" ? key : (type?.name ?? key),
+        key: level === "level1" ? label : row.key,
+        label,
         parent: type?.parent_name ?? null,
-        count: b.count,
-        merchant: b.merchant,
-        unreplied: b.unreplied,
-        unrepliedRate: b.merchant ? b.unreplied / b.merchant : null,
-        p50: quantile(b.secs, 0.5),
-        p90: quantile(b.secs, 0.9),
-        share: b.count / total,
+        count: row.count,
+        merchant: row.merchant,
+        unreplied: row.unreplied,
+        unrepliedRate: row.unrepliedRate,
+        p50: row.p50,
+        p90: row.p90,
+        share: total ? row.count / total : 0,
+        series: row.series,
       };
     })
     .sort((a, b) => b.count - a.count);

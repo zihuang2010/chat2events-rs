@@ -66,7 +66,7 @@ jobs:
       # 没有 rustfmt.toml 是有意的 —— cargo fmt 的默认配置就是本仓库的风格
       - run: cargo fmt --check
 
-      # --all-targets：examples/ 和测试代码一起查，不然 examples 里的告警溜过去
+      # --all-targets：bins / examples / 测试代码一起查，不然那些 target 里的告警溜过去
       - run: cargo clippy --all-targets --locked -- -D warnings
 
       - run: cargo test --locked
@@ -83,6 +83,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # 发出去的全部二进制。**符号自检 · json 自检 · 打包三处共用这一份** ——
+      # 曾经三处各自逐字写死 `chat2events-rs webui`，于是 `src/bin/` 里新增的
+      # 运维入口编得出来、却既不进基线也不进 tar 包，等于没发。
+      BINS: chat2events-rs webui backfill recompute recover taxonomy
     steps:
       - uses: actions/checkout@v5
 
@@ -139,8 +144,12 @@ jobs:
       #    要命的是「要了目标机给不出的版本」，所以比版本，不比有无。
       - name: 校验 glibc / libstdc++ 下界
         run: |
-          ldd target/release/chat2events-rs target/release/webui
-          objdump -T target/release/chat2events-rs target/release/webui | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
+          # ⚠️ 六个二进制全查 —— 运维入口（backfill/recompute/recover/taxonomy）也发到
+          #    目标机上跑，漏掉它们等于基线只覆盖了一半产物。清单在 job 的 env.BINS 里，
+          #    符号自检 / json 自检 / 打包三处共用同一份，**不许各写各的**。
+          PATHS=$(for b in $BINS; do echo -n "target/release/$b "; done)
+          ldd $PATHS
+          objdump -T $PATHS | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt
           # ceiling <符号前缀> <目标机能给的最高版本>
           ceiling() {
             max=$(grep "^$1" glibc-baseline.txt | sort -V | tail -1) || true
@@ -157,15 +166,15 @@ jobs:
       # json_serialize_sql 只出现在扩展源码里，本仓库的 SQL 不含它。
       - name: 校验 json 扩展已静态链
         run: |
-          for BIN in target/release/chat2events-rs target/release/webui; do
+          for BIN in $BINS; do
+            BIN="target/release/$BIN"
             grep -qa 'json_serialize_sql' "$BIN" \
               || { echo "::error::$BIN 的 json 扩展没链进去"; exit 1; }
           done
 
       - name: 打包
         run: |
-          tar -czf chat2events-rs-linux-x86_64.tar.gz \
-            -C target/release chat2events-rs webui
+          tar -czf chat2events-rs-linux-x86_64.tar.gz -C target/release $BINS
 
       # gh 是 runner 自带的，不引第三方 action
       - name: 发 Release

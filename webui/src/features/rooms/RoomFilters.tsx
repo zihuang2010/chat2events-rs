@@ -1,3 +1,4 @@
+import "../filters/filters.css";
 import { Button, DatePicker, Form, Input, Segmented, Select } from "antd";
 import {
   CloseCircleOutlined,
@@ -207,7 +208,9 @@ export function RoomFilters({
             optionFilterProp="label"
             placeholder="全部二级"
             value={filters.level2}
-            onChange={(value: string | undefined) => patch({ level2: value ?? null })}
+            onChange={(value: string | undefined) =>
+              patch({ level2: value ?? null, ...(value ? { level1: null } : {}) })
+            }
             options={[
               ...meta.taxonomy.map((type) => ({
                 value: type.type_id,

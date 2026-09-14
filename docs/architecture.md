@@ -8,7 +8,7 @@
 
 ## 为什么是这几个接缝
 
-**① 的「以后可能换数据源」是减法不是加法。** 不加基类、不加注册表、不加 `SOURCE_TYPE` 配置项，**也不加 `MessageSource` trait**（一个适配器 = 假想接缝；契约是文字的价值，写在模块文档注释 `//!` 上）—— 只保证四样东西不出 `ingest/`，且各自只住一个文件：**DuckDB 连接 · SQL · 上游字段语义**在 `read.rs`、**路径布局**在 `layout.rs`。换源那天写一个新文件实现三个方法，其余六个模块一行不动。
+**① 的「以后可能换数据源」是减法不是加法。** 不加基类、不加注册表、不加 `SOURCE_TYPE` 配置项，**也不加 `MessageSource` trait**（一个适配器 = 假想接缝；契约是文字的价值，写在模块文档注释 `//!` 上）—— 只保证四样东西不出 `stage/ingest/`，且各自只住一个文件：**DuckDB 连接 · SQL · 上游字段语义**在 `read.rs`、**路径布局**在 `layout.rs`。换源那天写一个新文件实现三个方法，其余六个模块一行不动。
 
 **② 有阶段名但不独立成模块。** 按群分组必须下推给源 —— 只有源知道数据怎么摆的（上游就是**一个群一个月一个文件**，分组是免费的）。写一个通用分组器就得先把全部消息读进内存，直接撞硬规则。
 
@@ -21,18 +21,22 @@
 
 ## 模块布局
 
+`src/` 分四层：`stage/`（六个阶段模块）· `process/`（三个进程编排）· `web/`（只读旁路）·
+crate 根（内核：`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）。
+下面的路径都省掉这一层前缀之外的部分，完整判据在 `src/lib.rs` 顶注。
+
 ### ① 摄取 ingest ＋ ② 会话 conversation
 
 ```
 list_rooms(raw_root, window)                    -> [(corp, room)]
 read_room(raw_root, corp, room, window)         -> Conversation
-read_by_ids(raw_root, corp, room, window, ids)  -> [Message]      # webUI 下钻
 ```
 
 无人值守跑批使用内部 `read_synced_room(raw_root, corp, room, window, months)`：
 `mirror::sync` 返回本轮同步成功的群与月份，`daily` 将该范围直接交给读取，不再扫描目录重新决定名单。
 同群任一月份同步失败则整群排除；已确认同步的文件随后缺失则读取报错，不能用残缺月份继续跑。
-`list_rooms` / `read_room` 保留给本地检查，`read_by_ids` 仍可读取保留期内未参与本轮跑批的历史文件。
+`list_rooms` / `read_room` 保留给本地检查。
+⚠️ **端口上曾经有第三个 `read_by_ids`（webUI 下钻），已删** —— 下钻改读 `b_merchant_group_event.source_messages`，只读工作台不碰文件系统。
 
 拉取：查索引表 → HTTP `Range` 增量 → 本地是 OSS 的**字节级镜像**
 `<raw_root>/<yyyyMM>/<corpId>/<roomId>.ndjson`，「已拉到第几字节」= 文件大小。
@@ -60,7 +64,7 @@ read_by_ids(raw_root, corp, room, window, ids)  -> [Message]      # webUI 下钻
 
 - **窗口是 `window::Window` 类型，不是裸 `&[NaiveDate]`。**「非空、连续、升序」由
   构造保证（`new` 供跑批、`span` 供下钻/测试），使用点不再各自 `min()/max()/first()`
-  重推前提 —— 曾经 `read_by_ids` 对空窗口是可达 panic。
+  重推前提 —— 曾经那个 `read_by_ids`（已删）对空窗口是可达 panic。
 
 - **SQL 是 `select_sql!` 宏，不是 `const`。** 这样拼装那句 `format!` 能在编译期校验
   五个占位符。用 `const` + `.replace("{since}", …)` 的话，占位符打错一个字母会原样
@@ -115,7 +119,7 @@ trait SegmentModel {
 ```
 
 模型调用走端口 `SegmentModel`，**两个适配器**：`LiveModel`（生产，真实调用）·
-`BisectStub`（测试桩，在 `extract/tests.rs`，只在自检里用）。
+`BisectStub`（测试桩，在 `stage/extract/tests.rs`，只在自检里用）。
 
 `EventDraft` 的字段仅在 crate 内可见；外部适配器通过 `EventDraft::new` 复用已有校验，传入本次调用的段长与便签集合。
 构造后不能从 crate 外修改字段；编译失败文档测试锁住这一约束，测试适配器也使用公共构造入口。
@@ -127,7 +131,7 @@ trait SegmentModel {
 
 - **端点知识跟着端点走**：把 async-openai 的错误翻译成「输出被截断」/「超时」两种信号住在 `LiveModel` 里 —— 换端点写法就变。`TooBig` 这个信号本身留在本模块，由二分逻辑消费：「太大就切」跟谁家端点无关。**「不认连接类错误」这条一起归 Live**（网络断了切成两半也一样断，当成「太大」会让一次故障放大成一整棵调用树）。
 - **自检也走这个端口**：`BisectStub` 按 `segment_size` 抛 `TooBig` 逼出二分。它每段返回 `msg_indexes=[1, segment_size]`，**真实的 `merge` 把它换算成 `{lo, hi-1}` 写进 drafts** —— 实际跑过的区间从 drafts 读回来，于是「划分性质」不需要打桩 `one_call` 也断言得了。
-- **断言 `cargo test` 就跑得到**：跨文件的性质测试与共享 fixture（含 `BisectStub`）在 `extract/tests.rs`，各实现文件的单元测试在各自文件底部；样本布局用 `testutil`（`fresh_root` / `write_month`）摆成生产形状。
+- **断言 `cargo test` 就跑得到**：跨文件的性质测试与共享 fixture（含 `BisectStub`）在 `stage/extract/tests.rs`，各实现文件的单元测试在各自文件底部；样本布局用 `testutil`（`fresh_root` / `write_month`）摆成生产形状。
 
 - **接口粒度 = `Conversation` = 群 × 一次运行的完整会话 = 失败隔离粒度**。四者必须相等。
 - 内部（对调用方完全不可见）：自适应二分 · 段间便签 · 调模型 · 序号↔`msg_id` 映射 · schema 校验 · 溯源校验 · 重试。
@@ -149,7 +153,7 @@ trait SegmentModel {
 结构化输出、校验不过回灌报错重问一次。最多 3 个标签，第一个是主类，副类不重复计入指标。
 `daily` 与 `recompute` 都在启动时按指定版本从 MySQL 读取一次词表，交给同一个 `Classifier`。
 数据库词表和人工草稿共用 `classify::check_types` 校验；只有显式 v0 允许空词表，正式版本缺失直接失败。
-日常跑批先独立保存事实，再通过有界 channel 交接给 `daily/labeling.rs`。
+日常跑批先独立保存事实，再通过有界 channel 交接给 `process/daily/labeling.rs`。
 
 ```text
 ingest.room_concurrency 个群：读取 → 段串行抽取 → write_room 保存事实
@@ -209,8 +213,8 @@ ingest.room_concurrency 个群：读取 → 段串行抽取 → write_room 保�
 
 | 进程 | 入口 | 干什么 |
 |---|---|---|
-| `taxonomy` | `examples/taxonomy.rs`（`summaries` / `review` / `emit-sql`） | `summaries` 看语料（有哪些说法、各多少条）→ **人手写** `taxonomy_<v>.toml` → `review` 试打产 `review_<v>.md`（未分类率 / 空类数）→ 不行就回去改 → `emit-sql` → 人工执行 `INSERT` |
-| `recompute` | `examples/recompute.rs` | 词表升版后按新词表重打标：**只写标注列**，重算 `agent_metric_daily` |
+| `taxonomy` | `src/bin/taxonomy.rs`（`summaries` / `review` / `emit-sql`） | `summaries` 看语料（有哪些说法、各多少条）→ **人手写** `taxonomy_<v>.toml` → `review` 试打产 `review_<v>.md`（未分类率 / 空类数）→ 不行就回去改 → `emit-sql` → 人工执行 `INSERT` |
+| `recompute` | `src/bin/recompute.rs` | 词表升版后按新词表重打标：**只写标注列**，重算 `agent_metric_daily` |
 
 **机器归纳两条路都放弃了**（2026-09-03）。词表是人手写的，
 `review` 那一关不可省 —— `event_type` 一旦逐日漂移，就没有报表能建在这个维度上。
@@ -272,8 +276,31 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 | `b_merchant_group_event` | `idx_shard (corpid, roomid, occurred_on)` 分片删重写 | `source_msg_ids` 用 JSON 列，不拆关系表 · `event_type`（主类，单值）与 `event_types`（全集，JSON）是**两列**，见下 |
 | `b_merchant_group_metric_daily` | `uk_group_daily (corpid, roomid, dt)` REPLACE 覆盖 | 加一列 `extraction_status` |
 | `b_merchant_group_agent_metric_daily` | `uk_agent_daily (corpid, room, agent, dt, event_type, taxonomy_version)` **六列** | 加 `room` 使其嵌套进失败隔离粒度 |
+| `b_merchant_group_agent_msg_daily` | `uk_agent_msg_daily (corpid, room, agent, dt)` **四列** REPLACE 覆盖 | 客服自己发了多少条，用来对冲「只看处理量」。**跟着事实阶段走**，见下 |
 | `b_merchant_group_taxonomy` | `uk_taxonomy (version, type_id)` | `name` 必填 · `description` **必填** · 词表由人定稿，不含向量列。从 ⑤ v1 起进 `check_schema` —— **查表不查行**，v0 期没有行是正常状态 |
 | `b_merchant_group_run_failure` | 追加 | `(run_date, corpid, roomid, reason)` |
+
+**`b_merchant_group_agent_msg_daily` 为什么是另一张表，不是上面那张表的一列**
+
+「客服自己回了多少条消息」是用来对冲「只看处理量」的那个数。挂成 `agent_metric_daily`
+上的一列有三个静默错误，缺一条都不够：
+
+- **`event_type` 在那张表的语义键里，而消息数不随类型变。** 同一个数字要在 N 个类型行里
+  各存一遍，BI 直连 `SUM(msg_count)` 会按类型数放大，且看起来完全正常。
+- **那张表按 `first_responder` 归属。** 发了 200 条却一次首响都没抢到的客服在那张表上
+  **一行都没有** —— 而这个数要看的正是这种人。挂上去它对他们恒缺失。
+- **生命周期对不上。** 那张表由打标阶段（`store::labels`）整段删重写、抽取失败时整行
+  缺失（承重不变量 5）、词表升版重打标再重写一遍；而消息数**既不依赖抽取也不依赖词表**。
+
+所以它由 `store::write_room` 在**事实阶段的同一个事务**里写：抽取失败照写
+（那正是它的用处 —— 模型挂了，「谁说了多少」仍然是已知的），拉取失败一行不写，
+打标和 `recompute` 一个字节都不碰它，也没有 `taxonomy_version` 列。
+
+走 `REPLACE` 而不做删重写：raw 只增不删，所以同一个「群 × 日」的客服集合只会变大
+不会变小，没有需要清掉的陈旧行。
+
+⚠️ 代价：BI 想同时看「处理量 ＋ 消息量 ＋ 抽取是否完整」是三张表，正好踩在
+《数据库规范》「超过三个表禁止 join」的上限上。已知且接受，见 `docs/database-conventions.md`。
 
 **`b_merchant_group_agent_metric_daily` 为什么是六列**
 
@@ -305,10 +332,20 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 **建表**：一个手写的 `schema.sql`，人工执行一次。字段类型 / 命名 / 必须字段遵循公司《数据库规范》，适用条款与四条已取下的例外见 `database-conventions.md`。不用 `CREATE TABLE IF NOT EXISTS`（会掩盖"表结构变了但没迁移"）。**不引入 ORM 和 migration 框架。** 跑批进程只读写数据，不碰 DDL。
 
-**原始消息不入 MySQL**。溯源靠 `sourceMessageId` 回 raw 区查（`read_by_ids`，单群单月 18 MB ≈ 70 ms）。
+**原始 ndjson 行不入 MySQL；来源消息的渲染快照入。** 抽取时 `assemble` 把每条来源消息的
+`msg_id / at / sender_id / sender_role / text` 写进 `b_merchant_group_event.source_messages`
+（`MEDIUMTEXT`，展示列 —— 既非事实列也非标注列，不参与任何指标、不回读进 `Event`）。
+上游一行约 1.2 KB，渲染快照约 255 B，省的是 sender 对象 / semanticPayload / 版本号那些包装。
+非文本消息（IMAGE / GIF / VIDEO）只存 `[图片]` 这样的占位符，媒体 URL 一律不存 —— 带签名会过期，存了也点不开。
+
+⚠️ **`source_messages` 绝不能进 `EVENT_FACT_COLS`**：`store::read_events` 的列表是从那个常量
+派生的，混进去会让 ⑤ 打标和 `recompute` 全历史重打标把整个正文语料拉进内存。
+同理它**不在 `EVENT_SELECT` 里** —— dataset 是全量拉，10 万事件会直接撑爆 `max_response_bytes`。
+
 ⚠️ 措辞修正：**唯一事实来源是 OSS，本地 `./data/raw/` 是它的镜像/缓存** —— 删了能重拉。
 保留期由 `raw_retention_months` 控制，清理起点锚在本轮窗口最早月；本轮需要的月份不会被删除。
-原文超过保留期时，`read_by_ids` 显式报告缺失 ID。
+它现在**只约束跑批的输入**（抽取失败重跑 / backfill 补跑），不再是下钻的可见范围。
+`source_messages` 为 `NULL` 只出现在加这一列之前抽取的历史行上，下钻对它返回 410。
 
 **embedding 不入 MySQL、不引向量库**。⑤ v1 走的是「模型从封闭词表里选」，
 **根本不发 embedding 请求**，而归纳那条用本地 embedding 的路 2026-09-03 也删了 ——
@@ -327,17 +364,56 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 形态已定（2026-08-30）：**前后端分离 · 后端只读 JSON API · 全部 `GET` · 无登录版**（内网可达即可看）。
 它与跑批解耦 —— 只从 MySQL 和 ① 的端口取数，**不写任何表、不调模型、不参与跑批**，跑批不知道它存在。
-下钻原文走 `read_by_ids`，**不自己再翻译一遍上游字段名**。
+下钻原文读 `b_merchant_group_event.source_messages` 一列，**它一个文件都不读** ——
+所以没有 `raw_root`、没有扫描名额、没有 `spawn_blocking`，只依赖 MySQL 一个东西。
 
-`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额 · `query` 只读 SQL），复用 MySQL 和 `read_by_ids`。
-`GET /api/meta` 提供可用日期、群与客服标识、当前词表；`GET /api/dataset?from=...&to=...` 在同一个明确的 REPEATABLE READ 只读事务中读取 meta、event 与群日记录。
+`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额与响应缓冲 · `scope` SQL 片段与绑定 · `query` 只读 SQL），只依赖 MySQL。
+`GET /api/meta` 提供可用日期、群与客服标识、当前词表 —— ⚠️ **群与客服名单跟着查询窗口走**
+（`read_filters`），此前那两条查询没有日期条件、每次开页面都扫全历史，代价只跟「库里攒了多久」
+有关而与用户选几天无关；`days` 仍是全历史，因为它是日期选择器的可选范围。
+**指标已经全部下推到数据库，前端已经切过去了。** `GET /api/summary` · `/api/rooms` ·
+`/api/agents` · `/api/categories` 算完只送数字（分位数用窗口函数逐字复刻前端 `quantile`
+的 `floor(n*p)` 定义），`GET /api/events` 用延迟关联翻页（内层只在 `idx_overview`
+覆盖索引里数够偏移、外层才回表 20 次），**并自带 `total` / `pages` / `truncated`** ——
+明细翻的是窗口内**全部**事件（不按已知成功群日过滤：抽取失败的群日上抽出了什么正是要
+核实的），而 `/api/summary` 的 `events` 只算已知成功群日，借它当分页总数会把人夹在更早
+的页码上、尾部的行永远翻不到，且页面看起来一切正常。`dataset` 因此**不再带事件明细** ——
+它曾经一次拉齐窗口内全部事件，1000 群 × 7 天是 11 万行、撞 `max_rows` 直接 413
+（181 个群时默认七天窗口就开始报错）；现在它只回 meta ＋ 群日记录，行数是
+「群数 × 天数」，1000 群 7 天 = 7000 行。
+
+⚠️ **口径因此有两份实现**（SQL 一份、前端 `domain/metrics` 一份，后者是模拟数据源
+和视图测试的对照物）。两边由 `webui/src/domain/parity-vectors.json` 这组**金标向量**
+钉住：`mysql_summary_matches_the_frontend_definitions` 跑真 SQL、
+`api/mock/parity.test.ts` 跑 `mockSummary`，各自断言等于同一组 `expected`。
+口径分家是静默的 —— 页面照样显示一个看起来合理的数字，所以这条对拍不可省。
+`GET /api/dataset?from=...&to=...` 在同一个明确的 REPEATABLE READ 只读事务中读取 meta、event 与群日记录。
 默认请求最近七天，日期筛选进入后端查询并参与前端缓存键；全部历史仍可显式选择。群抽屉按需加载独立七天，窗口外事件由 `GET /api/event/{id}` 读取，原文由 `GET /api/event/{id}/messages` 读取。
 已完成事件的词表版本与 meta 不一致时显式报错；未完成群的标签三列在读取端暂不发布，事实仍可查看。
 群日响应包含 `classification_status`，前端独立显示待打标和打标失败，并排除未完成分类结果。
 `freshness` 是只读派生状态：缺少 `fact_completed_time`，或抽取失败时间晚于 / 等于该凭据时为 unknown。
 两种时间都采用微秒精度；打标不修改事实凭据。失败查询通过群与阶段时间索引定位，不聚合全企业历史失败。
 只读入口解析自己的配置（`web/config.rs`，跑批的 `config.rs` 里没有任何 `Web*`）；重查询与原文扫描分别限制并发，结果按行数和字节限制，超限显式报错。
-现表未记录失败窗口，不能推断抽取失败影响哪天；保守保留未知，不修改旧事实，也不把它映射成 failed 或 0。
+读进来和写出去是**同一份预算、同一个缓冲**（`web/budget.rs` 的 `ResponseBudget`）：数据库已经
+渲染好的 JSON 文档**直推字节不解析**，这条路上的峰值内存从约 7 倍（值树）降到约 1 倍；
+Rust 侧算出来的数字走序列化。代价是失去了顺带做的 JSON 格式校验 —— 那是**有意接受**的，
+真正的契约边界是前端每个响应都过的那道 zod。
+SQL 文本与它的绑定值由 `web/scope.rs` **成对产出**：唯一的追加入口是「一段文本 ＋ 它里面
+的 `?` 要的值」，收尾时 `assert!` 占位符个数等于绑定个数（不是 `debug_assert!` —— 那个在
+release 里会蒸发，而这条错了只会算错、不会报错）。此前这件事靠 `query.rs` 里七条
+「顺序错了不会报错，只会算错」的注释维持，那些注释已经删掉。
+**白天的响应走内存缓存**（`web/cache.rs`）：数据只在夜里跑批时写，每个请求先读一次库里的
+「数据戳」（四张表各自的最后一次写，走 `idx_modified` / 主键），戳变了整个缓存作废；
+戳距现在不足 60 秒视作跑批还在写，只查不存。跑批不知道缓存存在 —— 失效由数据本身驱动，
+不由时间、也不由跑批通知。只缓存 200，键是完整 URI，命中也占并发名额（名额仍是 MySQL 连接峰值的上界）。
+`run_failure` 记录本次失败覆盖的数据窗口（`window_since` / `window_until`），
+判事实新鲜度时把失败夹在它自己那个窗口里 —— **一次失败不再毒化这个群的全部历史**。
+此前没有这两列，今天一次拉取失败或「没轮到」会把冻结区里早已成功的天一起标成 unknown，
+而冻结区不会再被重抽，那个 unknown 是永久的（`KNOWN_OK_DAYS` 是四个聚合接口的分母边界，术语见 `CONTEXT.md`，
+那些天的事件会被整个排除出统计）。
+⚠️ **不要用 `run_date` 反推窗口** —— 那是跑批日，T+2 之下与数据日差两天，
+而 `lookback_days` 可配、backfill 窗口任意。升级前的历史行 `window_since` 为 NULL，
+仍按「影响全历史」保守处理，不修改旧事实，也不把它映射成 failed 或 0。
 前端 `groupDayStatus` 与 `coverage` 统一解释成功、失败、缺记录和最新结果未知；聚合仅消费已知成功群日的事件，旧事实仍可通过行 ID 核实。
 
 - **完整性与数值一起展示。** 消息级和事件级具有不同失败语义；客服首响归属量不能代替团队事件总数。只读取数负责快照与新鲜度，指标模块负责统一的 `coverage`，各视图不再自行用“没有 failed”推断完整。
@@ -353,4 +429,4 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 **⑤ 上了 v1 之后仍然没写 trait**—— `Classifier` 是个 struct，
 一次运行构造一次，拿住词表和结果缓存。「v1 落地时再引接缝」那句话真正要的是
 「一次运行构造一次的对象」，struct 已经满足；而 v0 **不需要第二个实现** ——
-「还没有词表」精确等于「taxonomy 表里 v0 没有行」，就是 `types.is_empty()` 那一行 if。**① 明确不写 `MessageSource` trait** —— 契约是**文字**的价值，写成 trait 壳只多一处「改签名要改两处」的负担，`ingest/mod.rs` 顶上那段模块文档注释（`//!`）就是端口本身。**④ 明确不给端口** —— 它是承重不变量 6（溯源）的守卫，给它接缝等于给溯源留绕过口。**② 有阶段名但不独立成模块**（分组必须下推给源）：
+「还没有词表」精确等于「taxonomy 表里 v0 没有行」，就是 `types.is_empty()` 那一行 if。**① 明确不写 `MessageSource` trait** —— 契约是**文字**的价值，写成 trait 壳只多一处「改签名要改两处」的负担，`stage/ingest/mod.rs` 顶上那段模块文档注释（`//!`）就是端口本身。**④ 明确不给端口** —— 它是承重不变量 6（溯源）的守卫，给它接缝等于给溯源留绕过口。**② 有阶段名但不独立成模块**（分组必须下推给源）：

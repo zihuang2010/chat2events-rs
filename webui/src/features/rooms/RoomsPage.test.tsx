@@ -5,7 +5,9 @@ import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { buildMockDataset } from "@/api/mock/generator";
 import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import type { LoadedDataset } from "@/api/source";
+import type { DecoratedEvent } from "@/domain/schemas";
 import { Providers } from "@/app/providers";
+import { queryClient } from "@/app/queryClient";
 import { Workbench } from "@/components/layout/Workbench";
 import { useFilters } from "@/features/filters/useFilters";
 import { useAnalytics } from "@/features/filters/useAnalytics";
@@ -14,7 +16,18 @@ import { RoomsPage } from "./RoomsPage";
 vi.mock("@/components/charts/EChart", () => ({
   EChart: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} />,
 }));
+/**
+ * 页面的指标现在全部来自聚合接口，所以视图测试摆布的是**这批事件**，
+ * 由 `mock/aggregate`（口径的前端对照实现）算成接口的形状 —— 不手写假数字。
+ */
+const stub = vi.hoisted(() => ({ events: [], groupDaily: [], tax: new Map() }) as never);
+vi.mock("@/api/source", async (importOriginal) => {
+  const { sourceStub } = await import("@/test/aggregateStub");
+  return sourceStub(await importOriginal(), stub);
+});
 afterEach(cleanup);
+// 缓存是模块级单例，用例之间不清就会读到上一个用例的数字。
+afterEach(() => queryClient.clear());
 beforeAll(() => {
   window.matchMedia = (query: string) => ({
     matches: true,
@@ -33,9 +46,15 @@ beforeAll(() => {
   };
 });
 
+/**
+ * 视图测试里的「一份数据」= 页面上下文（meta ＋ 群日）＋ **喂给聚合替身的那批事件**。
+ * 事件本身不再进 `LoadedDataset`（页面不从那里拿），但测试要靠它摆布数字。
+ */
+type TestDataset = LoadedDataset & { events: DecoratedEvent[] };
+
 const raw = buildMockDataset();
 const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
-const dataset: LoadedDataset = {
+const dataset: TestDataset = {
   ...raw,
   events: decorate(raw.events, taxIndex),
   taxIndex,
@@ -44,9 +63,32 @@ const dataset: LoadedDataset = {
   fallbackReason: null,
 };
 
-function Harness({ data = dataset }: { data?: LoadedDataset }) {
+/**
+ * 渲染前把这份数据接到聚合替身上 —— 页面上的每个数字仍然是**算出来的**，
+ * 只是算它的输入由测试指定。必须在 `useAnalytics` 之前赋值：查询的
+ * `queryFn` 在这之后才异步跑。
+ */
+function useTestAnalytics(...args: Parameters<typeof useAnalytics>) {
+  const data = args[0] as TestDataset;
+  Object.assign(stub, {
+    events: data.events,
+    groupDaily: data.groupDaily,
+    tax: data.taxIndex,
+  });
+  return useAnalytics(...args);
+}
+
+/**
+ * 骨架屏消失＝页面的聚合请求都落地了。取数已经是异步的，同步断言只会看到空壳。
+ */
+async function settle(view: { container: HTMLElement }) {
+  await waitFor(() => expect(view.container.querySelector(".c2e-page")).toBeNull());
+  return view;
+}
+
+function Harness({ data = dataset }: { data?: TestDataset }) {
   const api = useFilters();
-  const analytics = useAnalytics(data, api.filters);
+  const analytics = useTestAnalytics(data, api.filters);
   const location = useLocation();
   return (
     <>
@@ -56,9 +98,9 @@ function Harness({ data = dataset }: { data?: LoadedDataset }) {
   );
 }
 
-it("shows_authoritative_room_name_without_placeholder_badge", () => {
+it("shows_authoritative_room_name_without_placeholder_badge", async () => {
   const room = dataset.meta.rooms[0]!;
-  const data: LoadedDataset = {
+  const data: TestDataset = {
     ...dataset,
     meta: {
       ...dataset.meta,
@@ -82,13 +124,14 @@ it("shows_authoritative_room_name_without_placeholder_badge", () => {
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent("真实商家群");
   expect(screen.queryByText("别名 待补")).not.toBeInTheDocument();
 });
 
 it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
   "summarizes_messages_for_visible_rooms_%s",
-  (scope) => {
+  async (scope) => {
     const cell = dataset.groupDaily[0]!;
     const room = dataset.meta.rooms.find((row) => row.roomid === cell.roomid)!;
     const other = dataset.meta.rooms.find((row) => row.roomid !== cell.roomid)!;
@@ -98,7 +141,7 @@ it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
       { ...cell, roomid: other.roomid, msg_count: 23, extraction_status: "failed" as const },
       { ...cell, dt: otherDay, msg_count: 100 },
     ];
-    const data: LoadedDataset = {
+    const data: TestDataset = {
       ...dataset,
       meta: { ...dataset.meta, rooms: [room, other] },
       events: [],
@@ -123,6 +166,7 @@ it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
         </Providers>
       </MemoryRouter>,
     );
+    await settle(view);
     const summary = screen.getByLabelText("群指标摘要");
     const expected =
       scope === "missing" ? "—" : scope === "zero" ? "0" : scope === "all" ? "40" : "17";
@@ -139,7 +183,7 @@ it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
   },
 );
 
-it("缺记录的群保持可见并标为未知，不声称抽取完整", () => {
+it("缺记录的群保持可见并标为未知，不声称抽取完整", async () => {
   const room = dataset.meta.rooms[0]!;
   const data = {
     ...dataset,
@@ -154,13 +198,14 @@ it("缺记录的群保持可见并标为未知，不声称抽取完整", () => {
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
   expect(view.container.textContent).toContain("完整性未知");
   expect(view.container.textContent).not.toContain("当前窗口抽取完整");
   expect(view.container.textContent).toContain("7 日无记录");
 });
 
-it("选择一个群后只显示该群指标", () => {
+it("选择一个群后只显示该群指标", async () => {
   const room = dataset.meta.rooms[0]!;
   const view = render(
     <MemoryRouter initialEntries={[`/rooms?room=${room.roomid}`]}>
@@ -171,11 +216,12 @@ it("选择一个群后只显示该群指标", () => {
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent(room.alias!);
 });
 
-it("子路径部署的分类下钻链接包含 basename", () => {
+it("子路径部署的分类下钻链接包含 basename", async () => {
   const view = render(
     <MemoryRouter basename="/board" initialEntries={["/board/rooms?source=mock"]}>
       <Providers>
@@ -185,6 +231,7 @@ it("子路径部署的分类下钻链接包含 basename", () => {
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   const link = view.container.querySelector<HTMLAnchorElement>(".ra-category-link")!;
   expect(new URL(link.href).pathname).toBe("/board/detail");
   expect(new URL(link.href).searchParams.get("source")).toBe("mock");
@@ -202,6 +249,7 @@ it("群表前置消息数，点击群名打开独立七天指标，关闭保留�
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   const headers = [...view.container.querySelectorAll(".ra-details .ant-table-thead th")].map(
     (cell) => cell.textContent,
   );
@@ -241,6 +289,7 @@ it("主要事件类型渲染四个计数标签，第四项保留群与类型的�
       </Providers>
     </MemoryRouter>,
   );
+  await settle(view);
   const tags = view.container.querySelector<HTMLElement>(".ra-category-tags")!;
   const links = within(tags).getAllByRole("link");
   expect(links).toHaveLength(4);

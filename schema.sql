@@ -43,15 +43,19 @@ CREATE TABLE b_merchant_group_event (
     agents                 JSON            NOT NULL COMMENT '涉及的全部INTERNAL成员easyUserId数组，全存。归属口径换了不用重跑LLM',
     first_responder        CHAR(16)        NULL     COMMENT 'first_agent_reply_time那条消息的发送方easyUserId',
     summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（落库前由抽取校验器拦截）',
+    last_msg_role          ENUM('EXTERNAL','INTERNAL') NULL COMMENT '末条来源消息发送方的identityType——asker_role的镜像，同源同形，只是取末条而非首条。EXTERNAL=商家说完没人接（把人晾着），INTERNAL=客服收的尾。确定性计算不经模型，与first_agent_reply_time同一条路。NULL=加这一列之前抽取的历史行，不是某一边（承重不变量4的形状），冻结区不可回填。不进idx_overview：今天只在事件明细逐行显示，没有聚合点',
+    followup_wait_max_sec  INT UNSIGNED    NULL     COMMENT '后续轮次最长等待秒数（工作时段口径）。首响之后每次EXTERNAL→INTERNAL间隔取最大，扣除08:30-21:00之外的时间；周末与节假日不扣（没有工作日历）。末尾没人接的那一段不计——那是last_msg_role的活。⚠️与首响时效同一个工作时段口径（曾经只有本列这么算）。但两者可改性不同：首响由两个时间列查询期现算、口径随时可改，而后续等待查询期拿不到中间轮次，只能写入时算，口径就此定死。0=确实没有后续轮次（算出来的事实），NULL=没算过（加这一列之前的历史行，冻结区不可回填）——承重不变量4，两者绝不混。算指标前先滤掉asker_role=INTERNAL，与首响同一条WHERE。不进idx_overview：今天只在事件明细逐行显示',
     event_type             VARCHAR(64)     NULL COMMENT '主类；NULL=尚未完成打标，__untyped__=模型归不上去或v0未建词表。分类指标只按主类统计',
     event_types            JSON            NULL COMMENT '标签全集；NULL=尚未完成打标，完成后非空且首项等于event_type。副类只供下钻',
     taxonomy_version       VARCHAR(16)     NULL COMMENT '打标所用词表版本；NULL=尚未完成打标',
+    source_messages        MEDIUMTEXT      NULL COMMENT '来源消息渲染快照。JSON数组，与source_msg_ids等长同序，元素就是webUI下钻接口的返回体（msg_id/at/sender_id/sender_role/text）。展示列——既非事实列也非标注列，不参与任何指标、不回读进Event、不参与抽取与打标。非TEXT消息的text已在抽取时换成占位符（[图片]等），媒体URL一律不存（带签名会过期）。NULL=升级前的历史行，不是空数组（承重不变量4的形状）。不用JSON类型：MySQL的JSON是带键偏移索引的二进制格式，比等价文本更大，而这一列只整块读写、从不JSON_EXTRACT',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
-    KEY idx_shard (corpid, roomid, occurred_on) COMMENT '分片删重写必需',
+    KEY idx_shard (corpid, roomid, occurred_on) COMMENT '分片删重写必需。**也是「点进某个群看历史」的最优索引**：群号已知时等值+范围，比idx_overview更贴',
     KEY idx_day (occurred_on) COMMENT 'BI直连：按时间段捞事件明细',
-    KEY idx_corp_day (corpid, occurred_on) COMMENT '只读工作台按企业与日期定位，保留按群写入的分片索引'
+    KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time) 走索引尾读，一次一行。没有它每个请求都全表扫一遍',
+    KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type, first_msg_time, first_agent_reply_time, last_msg_time) COMMENT '只读工作台全局概览的覆盖索引。前两列corpid等值+occurred_on范围负责定位（等值列必须在范围列之前）；后六列只为「别回表」——聚合要用的全在这儿，47万行的窗口聚合不必回表47万次。首响秒差由这两个时间列在索引内算出并过滤（ICP），所以不需要生成列。⚠️agents是JSON进不了索引，按客服筛选那条查询会回表，是已知且有意的例外。⚠️它是idx_corp_day(corpid,occurred_on)的超集，那条已删'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '抽取出的结构化业务事件';
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -81,8 +85,8 @@ CREATE TABLE b_merchant_group_metric_daily (
     event_count         INT UNSIGNED        NULL     COMMENT '当日事件数（含平台发起）。事件级指标，抽取失败时为NULL不是0',
     merchant_event_count INT UNSIGNED       NULL     COMMENT '当日asker_role=EXTERNAL的事件数。**unreplied_count与两个首响分位数的分母就是它，不是event_count**——用event_count当分母会得到一个偏低但看起来正常的未回复率',
     unreplied_count     INT UNSIGNED        NULL     COMMENT '当日未回复的商家发起事件数（first_agent_reply_time IS NULL）。分母是merchant_event_count。抽取失败时为NULL',
-    first_reply_p50_sec INT UNSIGNED        NULL     COMMENT '首响时效P50（秒），只统计商家发起的事件。用分位数不用均值：一条几小时才回的会把均值整个带偏',
-    first_reply_p90_sec INT UNSIGNED        NULL     COMMENT '首响时效P90（秒），只统计商家发起的事件',
+    first_reply_p50_sec INT UNSIGNED        NULL     COMMENT '首响时效P50（**工作时段秒数**，只算08:30-21:00之内，周末节假日不扣）。只统计商家发起的事件。用分位数不用均值：一条几小时才回的会把均值整个带偏。⚠️2026-09改的口径，此前是墙钟差——历史行是否已迁移见docs/deploy.md「首响口径改为工作时段」',
+    first_reply_p90_sec INT UNSIGNED        NULL     COMMENT '首响时效P90（**工作时段秒数**），只统计商家发起的事件。口径与迁移同P50',
     extraction_status   ENUM('ok','failed') NOT NULL COMMENT '抽取状态。ok=算出来了（可能是0个事件），failed=没算出来（事件级列全为NULL）',
     classification_status ENUM('pending','ok','failed') NOT NULL DEFAULT 'ok' COMMENT '打标状态；pending=已保存事实，ok=标签和分类指标齐全，failed=打标未完成',
     agent_accounts      JSON               NULL COMMENT '本轮群窗口的平台客服账号映射，easyUserId到officialUserId；供独立打标后计算客服指标',
@@ -92,7 +96,8 @@ CREATE TABLE b_merchant_group_metric_daily (
     PRIMARY KEY (id),
     UNIQUE KEY uk_group_daily (corpid, roomid, dt) COMMENT '语义键：REPLACE覆盖写靠它触发冲突',
     KEY idx_day (dt) COMMENT 'BI直连：跨群看某一天/某时间段',
-    KEY idx_corp_day (corpid, dt) COMMENT '只读工作台按企业与日期读取群日'
+    KEY idx_corp_day (corpid, dt) COMMENT '只读工作台按企业与日期读取群日',
+    KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳，同事件表那条'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '群维度日指标';
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -127,6 +132,44 @@ CREATE TABLE b_merchant_group_agent_metric_daily (
     KEY idx_agent (agent, dt) COMMENT 'BI直连：某客服某时间段（语义键前缀是corpid，按人查走不到）',
     KEY idx_day (dt) COMMENT 'BI直连：跨群跨人看某时间段'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '客服维度日指标';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- b_merchant_group_agent_msg_daily —— 语义键四列（uk_agent_msg_daily）
+--
+-- 客服自己发了多少条消息。**用来对冲「只看处理量」** —— 上面那张表只有事件数，
+-- 而 b_merchant_group_metric_daily.msg_count 是群级、不分人。
+--
+-- ⚠️ **为什么不是 b_merchant_group_agent_metric_daily 上的一列**，三条理由：
+--   1. 那张表的语义键含 event_type，而消息数不随类型变 —— 挂上去同一个数字要在
+--      N 个类型行里各存一遍，BI 直连 SUM 会按类型数放大，且看起来完全正常。
+--   2. 那张表按 first_responder 归属。发了 200 条却一次首响都没抢到的客服在那张表上
+--      **一行都没有** —— 而「对冲只看处理量」要看的正是这种人。
+--   3. 生命周期对不上：那张表由打标阶段整段删重写、抽取失败时整行缺失、词表升版
+--      再重写一遍；而消息数**既不依赖抽取也不依赖词表**，抽取失败的群照样算得出来。
+--
+-- 所以这张表由**事实阶段**（store::write_room 的同一个事务）写，
+-- 抽取失败照写、打标和重打标一个字节都不碰，也没有 taxonomy_version。
+--
+-- 走 REPLACE 不做删重写：raw 只增不删，同一个「群 × 日」的客服集合只会变大不会变小，
+-- 不存在需要清掉的陈旧行。与 b_merchant_group_metric_daily 同一个写法。
+-- ⚠️ 同理，REPLACE = DELETE + INSERT，这张表上的 id 每重算一次就换一个新值。
+-- ⚠️ 这里**没有 official_user_id** —— 账号映射已经在 b_merchant_group_metric_daily
+--    的 agent_accounts 里，存第二份会打架。
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE b_merchant_group_agent_msg_daily (
+    id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    corpid            VARCHAR(32)     NOT NULL COMMENT '企业ID',
+    room              VARCHAR(64)     NOT NULL COMMENT '群ID。与客服日指标表同粒度，跨群总量查询时SUM',
+    agent             CHAR(16)        NOT NULL COMMENT '平台客服（INTERNAL）easyUserId',
+    dt                DATE            NOT NULL COMMENT '统计日',
+    msg_count         INT UNSIGNED    NOT NULL COMMENT '该客服该日在该群发的消息条数。只数INTERNAL，不依赖抽取与词表',
+    gmt_created_time  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    gmt_modified_time DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_msg_daily (corpid, room, agent, dt) COMMENT '语义键四列：REPLACE覆盖写靠它触发冲突',
+    KEY idx_agent (agent, dt) COMMENT 'BI直连：某客服某时间段（语义键前缀是corpid，按人查走不到）',
+    KEY idx_day (dt) COMMENT 'BI直连：跨群跨人看某时间段'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '客服维度日消息量';
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_taxonomy —— 版本化的类型词表。人工执行插入，不做管理界面。
@@ -176,6 +219,8 @@ CREATE TABLE b_merchant_group_run_failure (
     roomid            VARCHAR(64)     NOT NULL COMMENT '群ID',
     reason            TEXT            NOT NULL COMMENT '失败原因',
     stage             ENUM('extract','classify') NOT NULL DEFAULT 'extract' COMMENT '失败阶段；打标失败不使已保存事实失效',
+    window_since      DATE            NULL     COMMENT '本次失败覆盖的数据窗口起点。⚠️不是run_date——那是跑批日，T+2下与数据日差两天，且lookback_days可配、backfill窗口任意，反推不可靠。只读工作台判事实新鲜度时用它把影响面夹在这个区间内：没有它，今天一次失败会把这个群全部历史（含冻结区里早已成功的天）标成unknown，而冻结区不会再被重抽，不可逆。NULL=加这两列之前的历史行，保守当作影响全历史（承重不变量5：历史未知不能推断成已知）',
+    window_until      DATE            NULL     COMMENT '本次失败覆盖的数据窗口终点；与window_since同时写入或同时为NULL',
     gmt_created_time  DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间；与事实完成凭据同精度，避免同秒失败被遗漏',
     gmt_modified_time DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间',
     PRIMARY KEY (id),

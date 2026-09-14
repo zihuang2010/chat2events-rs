@@ -24,11 +24,15 @@ describe("只读接口边界", () => {
   it("保留后端受控的原文缺失原因", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(Response.json({ error: "原文已超过保留期" }, { status: 410 }))),
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({ error: "该事件早于原文留存，取不到原文" }, { status: 410 }),
+        ),
+      ),
     );
     await expect(fetchMessages(7)).rejects.toMatchObject({
       status: 410,
-      detail: "原文已超过保留期",
+      detail: "该事件早于原文留存，取不到原文",
     });
   });
   it("成功响应校验后返回，不发送写请求", async () => {

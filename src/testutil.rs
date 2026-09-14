@@ -124,7 +124,7 @@ pub fn fresh_root(prefix: &str, name: &str) -> PathBuf {
 
 /// 把若干行按生产布局写成一个月文件。路径问 `ingest::room_path` 要 —— 布局只拼一次。
 pub fn write_month(root: &Path, month: &str, corp: &str, room: &str, rows: &[Value]) {
-    let p = crate::ingest::room_path(root, month, corp, room);
+    let p = crate::stage::ingest::room_path(root, month, corp, room);
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(
         &p,

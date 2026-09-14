@@ -1,5 +1,6 @@
 /** 概览的消息级汇总与等待时长。 */
-import { addDays, parseDateTime } from "@/lib/format";
+import { addDays } from "@/lib/format";
+import { workSecsBetween } from "@/domain/worktime";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
 
@@ -26,12 +27,14 @@ export interface MsgRollup {
   byDay: DayCell[];
 }
 
-/** 消息级汇总。**按日期与群筛选**，与 coverage() 同一口径，两处数字不会对不上。 */
-export function msgRollup(a: Analytics, api: FiltersApi): MsgRollup {
-  const room = api.filters.room;
-  const cells = a.dataset.groupDaily.filter(
-    (g) => a.dayset.has(g.dt) && (!room || g.roomid === room),
-  );
+/**
+ * 消息级汇总。**按日期与群筛选**，与 coverage() 同一口径，两处数字不会对不上。
+ *
+ * ⚠️ 它是这块看板上唯一**不经过聚合接口**的量纲 —— 消息数在群日表里，
+ * 而群日记录是「群数 × 天数」，本来就不会爆，所以留在前端拼（见 `useAnalytics`）。
+ */
+export function msgRollup(a: Analytics): MsgRollup {
+  const cells = a.cells;
 
   const acc = new Map<string, DayCell>(
     a.days.map((d) => [d, { day: d, msgs: 0, senders: 0, cells: 0, failed: 0 }]),
@@ -54,8 +57,10 @@ export function msgRollup(a: Analytics, api: FiltersApi): MsgRollup {
 }
 
 /** 无响应事件已经等了多久。基准是数据窗口末日 24:00，不是当前墙钟 —— 每日跑批的
- *  数据可能是几天前的，用 now() 会把等待时长算成「从那天到今天」。 */
+ *  数据可能是几天前的，用 now() 会把等待时长算成「从那天到今天」。
+ *
+ *  与首响同一个工作时段口径（`domain/worktime`）：基准仍写 24:00，落到时段外自然
+ *  被钳到当天 21:00，所以不必为它单独挑一个「末日收工时刻」。 */
 export function waitedSecFrom(boundaryDay: string, firstMsgTime: string): number {
-  const end = parseDateTime(addDays(boundaryDay, 1)).getTime();
-  return Math.max(0, (end - parseDateTime(firstMsgTime).getTime()) / 1000);
+  return workSecsBetween(firstMsgTime, `${addDays(boundaryDay, 1)} 00:00:00`);
 }

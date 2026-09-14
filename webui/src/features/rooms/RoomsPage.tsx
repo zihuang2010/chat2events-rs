@@ -7,6 +7,8 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { roomRollup, type RoomRow } from "@/domain/metrics";
+import { useRoomAggs } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
 import { DataGap, DurationOrNull, NumberOrNull, PercentOrNull } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import { formatInt, shortId } from "@/lib/format";
@@ -18,27 +20,28 @@ import "./rooms.css";
 
 export function RoomsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const { events, days, roomLabel, slaSec, lastDay, dayset, query, roomAliasIsAuthoritative } =
-    analytics;
+  const { days, roomLabel, dayset, query, roomAliasIsAuthoritative, parents } = analytics;
   const { filters, patch, hrefWith, reset } = api;
+  const groups = useMemo(() => parents.map((parent) => parent.types), [parents]);
+  const aggs = useRoomAggs(analytics.dataset.source, analytics.q, groups);
 
   const rows = useMemo(
     () =>
       roomRollup({
-        events,
+        aggs: aggs.data ?? [],
         groupDaily: analytics.dataset.groupDaily,
         rooms: analytics.dataset.meta.rooms.filter(
           (room) => !filters.room || room.roomid === filters.room,
         ),
         days,
         dayset,
-        slaSec,
-        lastDay,
         labelOf: roomLabel,
+        parents,
         query,
       }),
-    [events, analytics.dataset, days, dayset, slaSec, lastDay, roomLabel, query, filters.room],
+    [aggs.data, analytics.dataset, days, dayset, roomLabel, parents, query, filters.room],
   );
+  // 表格行数是群数（有界），所以翻页与排序都还留在前端 —— 与明细表不同。
   const pageSize = Math.min(200, filters.pageSize);
   const currentPage = Math.min(filters.page, Math.max(1, Math.ceil(rows.length / pageSize)));
   const messageTotal = rows.some((row) => row.msgs !== null)
@@ -67,6 +70,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           <button
             type="button"
             className="ra-room-link"
+            title={r.label}
             aria-haspopup="dialog"
             onClick={(event) => {
               event.stopPropagation();
@@ -196,13 +200,6 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       render: (v: number | null) => <PercentOrNull value={v} />,
     },
     {
-      title: "已解决",
-      key: "resolved",
-      width: 96,
-      responsive: ["xxl"],
-      render: () => <DataGap detail="库里没有 resolved 列，也没有「什么算解决」的定义。" />,
-    },
-    {
       title: "数据完整性",
       key: "coverage",
       width: 116,
@@ -233,6 +230,9 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
         ),
     },
   ];
+
+  if (aggs.isError) return <ErrorState error={aggs.error} onRetry={() => void aggs.refetch()} />;
+  if (!aggs.data) return <PageSkeleton />;
 
   return (
     <main className="od-overview od-room-analysis">
@@ -319,6 +319,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           </div>
           <Table<RoomRow>
             size="small"
+            tableLayout="fixed"
             rowKey="key"
             columns={columns}
             dataSource={rows}
@@ -334,13 +335,12 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
             onChange={(_, __, ___, extra) => {
               if (extra.action === "sort") patch({ page: 1 });
             }}
-            scroll={{ x: "max-content" }}
+            scroll={{ x: "100%" }}
             onRow={(record) => ({
               className: "c2e-row-clickable",
               onClick: () => setSelectedRoom(record.key),
             })}
           />
-          <p className="od-footnote">已解决状态暂无数据来源。</p>
         </section>
       )}
       <RoomInsightsDrawer

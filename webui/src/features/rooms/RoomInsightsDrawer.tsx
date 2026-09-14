@@ -1,6 +1,7 @@
 import { ArrowRightOutlined } from "@ant-design/icons";
 import { Drawer, Segmented, Tag, Tooltip } from "antd";
-import { useWindowDataset } from "@/api/queries";
+import { useCategories, useSummary } from "@/api/queries";
+import type { CategoryAgg, SummaryRow } from "@/domain/schemas";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -9,7 +10,7 @@ import type { FiltersApi } from "@/features/filters/useFilters";
 import { EChart } from "@/components/charts/EChart";
 import { METRIC } from "@/domain/definitions";
 import { formatDuration, formatInt, formatPercent } from "@/lib/format";
-import { buildRoomCharts, buildRoomInsights } from "./roomInsights";
+import { buildRoomCharts, buildRoomInsights, roomInsightsWindow } from "./roomInsights";
 import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
 
 export function RoomInsightsDrawer({
@@ -41,6 +42,10 @@ export function RoomInsightsDrawer({
   );
 }
 
+/**
+ * 抽屉自己取数：**固定七天窗口 ＋ 只看这一个群**，与表格上的筛选条件无关
+ * （所以不能复用页面那份 `analytics.q`，只借它的 `slaSec`）。
+ */
 function RoomInsightsContent({
   roomId,
   analytics,
@@ -50,40 +55,64 @@ function RoomInsightsContent({
   analytics: Analytics;
   api: FiltersApi;
 }) {
-  const query = useWindowDataset(
-    analytics.dataset.source,
-    null,
-    null,
-    analytics.dataset.source === "api",
+  const source = analytics.dataset.source;
+  const { from, to } = roomInsightsWindow(analytics.dataset);
+  const scope = useMemo(
+    () => ({ from, to, room: roomId, slaSec: analytics.slaSec }),
+    [from, to, roomId, analytics.slaSec],
   );
-  if (analytics.dataset.source === "api") {
-    if (query.isPending) return <PageSkeleton />;
-    if (query.isError)
-      return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
-    return (
-      <RoomInsightsReady
-        roomId={roomId}
-        analytics={{ ...analytics, dataset: query.data }}
-        api={api}
-      />
-    );
-  }
-  return <RoomInsightsReady roomId={roomId} analytics={analytics} api={api} />;
+  const groups = useMemo(
+    () => analytics.parents.map((parent) => parent.types),
+    [analytics.parents],
+  );
+  const summary = useSummary(source, scope);
+  const level1 = useCategories(source, scope, groups);
+  const level2 = useCategories(source, scope);
+  const failed = [summary, level1, level2].find((query) => query.isError);
+  if (failed?.error)
+    return <ErrorState error={failed.error} onRetry={() => void failed.refetch()} />;
+  if (!summary.data || !level1.data || !level2.data) return <PageSkeleton />;
+  return (
+    <RoomInsightsReady
+      roomId={roomId}
+      analytics={analytics}
+      api={api}
+      summary={summary.data}
+      level1={level1.data}
+      level2={level2.data}
+    />
+  );
 }
 
 function RoomInsightsReady({
   roomId,
   analytics,
   api,
+  summary,
+  level1,
+  level2,
 }: {
   roomId: string;
   analytics: Analytics;
   api: FiltersApi;
+  summary: SummaryRow;
+  level1: CategoryAgg[];
+  level2: CategoryAgg[];
 }) {
   const [level, setLevel] = useState<"level1" | "level2">("level1");
   const model = useMemo(
-    () => buildRoomInsights(analytics.dataset, roomId, analytics.slaSec),
-    [analytics.dataset, roomId, analytics.slaSec],
+    () =>
+      buildRoomInsights({
+        dataset: analytics.dataset,
+        roomId,
+        slaSec: analytics.slaSec,
+        summary,
+        level1,
+        level2,
+        tax: analytics.taxIndex,
+        parents: analytics.parents,
+      }),
+    [analytics, roomId, summary, level1, level2],
   );
   const charts = useMemo(() => buildRoomCharts(model, level), [model, level]);
   const count = (value: number | null | undefined) => (value == null ? "—" : formatInt(value));
@@ -106,7 +135,7 @@ function RoomInsightsReady({
   );
   return (
     <div className="ri-content">
-      <div className="ri-context">
+      <div className="od-drawer-context">
         <div>
           <strong>
             {model.from} 至 {model.to}
@@ -117,7 +146,7 @@ function RoomInsightsReady({
           事件明细 <ArrowRightOutlined aria-hidden="true" />
         </Link>
       </div>
-      <p className="ri-room-id">
+      <p className="od-drawer-id">
         {roomId}
         {roomId && !analytics.roomAliasIsAuthoritative(roomId) ? " · 群名待补" : ""}
       </p>

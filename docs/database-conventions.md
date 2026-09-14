@@ -15,9 +15,9 @@
 | # | 约束 | 本仓库怎么落 |
 |---|---|---|
 | 1 | MySQL **8.0+** | InnoDB + `utf8mb4`，承重不变量 2 依赖事务 |
-| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 五张表全部显式写出，不靠库级默认 |
+| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 六张表全部显式写出，不靠库级默认 |
 | 3 | 表名 / 字段名**全小写**，不以数字开头，两个下划线之间不只有数字 | ✓ |
-| 4 | **表前缀 `b_`**（公共基础应用 `basic-public-app`） | `b_merchant_group_event` · `b_merchant_group_metric_daily` · `b_merchant_group_agent_metric_daily` · `b_merchant_group_taxonomy` · `b_merchant_group_run_failure` |
+| 4 | **表前缀 `b_`**（公共基础应用 `basic-public-app`） | `b_merchant_group_event` · `b_merchant_group_metric_daily` · `b_merchant_group_agent_metric_daily` · `b_merchant_group_agent_msg_daily` · `b_merchant_group_taxonomy` · `b_merchant_group_run_failure` |
 | 5 | 非负整数必须 **`UNSIGNED`** | 自增 id、全部 `*_count`、`first_reply_p*_sec` |
 | 6 | 长度几乎相等的字符串用 **`CHAR`** 定长 | `easyUserId` → `CHAR(16)`（见下方例外 B） |
 | 7 | `VARCHAR` 长度 ≤ 5000，超了改 `TEXT` 独立成表 | 最长的 `summary` 是 `VARCHAR(200)` |
@@ -26,7 +26,7 @@
 | 10 | 禁用保留字；**状态/类型字段不得裸用 `type` / `status`** | `type` → **`event_type`**；`extraction_status` 本来就带前缀 |
 | 11 | 时间字段以**业务类型 + `_time`** 结尾 | `first_msg_at` → `first_msg_time`，`last_msg_at` → `last_msg_time`，`first_agent_reply_at` → `first_agent_reply_time` |
 | 12 | 索引命名 **`uk_` / `idx_`** | `uk_group_daily` · `idx_shard` · `idx_agent` … |
-| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 五张表全加（见下方例外 A：`is_deleted` 不加） |
+| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 六张表全加（见下方例外 A：`is_deleted` 不加） |
 
 ### 落到代码里的 SQL 写法（受同一份规范管）
 
@@ -36,6 +36,8 @@
 - `IN (...)` 的集合控制在 1000 以内 —— 本仓库最大的 `IN` 是 `occurred_on IN (窗口天数)`，个位数。
 - **超过三个表禁止 join**；join 字段类型必须绝对一致。BI 侧最常见的是
   `b_merchant_group_agent_metric_daily` join `b_merchant_group_metric_daily` 查 `extraction_status`（承重不变量 5），双表。
+  ⚠️ 「处理量 ＋ 消息量 ＋ 抽取是否完整」要三张表（再加 `b_merchant_group_agent_msg_daily`），
+  **正好踩在上限上**，之后再加维度就没余量了。这是把消息量单独成表买的单，已知且接受。
 - 数据订正（删除 / 修改）前先 `SELECT` 确认。
 
 ---
@@ -50,7 +52,8 @@
 
 理由：全项目**没有任何软删场景**。`b_merchant_group_event` 是按 `(corpid, roomid, occurred_on)`
 **物理 `DELETE` 后重插**（承重不变量 3：任一窗口失败就整群跳过、一行不写），
-两张 `b_merchant_group_*metric_daily` 是 `REPLACE` 覆盖写。加一个恒为 0 的 `is_deleted` 不是无害的占位——
+`b_merchant_group_metric_daily` 与 `b_merchant_group_agent_msg_daily` 是 `REPLACE` 覆盖写，
+`b_merchant_group_agent_metric_daily` 是打标阶段整段 `DELETE` 后重插。加一个恒为 0 的 `is_deleted` 不是无害的占位——
 **它会误导 BI**：查询的人看到这列就会写 `WHERE is_deleted = 0`，
 从而以为存在「被软删的历史行」这种东西，而实际上重写过的数据是真的没了。
 
@@ -90,13 +93,17 @@
 
 ---
 
-## `id` 在 `b_merchant_group_metric_daily` 上不是稳定行标识
+## `id` 在两张 `REPLACE` 覆盖写的表上不是稳定行标识
 
-`b_merchant_group_metric_daily` 走 `REPLACE INTO`（靠 `uk_group_daily` 触发冲突替换），
-而 **`REPLACE` = `DELETE` + `INSERT`** —— 同一个 `(corpid, roomid, dt)` 每重算一次
-就换一个新 `id`，`gmt_created_time` 也跟着重置。
+`b_merchant_group_metric_daily`（靠 `uk_group_daily` 触发冲突替换）和
+`b_merchant_group_agent_msg_daily`（靠 `uk_agent_msg_daily`）都走 `REPLACE INTO`，
+而 **`REPLACE` = `DELETE` + `INSERT`** —— 同一个语义键每重算一次就换一个新 `id`，
+**`gmt_created_time` 也跟着重置**。
 
-这不影响任何东西（没人拿它做外键），但**别把这个 `id` 当作「这行第一次算出来是什么时候」**。
-真要那个信息，看 `gmt_modified_time`，或者去 `b_merchant_group_run_failure` / 日志。
+这不影响任何东西（没人拿它做外键），但**别把这个 `id` 或 `gmt_created_time` 当作
+「这行第一次算出来是什么时候」** —— 它们只说明「最近一次重算是什么时候」，
+和 `gmt_modified_time` 说的是同一件事。真要追溯，去
+`b_merchant_group_run_failure` / 日志；事实的完成凭据在
+`b_merchant_group_metric_daily.fact_completed_time`。
 
-语义键仍然是 `uk_group_daily (corpid, roomid, dt)` —— 覆盖写的行为与加 `id` 之前**完全一致**。
+语义键仍然是各自的 `uk_*` —— 覆盖写的行为与加 `id` 之前**完全一致**。

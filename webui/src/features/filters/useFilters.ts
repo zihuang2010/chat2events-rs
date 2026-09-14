@@ -7,7 +7,13 @@
 
 import { useCallback, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { DEFAULT_SLA_SEC, STATUS_FILTERS, type StatusFilter } from "@/domain/definitions";
+import {
+  DEFAULT_SLA_SEC,
+  EVENT_SORTS,
+  STATUS_FILTERS,
+  type EventSort,
+  type StatusFilter,
+} from "@/domain/definitions";
 import { addDays } from "@/lib/format";
 
 export interface Filters {
@@ -25,6 +31,10 @@ export interface Filters {
   pageSize: number;
   /** 群聊分析的排行口径 */
   rank: string;
+  /** 明细表的服务端排序键，见 `EVENT_SORTS`。null = 按归属日 */
+  sort: EventSort | null;
+  /** 排序方向。只在 sort 非空时有意义 */
+  dir: "asc" | "desc" | null;
   /** 打开的事件详情抽屉 */
   drawer: number | null;
   /** 客服表现里展开的那个人 */
@@ -47,6 +57,8 @@ const KEYS = {
   page: "page",
   pageSize: "size",
   rank: "rank",
+  sort: "sort",
+  dir: "dir",
   drawer: "drawer",
   focusAgent: "focus",
 } as const satisfies Record<keyof Filters, string>;
@@ -64,6 +76,8 @@ function readDate(value: string | null): string | null {
 
 export function parseFilters(sp: URLSearchParams): Filters {
   const status = sp.get(KEYS.status);
+  const sort = sp.get(KEYS.sort);
+  const dir = sp.get(KEYS.dir);
   const overdue = sp.get(KEYS.overdueOnly);
   const drawer = sp.get(KEYS.drawer);
   const from = readDate(sp.get(KEYS.from));
@@ -82,6 +96,12 @@ export function parseFilters(sp: URLSearchParams): Filters {
     page: readInt(sp.get(KEYS.page), DEFAULTS.page),
     pageSize: readInt(sp.get(KEYS.pageSize), DEFAULTS.pageSize),
     rank: sp.get(KEYS.rank) ?? DEFAULTS.rank,
+    // 白名单之外的排序键按「没给」处理：URL 是别人发过来的，
+    // 拿它去打接口只会换回一个 400。
+    // ⚠️ **`Object.hasOwn` 不是 `in`** —— `in` 会走原型链，`?sort=toString`
+    // 和 `?sort=constructor` 都能通过校验、原样发给后端，换回的正是这里要避免的 400。
+    sort: sort && Object.hasOwn(EVENT_SORTS, sort) ? (sort as EventSort) : null,
+    dir: dir === "desc" ? "desc" : dir === "asc" ? "asc" : null,
     drawer: drawer === null ? null : readInt(drawer, 0) || null,
     focusAgent: sp.get(KEYS.focusAgent),
   };

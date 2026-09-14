@@ -1,9 +1,10 @@
 //! 只读工作台自己的配置 —— **跑批不知道 webUI 存在**，所以 webUI 的配置也不住在
 //! `config.rs` 里。
 //!
-//! 它只解析自己要的那几节（`ingest.raw_root` / `mysql` / `log` / `web`），
-//! 不要求模型、OSS 凭据或跑批的并发关系 —— 少一份密钥就是少一条泄露路径，
-//! 而且只读入口能在跑批那套配置齐不齐之前先起来。
+//! 它只解析自己要的那三节（`mysql` / `log` / `web`），不要求模型、OSS 凭据、
+//! 跑批的并发关系，**也不要 `ingest.raw_root`** —— 原文下钻改读
+//! `b_merchant_group_event.source_messages` 之后，它一个文件都不碰。
+//! 少一份密钥就是少一条泄露路径，而且只读入口能在跑批那套配置齐不齐之前先起来。
 //!
 //! 文件读取与 0600 权限检查跟跑批共用 `config` 的那一份，不重写一遍。
 
@@ -12,32 +13,24 @@ use crate::config::{
 };
 use serde::Deserialize;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 /// 只读入口只解析自己的运行参数，不要求模型、OSS 凭据或跑批并发关系。
 #[derive(Deserialize)]
 pub struct WebConfig {
-    pub ingest: WebIngestConfig,
     pub mysql: MysqlConfig,
     pub log: LogConfig,
     pub web: WebLimits,
 }
 
-#[derive(Deserialize)]
-pub struct WebIngestConfig {
-    pub raw_root: PathBuf,
-}
-
 #[derive(Clone, Deserialize)]
 pub struct WebLimits {
     pub concurrency: usize,
-    pub scan_concurrency: usize,
     pub max_response_bytes: usize,
     pub max_rows: usize,
     pub query_timeout_secs: u64,
+    /// 响应缓存的总字节数（见 `cache.rs`）。0 = 关掉缓存。
+    pub cache_bytes: usize,
 }
 
 #[derive(Deserialize)]
@@ -53,7 +46,6 @@ pub fn load_from_dir(dir: &Path) -> (WebConfig, WebSecrets) {
     );
     assert!(
         config.web.concurrency > 0
-            && config.web.scan_concurrency > 0
             && config.web.max_response_bytes > 0
             && config.web.max_rows > 0
             && config.web.query_timeout_secs > 0,
@@ -104,10 +96,9 @@ mod tests {
         for key in ["daily", "extract", "classify", "llm"] {
             table.remove(key);
         }
-        value["ingest"] = toml::Value::Table(toml::map::Map::from_iter([(
-            "raw_root".into(),
-            "./data/raw".into(),
-        )]));
+        // ⚠️ 连 `[ingest]` 一起删掉：只读入口不碰文件系统，配置里有没有 raw_root
+        // 都不影响它起来。跑批那份配置仍然必须完整（下面那条 catch_unwind 钉住）。
+        table.remove("ingest");
         value["mysql"]["max_connections"] = 1.into();
         let dir = crate::testutil::fresh_root("config", "web-only");
         std::fs::create_dir_all(&dir).unwrap();

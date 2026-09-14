@@ -104,9 +104,6 @@
   font-size: var(--text-xs);
   line-height: 16px;
 }
-.ia-workbench .ia-trace-table .ant-table-tbody > tr:nth-child(even) > td {
-  background: var(--color-paper);
-}
 .ia-workbench .ia-trace-table .ant-table-tbody > tr > td.ant-table-cell-row-hover,
 .ia-workbench .ia-trace-table .ant-table-tbody > tr.ia-trace-selected > td {
   background: var(--color-wash);

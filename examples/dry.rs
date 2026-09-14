@@ -13,7 +13,7 @@
 //! 用途是**离线看模型到底会读到什么**：脱敏干不干净、便签和箭头渲染对不对、
 //! 分段切在哪。改 `body` / `render` / `segment` 之后 diff 前后两份输出，
 //! 改动的影响面一眼可见 —— 不花 token，也不碰库。
-use chat2events_rs::{extract, ingest, window::Window};
+use chat2events_rs::{stage::extract, stage::ingest, window::Window};
 
 fn main() {
     tracing_subscriber::fmt()

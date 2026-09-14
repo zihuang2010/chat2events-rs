@@ -22,12 +22,5 @@ async fn main() -> Result<()> {
         .map(String::as_str)
         .unwrap_or("127.0.0.1:8787")
         .parse()?;
-    web::serve(
-        pool,
-        config.ingest.raw_root,
-        args[1].clone(),
-        address,
-        config.web,
-    )
-    .await
+    web::serve(pool, args[1].clone(), address, config.web).await
 }

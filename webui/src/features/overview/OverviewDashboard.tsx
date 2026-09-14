@@ -2,32 +2,21 @@
  * Overview: workload, response quality, then drill-down.
  * Metrics stay in the domain layer; this view only groups and formats them.
  */
-import { ArrowRightOutlined, InfoCircleOutlined } from "@ant-design/icons";
-import { Tooltip } from "antd";
-import { useState, type ReactNode } from "react";
+import { ArrowRightOutlined } from "@ant-design/icons";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
-import {
-  agentRollup,
-  categoryRollup,
-  coverageLabel,
-  isUnreplied,
-  roomRollup,
-} from "@/domain/metrics";
+import { agentRollup, categoryRows, decorate, roomRollup } from "@/domain/metrics";
+import { useAgentAggs, useCategories, useEventsPage, useRoomAggs, useSummary } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
 import { formatDuration, formatDurationCompact, formatInt, formatPercent } from "@/lib/format";
+import { Metric, MetricInfo as Info } from "@/components/Metric";
 import { EventDrawer } from "@/features/detail/EventDrawer";
 import { CategoryPie, OverviewTrend, ResponseDistribution } from "./OverviewCharts";
 import { MSG_INFO, msgRollup, waitedSecFrom, type OverviewProps } from "./overviewMetrics";
 
-function Info({ text }: { text: string }) {
-  return (
-    <Tooltip title={text} mouseEnterDelay={0.8} trigger={["hover", "focus"]}>
-      <button type="button" className="od-info" aria-label={`口径说明：${text}`}>
-        <InfoCircleOutlined />
-      </button>
-    </Tooltip>
-  );
-}
+/** 待跟进队列在概览上只露这几条，全部走「查看全部」跳明细。 */
+const QUEUE_PREVIEW = 6;
 
 function SectionHead({ title, note, to }: { title: string; note?: ReactNode; to?: string }) {
   return (
@@ -45,69 +34,48 @@ function SectionHead({ title, note, to }: { title: string; note?: ReactNode; to?
   );
 }
 
-function Metric({
-  label,
-  value,
-  unit,
-  note,
-  info,
-  to,
-  tone,
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  note: ReactNode;
-  info: string;
-  to?: string;
-  tone?: "risk" | "warn" | undefined;
-}) {
-  return (
-    <div className="od-metric" data-tone={tone}>
-      <div className="od-metric-label">
-        {label}
-        <Info text={info} />
-      </div>
-      {to ? (
-        <Link
-          className="od-metric-value"
-          to={to}
-          aria-label={`${label}：${value}${unit ?? ""}，查看明细`}
-        >
-          {value}
-          <small>{unit}</small>
-          <ArrowRightOutlined className="od-metric-arrow" />
-        </Link>
-      ) : (
-        <div className="od-metric-value">
-          {value}
-          <small>{unit}</small>
-        </div>
-      )}
-      <p>{note}</p>
-    </div>
-  );
-}
-
 export function OverviewDashboard({ analytics, api }: OverviewProps) {
-  const { agg, events, days, roomLabel, slaSec, lastDay, cov } = analytics;
+  const { days, roomLabel, slaSec, lastDay, cov, parents } = analytics;
   const { hrefWith } = api;
   const [roomOrder, setRoomOrder] = useState("msgs");
-  const m = msgRollup(analytics, api);
+  const source = analytics.dataset.source;
+  const groups = useMemo(() => parents.map((parent) => parent.types), [parents]);
+  const summaryQuery = useSummary(source, analytics.q);
+  const roomsQuery = useRoomAggs(source, analytics.q, groups);
+  const agentsQuery = useAgentAggs(source, analytics.q);
+  const catsQuery = useCategories(source, analytics.q, groups);
+  // 待跟进队列：**只取前几条**，不再把全部无响应事件拉到浏览器里排序。
+  // 服务端按 `(occurred_on, id)` 升序，也就是等得最久的排在前面。
+  const queueQuery = useEventsPage(
+    source,
+    useMemo(() => ({ ...analytics.q, status: "unreplied", overdueOnly: null }), [analytics.q]),
+    1,
+    QUEUE_PREVIEW,
+  );
+  const m = msgRollup(analytics);
   const missingDays = cov.missing;
   const unavailable = cov.known === 0;
   const count = (n: number) => (unavailable ? "—" : formatInt(n));
   const slaLabel = SLA_OPTIONS.find((o) => o.value === slaSec)?.label ?? `${slaSec} 秒`;
-  const cats = categoryRollup(events, "level1", analytics.taxIndex);
+  const failed = [summaryQuery, roomsQuery, agentsQuery, catsQuery, queueQuery].find(
+    (query) => query.isError,
+  );
+  const agg = summaryQuery.data;
+  const cats = categoryRows(
+    catsQuery.data ?? [],
+    "level1",
+    analytics.taxIndex,
+    parents,
+    agg?.events ?? 0,
+  );
   const allRooms = roomRollup({
-    events,
+    aggs: roomsQuery.data ?? [],
     groupDaily: analytics.dataset.groupDaily,
     rooms: analytics.dataset.meta.rooms,
     days,
     dayset: analytics.dayset,
-    slaSec,
-    lastDay,
     labelOf: roomLabel,
+    parents,
     query: analytics.query,
   }).sort((a, b) => {
     if (roomOrder === "unreplied")
@@ -119,22 +87,22 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
   const rooms = allRooms.slice(0, 10);
   const heatMax = Math.max(1, ...rooms.flatMap((r) => r.series.map((n) => n ?? 0)));
   const agentRows = agentRollup({
-    events,
+    aggs: agentsQuery.data ?? [],
     groupDaily: analytics.dataset.groupDaily,
-    agents: analytics.dataset.meta.agents,
     rooms: analytics.dataset.meta.rooms,
     days,
     dayset: analytics.dayset,
-    slaSec,
     labelOf: analytics.agentLabel,
     query: analytics.query,
   })
     .sort((a, b) => b.involved - a.involved)
     .slice(0, 10);
   const maxInvolved = Math.max(1, ...agentRows.map((a) => a.involved));
-  const queue = events
-    .filter(isUnreplied)
-    .sort((a, b) => a.first_msg_time.localeCompare(b.first_msg_time));
+  const queue = decorate(queueQuery.data?.rows ?? [], analytics.taxIndex);
+  if (failed?.error)
+    return <ErrorState error={failed.error} onRetry={() => void failed.refetch()} />;
+  if (!agg) return <PageSkeleton />;
+
   const responseStates = [
     {
       label: "阈值内已回复",
@@ -155,7 +123,6 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
       to: hrefWith({ status: "unreplied", overdueOnly: null }, "/detail"),
     },
   ];
-  const openedEvent = analytics.dataset.events.find((e) => e.id === api.filters.drawer);
 
   return (
     <main className="od-overview">
@@ -168,20 +135,26 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           <strong>
             {days[0] ?? "—"} <span>至</span> {lastDay}
           </strong>
-          <span>最近 7 天 · UTC+8 · 自然时间</span>
+          <span>最近 7 天 · UTC+8 · 工作时段 08:30–21:00</span>
         </div>
       </header>
 
-      <section className="od-metrics od-overview-metrics" aria-label="核心指标">
+      <section className="od-metrics od-overview-metrics" aria-label="核心指标" data-count="6">
         <Metric
+          unavailable={unavailable}
           label="活跃群"
           value={count(agg.rooms)}
           unit="个"
           info={METRIC.rooms}
           to={hrefWith({}, "/rooms")}
-          note="当前事件涉及的群 · 按群去重"
+          note={
+            <Link to={hrefWith({}, "/agents")}>
+              活跃客服 {count(agg.agents)} 人 <ArrowRightOutlined aria-hidden="true" />
+            </Link>
+          }
         />
         <Metric
+          unavailable={!cov.cells}
           label="消息总量"
           value={cov.cells ? formatInt(m.msgs) : "—"}
           unit="条"
@@ -196,6 +169,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           }
         />
         <Metric
+          unavailable={unavailable}
           label="事件量"
           value={count(agg.events)}
           unit="起"
@@ -208,6 +182,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           }
         />
         <Metric
+          unavailable={unavailable}
           label="无响应事件"
           value={count(agg.unreplied)}
           unit="起"
@@ -217,6 +192,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           note={<>占商家发起 {formatPercent(agg.unrepliedRate) ?? "—"}</>}
         />
         <Metric
+          unavailable={unavailable}
           label="首响超时率"
           value={formatPercent(agg.overdueRate) ?? "—"}
           info={METRIC.overdue}
@@ -229,6 +205,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           }
         />
         <Metric
+          unavailable={unavailable}
           label="首响 P50"
           value={formatDuration(agg.p50) ?? "—"}
           info={METRIC.p50}
@@ -240,37 +217,17 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
         />
       </section>
 
-      <div className="od-context">
-        <div>
-          <Link to={hrefWith({}, "/agents")}>
-            活跃客服数 <b>{count(agg.agents)}</b>
-          </Link>
-          <span>
-            首响阈值 <b>{slaLabel}</b>
-          </span>
-        </div>
-        {!cov.complete ? (
-          <Link className="od-coverage" to={hrefWith({}, "/rooms")}>
-            <InfoCircleOutlined /> {coverageLabel(cov)} ·{" "}
-            {cov.pendingLabels || cov.failedLabels ? "分类统计未完成" : "事件统计不完整"}{" "}
-            <ArrowRightOutlined />
-          </Link>
-        ) : (
-          <span>{coverageLabel(cov)}</span>
-        )}
-      </div>
-
       <div className="od-primary">
         <section className="od-trend">
           <SectionHead title="业务量趋势" note={`${days.length} 天 · 消息与事件分别统计`} />
-          <OverviewTrend analytics={analytics} api={api} />
+          <OverviewTrend analytics={analytics} api={api} summary={agg} />
         </section>
         <section className="od-response">
           <SectionHead
             title="响应质量"
             note={
               <>
-                商家发起 {count(agg.merchant)} 起 · 阈值 {slaLabel}
+                商家发起 {count(agg.merchant)} 起 · 首响阈值 {slaLabel}
                 <Info text={METRIC.overdue} />
               </>
             }
@@ -297,7 +254,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           <h3 className="od-subhead">
             首响时长分布 <span>已回复 {count(agg.replied)} 起</span>
           </h3>
-          <ResponseDistribution events={events} slaSec={slaSec} />
+          <ResponseDistribution buckets={agg.replyBuckets} replied={agg.replied} slaSec={slaSec} />
         </section>
       </div>
 
@@ -479,11 +436,11 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
         <section className="od-attention">
           <SectionHead
             title="待跟进事件"
-            note={<>无响应 {count(queue.length)} 起 · 按等待时长排序</>}
+            note={<>无响应 {count(agg.unreplied)} 起 · 按等待时长排序</>}
             to={hrefWith({ status: "unreplied", overdueOnly: null }, "/detail")}
           />
           <div className="od-queue">
-            {queue.slice(0, 6).map((e) => (
+            {queue.map((e) => (
               <Link className="od-queue-row" key={e.id} to={hrefWith({ drawer: e.id })}>
                 <span className="od-queue-summary" title={e.summary}>
                   {e.summary}
@@ -506,9 +463,9 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
         </section>
       </div>
       <EventDrawer
-        event={openedEvent}
+        event={queue.find((e) => e.id === api.filters.drawer)}
         analytics={analytics}
-        missingId={api.filters.drawer !== null && !openedEvent ? api.filters.drawer : null}
+        missingId={api.filters.drawer}
         onClose={() => api.patch({ drawer: null })}
       />
     </main>

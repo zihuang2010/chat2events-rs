@@ -24,7 +24,7 @@ cargo run --locked --bin webui -- /etc/chat2events <corpid>
 默认监听 `127.0.0.1:8787`；第三个参数可指定监听地址。
 前端通过 `/api/dataset` 一次读取同一 MySQL 快照中的词表、事件和群日记录。
 默认仅加载最近七天，日期筛选会重新请求对应范围；群抽屉独立请求七天，事件深链接按 ID 补读。
-缺记录与无法定位影响范围的后续失败都显示为未知，不能当作完整或零；原文超出保留期返回 410。
+缺记录与无法定位影响范围的后续失败都显示为未知，不能当作完整或零；该事件早于原文留存时返回 410。
 
 默认模式仅在 `/api/meta` 探活网络不可达、超时、404 或 5xx 时回落到模拟数据源，顶栏常驻「模拟数据」标记。
 `?source=api` 强制只走真接口（失败即报错，不回落），`?source=mock` 强制模拟。
@@ -33,6 +33,25 @@ cargo run --locked --bin webui -- /etc/chat2events <corpid>
 
 整体概览固定采用已确认工作台，入口为 `/overview`，统计最新七个自然日。
 旧 `variant` 参数仅在入口清理，不再包含原型或多套页面实现。
+
+## 本地排查
+
+起不来、或页面报错时按这个顺序查：
+
+```bash
+pgrep -alf 'webui|vite'                                            # 进程在不在
+lsof -nP -iTCP:8787 -iTCP:5273 -sTCP:LISTEN                        # 端口有没有人听
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:8787/api/meta   # 200 = 后端正常
+curl -s 127.0.0.1:8787/api/dataset | python3 -m json.tool | head    # 数据长什么样
+```
+
+**进程在不等于它是当前代码。** 页面报「接口返回的数据不符合约定」而缺的正是某个新字段时，
+先怀疑后端还跑着该字段加进去之前编译的二进制 —— `curl` 一下 `/api/dataset` 看键在不在，
+比看进程列表准。重起：`pkill -f 'bin/webui'` 后再 `cargo run`。
+
+后端启动即报缺列、或某列必须允许 NULL，是目标库没做表结构升级，升级 SQL 见
+`../docs/deploy.md` 的「上线前的检查」。前端两处报错文案的区别：契约不符指字段形状对不上，
+409 指数据本身（企业无数据、词表版本不一致）。
 
 ## 目录
 
@@ -49,7 +68,7 @@ src/
   components/   与业务无关的展示件（图表、指标条、状态、原语）
   features/     五个按需加载的视图 + URL 筛选状态
     overview/   概览入口、工作台、图表、消息汇总与回归测试
-    insights/   事件、客服、追溯共享布局与指标条
+    insights/   事件、客服、追溯共享布局、指标条编排与页签工具栏
 ```
 
 依赖方向：`features → components → app/theme`，`features → api → domain → lib`。
@@ -80,11 +99,41 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 | 路径 | 返回 | 对应表 |
 |---|---|---|
 | `GET /api/meta` | 语料窗口、群与客服名册、词表 | — |
-| `GET /api/events?from=&to=` | `Event[]` | `b_merchant_group_event` |
 | `GET /api/metric/group?from=&to=` | `GroupDaily[]` | `b_merchant_group_metric_daily` |
 | `GET /api/metric/agent?from=&to=` | `AgentDaily[]` | `b_merchant_group_agent_metric_daily` |
 | `GET /api/failures?from=&to=` | `Failure[]` | `b_merchant_group_run_failure` |
-| `GET /api/event/{id}/messages` | `Message[]` | 摄取端口 `read_by_ids`，原文 |
+| `GET /api/event/{id}/messages` | `Message[]` | `b_merchant_group_event.source_messages`，**未脱敏原文**。⚠️ 这一列有保留期（跟 raw 镜像的 `raw_retention_months` 同一个），过期后回 410「该事件早于原文留存」—— 那是留存期到了，不是故障 |
+| `GET /api/summary` | KPI 一行 | 数据库算完只送数字，**不随窗口变大**。`sla_sec` 默认 1800，须与前端 `DEFAULT_SLA_SEC` 一致 |
+| `GET /api/rooms` | 按群一行 | 只出「必须从明细算」的七项（含分位数）；`msg_count` / 每日序列 / 覆盖率天数继续用 `groupDaily` 拼 |
+| `GET /api/agents` | 按客服一行 | **参与**（involved/rooms）与**首响归属**（owned/p50/p90/overdue）是两个口径，不能混。**没有 `unreplied`**：抽取保证「无平台回复 ⟹ agents 为空」，那一列结构上恒为 0；团队口径的无响应数在 `/api/summary` |
+| `GET /api/events` | `{ rows, total, pages, truncated }` | `b_merchant_group_event`。延迟关联翻页（内层只碰覆盖索引、外层才回表）。`page` 1~200、`page_size` 1~100，越界 400 不截断；页码在护栏内但越过 `pages` 返回空 `rows`。**`total` 不按已知成功群日过滤**，与 `/api/summary` 的 `events` 不是一个集合，前端不做任何分页算术 |
+
+四个聚合 / 明细接口收**同一组筛选参数**，全部进 SQL 的 `WHERE`：
+
+| 参数 | 说明 |
+|---|---|
+| `from` / `to` | 日期窗口，不给用默认七天 |
+| `room` / `agent` | 群号 / 客服 easyUserId |
+| `types` | 逗号分隔的 `event_type`。**父类由前端展开成子类集合再传** —— 词表在前端手上，后端不再 join 一次 |
+| `status` | `unreplied` / `replied` / `push` / `backlog`，与前端 `StatusFilter` 同名 |
+| `overdue_only` | `true` / `false`，非法值 400 不静默当假 |
+| `q` | **只匹配事件摘要**。搜索框还会命中群名 / 客服名 / 类型名，那些由前端解析成 id 走上面三个参数 |
+| `sla_sec` | 超时线，默认 1800，须等于前端 `DEFAULT_SLA_SEC` |
+
+⚠️ **前端页面尚未切过去**，`dataset` 仍是主路径。切换顺序见下面「待办」。
+后端已与前端算法**逐个数字对拍通过**（5 群 × 7 项 ＋ 22 客服 × 9 项 ＋ 10 组筛选组合），
+但那是在**新老并存**的前提下做的 —— 删掉 `dataset` 就没有基准可对了，所以要先切页面再删。
+
+### 待办：前端切换的顺序
+
+1. `useAnalytics` 的 `agg` 改读 `useSummary`
+2. `RoomsPage` / `AgentsPage` 改读 `useRoomAggs` / `useAgentAggs`（与 `groupDaily` join 补消息级指标）
+3. `OverviewCharts` 的按天序列改用 `summary.byDay`
+4. `EventsPage` 改用 `useEventsPage` 服务端翻页
+5. **最后**才把 `events` 从 `/api/dataset` 里去掉 —— 那时它只剩 `meta` ＋ `groupDaily`，
+   1000 群 × 7 天是 7000 行，永远不会撞 `max_rows`，天花板随之消失
+
+每切一步都拿同一份数据和老路径对拍，别攒到最后一起验。
 
 字段形状以 `src/domain/schemas.ts` 为准，**每个响应都会被校验**：不符合约定就显式报错，
 不静默渲染。理由见该文件顶部注释。
@@ -109,6 +158,6 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 
 ## 待补齐的数据能力
 
-库里没有来源的能力在界面上一律标注，不编造。完整清单见页尾，或
-`src/domain/definitions.ts` 的 `DATA_GAPS`：已解决 / 后续回复时效 / 客服回复消息数 /
-客服姓名 / 工作时间口径 / 客服当天实际参与。
+库里没有来源的能力在界面上一律**原地标注**，不编造，也不另设清单面板：
+客服回复消息数（含日粒度参与）与客服姓名标在客服页的「数据边界」与姓名标记上，
+工作日历标在时长指标的 ⓘ 里。补齐各需要什么见 `design.md`。

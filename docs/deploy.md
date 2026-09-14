@@ -49,7 +49,8 @@ rustc -V    # 必须 ≥ 1.85：本仓库是 edition 2024
 ```bash
 # 构建
 cargo build --release
-# 产物：target/release/chat2events-rs 与 target/release/webui
+# 产物（六个二进制，CI 的 release job 打成一个 tar 包）：
+# target/release/{chat2events-rs, webui, backfill, recompute, recover, taxonomy}
 ```
 
 ⚠️ **首次编译会现场编 DuckDB 的 amalgamation**：慢（分钟级到十几分钟）、吃内存
@@ -89,7 +90,12 @@ cargo build --release
 
 ```text
 /opt/chat2events/
-    chat2events-rs              # 二进制，来自 target/release/
+    chat2events-rs              # 每日跑批，来自 release tar 包
+    webui                       # 只读工作台（独立启动，可选）
+    backfill                    # 人工：补跑历史窗口（⚠️ 写穿冻结区）
+    recompute                   # 人工：词表升版后重打标
+    recover                     # 人工：补齐未完成分类
+    taxonomy                    # 人工：看语料 / 试打 / 转 SQL
 /etc/chat2events/
     config.toml                 # 调参与端点，跟仓库里那份同源
     secrets.toml                # 0600，config.rs 起手就检查权限，不对直接崩
@@ -122,7 +128,9 @@ cargo build --release
 估算 **≈ 36 GB**（每天新增约 600 MB）。清理在每轮拉取后自动执行，
 保留起点锚在窗口上，调大 `lookback_days` 不会误删本轮要读的月份。
 
-⚠️ 这个目录同时是 webUI 下钻的可见范围 —— 超出保留期的事件取不到原文。
+⚠️ 这个目录**不再是 webUI 下钻的可见范围** —— 原文渲染快照在抽取时落进
+`b_merchant_group_event.source_messages`，工作台不读文件。这里的保留期只决定
+「抽取失败重跑 / backfill 补跑还读不读得到原文」。
 
 ### ⚠️ raw 区是未脱敏的客户正文，权限跟 `secrets.toml` 同级
 
@@ -262,6 +270,83 @@ retry-after、5xx），只会让 reqwest/hyper 变吵。
 
 ## 上线前的检查
 
+### 失败影响面升级
+
+停止所有跑批、补标与重打标，备份后执行；新库直接使用 `schema.sql`。
+
+```sql
+ALTER TABLE b_merchant_group_run_failure
+    ADD COLUMN window_since DATE NULL
+        COMMENT '本次失败覆盖的数据窗口起点；NULL=升级前的历史行，按影响全历史保守处理'
+        AFTER stage,
+    ADD COLUMN window_until DATE NULL
+        COMMENT '本次失败覆盖的数据窗口终点' AFTER window_since;
+```
+
+**不要回填历史行。** `run_date` 是跑批日不是数据日，T+2 之下两者差两天，而
+`lookback_days` 可配、backfill 窗口任意 —— 从跑批日反推数据窗口不可靠，
+拿它回填等于用猜的影响面去放行本该存疑的天。历史行保持 NULL，只读工作台
+继续按「影响全历史」处理它们（承重不变量 5：历史未知不能推断成已知）。
+
+升级之后新写入的失败行都带窗口，只读工作台判事实新鲜度时把失败夹在它自己那个
+窗口里：一次拉取失败或「没轮到」不再让这个群**全部历史**掉出聚合分母 ——
+此前那些天含冻结区里早已成功的日子，而冻结区不会再被重抽，unknown 是永久的。
+
+### 只读工作台响应缓存
+
+白天的查询走内存缓存（`src/web/cache.rs`），失效靠库里的「数据戳」：每个请求先读
+四张表各自的最后一次写，戳变了整个缓存作废；戳距现在不足 60 秒视作跑批还在写，只查不存。
+跑批不需要知道缓存存在。戳查询要走索引，已有库补这两条（新库直接用 `schema.sql`）：
+
+```sql
+ALTER TABLE b_merchant_group_event ADD KEY idx_modified (gmt_modified_time);
+ALTER TABLE b_merchant_group_metric_daily ADD KEY idx_modified (gmt_modified_time);
+```
+
+没有它们缓存照样工作，但每个请求的戳查询本身就是两次全表扫描。
+`[web]` 新增 `cache_bytes`（0 = 关）；`concurrency` 抬到 48 —— 一页 7 个请求、不排队，
+12 只够一个人。响应头 `X-Cache: HIT / MISS / BYPASS` 可以直接看命中情况。
+⚠️ 群名表 `b_wecom_merchant_group` 不在戳里（别人的表，没有可用时间列），群改名要重启 `webui` 或等下一次跑批。
+
+### 原文快照的保留期
+
+`b_merchant_group_event.source_messages` 是**未脱敏的客户正文**（实测 1850 条里 193 条带
+手机号、88 条带门牌址、101 处真名），而只读工作台无登录。它跟 raw 镜像同一个保留期
+（`ingest.raw_retention_months`），由跑批在清理月目录之后顺手置空 ——
+清的是**展示列**不是事实列，不碰冻结（承重不变量 1 只管事实列）。过期后
+`/api/event/{id}/messages` 回 410「该事件早于原文留存」，那是留存期到了不是故障。
+
+⚠️ **每轮只清刚滑出保留期的那一个月**。`occurred_on < 边界` 配上
+`source_messages IS NOT NULL` 只能回表才判得了，稳态下那些行早清完了 ——
+不夹下界就是每晚白扫整段历史、一行都清不到，而那个代价只跟「库里攒了多久」有关。
+
+**代价**：跑批连续多天没跑会漏掉中间的月份。追平跑一次（`<边界>` 取
+「窗口起点往前推 `raw_retention_months - 1` 个月」那个月的 1 号）：
+
+```sql
+-- 分批跑，别一条语句扫全表；重复执行直到 affected rows 为 0
+UPDATE b_merchant_group_event SET source_messages = NULL
+WHERE occurred_on < '<边界>' AND source_messages IS NOT NULL
+LIMIT 500;
+```
+
+### 只读接口的压缩
+
+`webui/deploy/nginx.conf` 里 `gzip on` **不压缩反代响应** —— `gzip_proxied` 默认是 `off`，
+所以 `/api/*` 一直是未压缩出网，而群日记录那种「几千行同一组键」的 JSON 正是压缩比最高的形状。
+示例里已加 `gzip_proxied any;`，**目标机上的配置同步由人执行**。
+
+「改了没生效」在这件事上完全静默：响应照常返回，只是大八倍。上线后跑一次：
+
+```bash
+curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' \
+  'http://chat2events-board.internal/api/summary' | grep -i content-encoding
+# 期望：content-encoding: gzip   —— 没有这一行就是没生效
+```
+
+⚠️ 响应体小于 `gzip_min_length`（1024 字节）时本来就不压缩，验证要挑一个够大的窗口
+（`/api/dataset?from=...&to=...` 最稳）。**不加任何 Rust 依赖**：压缩是反代的事。
+
 ### 事实新鲜度与查询预算升级
 
 停止所有跑批、补标与重打标，备份后执行；新库直接使用 `schema.sql`。
@@ -274,8 +359,12 @@ ALTER TABLE b_merchant_group_metric_daily
         AFTER agent_accounts,
     ADD KEY idx_corp_day (corpid, dt);
 
+-- ⚠️ 只读工作台的概览要的是**覆盖索引**，不是 (corpid, occurred_on) 两列。
+-- 早先版本这里加的是 idx_corp_day，它是下面这条的前缀、已被取代：
+-- 已经执行过旧版本的库先 DROP KEY idx_corp_day，新库直接用 schema.sql。
 ALTER TABLE b_merchant_group_event
-    ADD KEY idx_corp_day (corpid, occurred_on);
+    ADD KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type,
+                          first_msg_time, first_agent_reply_time, last_msg_time);
 
 ALTER TABLE b_merchant_group_run_failure
     MODIFY COLUMN gmt_created_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
@@ -295,7 +384,8 @@ ALTER TABLE b_merchant_group_run_failure
 将仓库 `config.toml` 的 `[web]` 节加入只读配置：请求并发、原文扫描并发、结果字节、行数与查询超时均必填。
 超限响应为 413，名额耗尽为 503，查询超时为 504，均不返回残缺统计。原文扫描开始后不因 HTTP 取消而提前释放扫描名额。
 只读连接池同步设置 MySQL `max_execution_time`，数据库端也会终止超时 SELECT；业务时区仍固定为 +08:00。
-只读配置只需 `[ingest].raw_root`、`[mysql]`、`[log]`、`[web]`；只读 `secrets.toml` 只需 `[mysql].url`，无需模型或 OSS 凭据。
+只读配置只需 `[mysql]`、`[log]`、`[web]`；只读 `secrets.toml` 只需 `[mysql].url`，无需模型或 OSS 凭据。
+**不需要 `[ingest].raw_root`** —— 原文下钻读 `b_merchant_group_event.source_messages`，只读工作台一个文件都不读。
 
 当前硬上限：每个下载增量 64 MiB；单群会话与单群事件的字段预算各 32 MiB；
 DuckDB 每进程工作集 512 MB、4 个线程、临时目录最多 1 GB。
@@ -314,7 +404,8 @@ SQLite 页缓存目标为 2 MiB，禁止 mmap；新答案事务持久化后才�
 人工补齐未完成分类：
 
 ```bash
-cargo run --locked --example recover -- /etc/chat2events 2026-08-01 2026-09-05
+/opt/chat2events/recover /etc/chat2events 2026-08-01 2026-09-05
+# 源码树里：cargo run --locked --bin recover -- /etc/chat2events 2026-08-01 2026-09-05
 ```
 
 先停止覆盖相同群日的日常跑批和重打标，再执行恢复。按群日状态选择抽取成功但分类 pending/failed 的项，
@@ -373,6 +464,94 @@ ALTER TABLE b_merchant_group_run_failure
 本版不自动跨重启补标。窗口外未完成分类用上述 `recover` 人工恢复；重跑当前窗口仍会重新抽取并安排打标。
 日志分别汇总 `extracted`、`classified` 与 `classify_failed`，任一阶段失败都返回非零退出码。
 
+### 首响口径改为工作时段
+
+首响时效与超时从**墙钟差**改为**工作时段 `[08:30, 21:00)`**，与 `followup_wait_max_sec`
+统一。夜里 23:00 进来、次日 09:00 回的消息，此前算 10 小时，现在算 30 分钟。
+没有工作日历，**周末与节假日照常算工作日**。
+
+口径定义在 `src/worktime.rs` 一处，Rust（⑥ 写 `first_reply_p*_sec`）、
+SQL（webUI 查询期现算）两份都从那里的常量拼出来；前端第三份在
+`webui/src/domain/worktime.ts`，三个常量必须与 Rust 逐字相同。
+
+**要不要跑这段迁移**取决于你在不在乎历史。不跑的话，
+`b_merchant_group_metric_daily.first_reply_p50_sec / p90_sec` 上
+**上线前的行是墙钟差、之后的行是工作时段秒数**，同一列两种含义、没有任何标记，
+而工作时段口径只会让数字变小 —— 正是「偏小但看起来正常」那一类。**建议跑。**
+
+⚠️ 只影响 `b_merchant_group_metric_daily` 那两列。webUI 的首响、超时、分位数全是查询期
+从 `b_merchant_group_event` 的两个时间列现算的，**换了代码就自动是新口径，不需要迁移**。
+
+```sql
+-- 三个常量取自 src/worktime.rs：WORK_DAY_SEC=45000、WORK_OPEN_SEC=30600（08:30）、
+-- WORK_CLOSE_SEC=75600（21:00）。改过那边就要同步改这里。
+-- 分位数定义逐字复刻 web/query.rs 的 grouped_quantiles：
+--   1-based 行号 LEAST(n, FLOOR(n * p) + 1)，取原始值不插值。
+-- 事实列一个字节不动，只重算指标列 —— 指标表不受分片冻结约束（承重不变量 1 管的是事实列）。
+UPDATE b_merchant_group_metric_daily m
+JOIN (
+    SELECT corpid, roomid, occurred_on,
+           MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.5) + 1) THEN secs END) AS p50,
+           MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.9) + 1) THEN secs END) AS p90
+    FROM (
+        SELECT corpid, roomid, occurred_on, secs,
+               ROW_NUMBER() OVER (PARTITION BY corpid, roomid, occurred_on ORDER BY secs) AS rn,
+               COUNT(*)     OVER (PARTITION BY corpid, roomid, occurred_on)               AS n
+        FROM (
+            SELECT e.corpid, e.roomid, e.occurred_on,
+                   GREATEST(0, (TO_DAYS(e.first_agent_reply_time) - TO_DAYS(e.first_msg_time)) * 45000
+                       + LEAST(GREATEST(TIME_TO_SEC(e.first_agent_reply_time), 30600), 75600)
+                       - LEAST(GREATEST(TIME_TO_SEC(e.first_msg_time),         30600), 75600)) AS secs
+            FROM b_merchant_group_event e
+            -- 与 metrics::group_rows 同一条 WHERE：只算商家发起且已回复的事件
+            WHERE e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NOT NULL
+        ) s
+    ) w
+    GROUP BY corpid, roomid, occurred_on
+) q ON q.corpid = m.corpid AND q.roomid = m.roomid AND q.occurred_on = m.dt
+SET m.first_reply_p50_sec = q.p50, m.first_reply_p90_sec = q.p90;
+```
+
+**没有已回复商家事件的群日不在 JOIN 里，保持原样** —— 它们两列本来就是 NULL
+（两种口径下 `pct` 都在空集合上返回 `None`），不需要处理，也不该被写成 0。
+
+按规范「数据订正前先 SELECT 确认」：跑之前把上面 `UPDATE ... SET` 换成
+`SELECT m.corpid, m.roomid, m.dt, m.first_reply_p50_sec AS old_p50, q.p50 AS new_p50` 看一眼，
+`new_p50 <= old_p50` 应当处处成立 —— 出现变大的行说明常量抄错了。
+
+⚠️ **BI 看板会看到一个台阶**：迁移那一刻起，历史首响数字整体变小。跑之前先告诉用报表的人。
+
+### 已有库增加客服日消息量表
+
+部署包含 `b_merchant_group_agent_msg_daily` 的版本前，先在目标库建表；新建库直接执行根目录 `schema.sql`
+（那份里已有这张表，DDL 以它为准，这里只是把同一段抄出来给已建库用）。
+**启动自检查这六张表，缺表会在第一秒报错**，不会等到落库那一步。
+
+```sql
+CREATE TABLE b_merchant_group_agent_msg_daily (
+    id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    corpid            VARCHAR(32)     NOT NULL COMMENT '企业ID',
+    room              VARCHAR(64)     NOT NULL COMMENT '群ID。与客服日指标表同粒度，跨群总量查询时SUM',
+    agent             CHAR(16)        NOT NULL COMMENT '平台客服（INTERNAL）easyUserId',
+    dt                DATE            NOT NULL COMMENT '统计日',
+    msg_count         INT UNSIGNED    NOT NULL COMMENT '该客服该日在该群发的消息条数。只数INTERNAL，不依赖抽取与词表',
+    gmt_created_time  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    gmt_modified_time DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_msg_daily (corpid, room, agent, dt) COMMENT '语义键四列：REPLACE覆盖写靠它触发冲突',
+    KEY idx_agent (agent, dt) COMMENT 'BI直连：某客服某时间段（语义键前缀是corpid，按人查走不到）',
+    KEY idx_day (dt) COMMENT 'BI直连：跨群跨人看某时间段'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '客服维度日消息量';
+```
+
+**不回填历史。** 这张表由跑批的事实阶段写，只覆盖此后跑到的窗口；冻结区没有行。
+真要历史数据，只能用 `backfill` 重跑那段窗口 —— 那会连同事实一起重抽，
+是另一件事，需要单独评估。
+
+⚠️ 这张表**不参与打标与重打标**：`recompute` 和 `recover` 一行都不碰它。
+抽取失败的群这张表照写（消息数不依赖模型），所以它的行数和
+`b_merchant_group_agent_metric_daily` 对不上是正常的，不是漏写。
+
 ### 已有库增加客服账号字段
 
 部署包含 `official_user_id` 的版本前，先在目标库执行以下一次性变更；新建库直接执行根目录 `schema.sql`。
@@ -385,6 +564,44 @@ ALTER TABLE b_merchant_group_agent_metric_daily
 ```
 
 `agent` 继续保存 `easyUserId`。新增列历史值为 NULL，后续跑批写入窗口内最新非空的内部员工账号；重打标保留已有账号，不从事件推断或补填。此变更不会自动回填窗口外历史数据。
+
+### 已有库增加末条角色字段
+
+部署包含 `last_msg_role` 的版本前，先在目标库执行以下一次性变更；新建库直接执行根目录 `schema.sql`。
+
+```sql
+ALTER TABLE b_merchant_group_event
+    ADD COLUMN last_msg_role ENUM('EXTERNAL','INTERNAL') NULL
+    COMMENT '末条来源消息发送方的identityType。EXTERNAL=商家说完没人接，INTERNAL=客服收的尾。NULL=加这一列之前抽取的历史行'
+    AFTER summary;
+```
+
+**历史行永远是 NULL，不回填** —— 冻结区事实列不可写（承重不变量 1），
+而这一列归事实列。工作台上历史行显示为「暂无数据」，不是某一边（承重不变量 4 的形状）。
+上线当天起的新事实才有值；跑批不做任何回填动作。
+
+### 已有库增加后续等待字段
+
+部署包含 `followup_wait_max_sec` 的版本前，先在目标库执行以下一次性变更；
+新建库直接执行根目录 `schema.sql`。
+
+```sql
+ALTER TABLE b_merchant_group_event
+    ADD COLUMN followup_wait_max_sec INT UNSIGNED NULL
+    COMMENT '后续轮次最长等待秒数（工作时段口径08:30-21:00，周末节假日不扣）。0=确实没有后续轮次，NULL=没算过'
+    AFTER last_msg_role;
+```
+
+同样**不回填**，理由同上一节。这一列曾经是全站唯一的工作时长口径；
+首响时效也改成同一口径之后（见下一节），两者不再需要并排标注不同口径。
+
+⚠️ **可改性仍然不同**：首响由 `first_msg_time` / `first_agent_reply_time` 两列在查询期
+现算，换口径重算一遍就行、历史全适用；而后续等待查询期拿不到中间轮次，只能在抽取时算，
+**口径在写入那一刻定死**，且 max 落在哪一轮会随口径变，事后换不回来。
+
+⚠️ **列缺失时启动检查直接报错**（`check_schema` 读的是 `EVENT_COLS`），不会跑完一轮才在落库炸掉。
+它**不进 `idx_overview`**：今天只在事件明细逐行显示，没有聚合点；将来若要按它出全局占比，
+再评估加进那条覆盖索引，否则 47 万行的聚合会回表。
 
 ### 验证命令
 
@@ -403,6 +620,24 @@ cargo run --example smoke  # ⚠️ 会真调端点、真花钱
 CHAT2EVENTS_TEST_DATABASE_URL=mysql://root@127.0.0.1:3306/chat2events_test \\
   cargo test --locked mysql_ -- --ignored
 ```
+
+**本机没有 MySQL 时起一个一次性实例**（本机不装 MySQL 是常态，别为跑测试装一台）：
+
+```bash
+docker run -d --name c2e-mysql-test \\
+  -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=c2e_test \\
+  -p 3307:3306 mysql:8.4
+docker exec c2e-mysql-test mysqladmin ping -uroot -proot   # 等它回 "mysqld is alive"
+
+CHAT2EVENTS_TEST_DATABASE_URL='mysql://root:root@127.0.0.1:3307/c2e_test' \\
+  cargo test --locked mysql_ -- --ignored
+
+docker rm -f c2e-mysql-test                                # 用完删掉，数据不留
+```
+
+⚠️ **库名必须以 `_test` 结尾**（`testutil::mysql_pool` 对此有断言，不满足直接 panic），
+端口用 3307 避开本机可能已有的 3306。**绝不要把这个变量指向 secrets 里的开发库** ——
+那是一台共享远程服务器，而测试助手会在连接指向的实例上**建库删库**。
 
 覆盖单群两日事务、失败保留旧事实、空结果清除、跨日移动、重打标、只读快照、HTTP 取数和原文缺失。
 CI 使用独立 MySQL 8.4 执行这些用例。不要把该变量指向业务库；默认忽略的真实 OSS 用例不在 `mysql_` 过滤范围中。
@@ -436,7 +671,7 @@ cd webui && pnpm install --frozen-lockfile && pnpm dev    # http://localhost:527
 
 不接 MySQL、只想看界面：后端可以不起，开 `http://localhost:5273/?source=mock` 走模拟数据源。
 
-与跑批共用配置文件格式，但只读取必需字段；原文目录必须指向同一份 raw 镜像。生产应为工作台配置独立的 MySQL 只读账号。
+与跑批共用配置文件格式，但只读取必需字段；**不需要访问 raw 镜像**。生产应为工作台配置独立的 MySQL 只读账号。
 它不构造 LLM 或 OSS 客户端，不写表；监听默认仅本机，nginx 示例在 `webui/deploy/nginx.conf`。
 前端的打包、子路径部署与质量检查见 `webui/README.md`。服务停止使用 SIGINT，可等待在飞请求结束。
 

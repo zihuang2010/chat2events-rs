@@ -12,6 +12,7 @@
 
 import { formatDateTime, parseDateTime } from "@/lib/format";
 import { UNTYPED } from "@/domain/definitions";
+import { workSecsBetween } from "@/domain/worktime";
 import type {
   AgentDailyRow,
   EventRow,
@@ -158,6 +159,27 @@ const FOLLOW_INT = [
   "核实过了，费用这边可以承担。",
   "已处理完，麻烦跟客户确认一下。",
 ];
+
+/**
+ * 与 `assemble::followup_wait_max_sec` 同一条规则：**首响之后**每次
+ * EXTERNAL→INTERNAL 的工作时段间隔取最大，末尾没人接的那一段不计。
+ * 返回 0 = 确实没有后续轮次。
+ */
+function followupWaitMaxSec(msgs: MessageRow[]): number {
+  const firstReply = msgs.findIndex((m) => m.sender_role === "INTERNAL");
+  if (firstReply < 0) return 0;
+  let max = 0;
+  let waiting: string | null = null;
+  for (const m of msgs.slice(firstReply + 1)) {
+    if (m.sender_role === "EXTERNAL") {
+      waiting ??= m.at;
+    } else if (waiting !== null) {
+      max = Math.max(max, workSecsBetween(waiting, m.at));
+      waiting = null;
+    }
+  }
+  return max;
+}
 
 function makeRng(seed: number): () => number {
   let s = seed | 0;
@@ -345,6 +367,10 @@ export function buildMockDataset(seed = 20260829): MockDataset {
           agents: eventAgents,
           first_responder: firstResponder,
           summary,
+          // 与 assemble 同一条规则：排序后的末条。
+          last_msg_role: msgs[msgs.length - 1]!.sender_role,
+          // mock 不复刻工作时段口径，只造出「有/没有后续轮次」两种形状。
+          followup_wait_max_sec: followupWaitMaxSec(msgs),
           event_type: types[0] as string,
           event_types: types,
           taxonomy_version: TAXONOMY_VERSION,

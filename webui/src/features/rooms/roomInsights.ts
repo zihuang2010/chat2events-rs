@@ -1,21 +1,46 @@
 import type { LoadedDataset } from "@/api/source";
-import { aggregate, categoryRollup, groupDayStatus } from "@/domain/metrics";
+import { categoryRows, groupDayStatus, type TaxonomyIndex } from "@/domain/metrics";
+import type { CategoryAgg, SummaryRow } from "@/domain/schemas";
 import { addDays } from "@/lib/format";
 import type { EChartsOption } from "@/components/charts/EChart";
+import type { ParentGroup } from "@/features/filters/useAnalytics";
 import { chartBase, WORKBENCH_THEME } from "@/app/theme/workbench";
 
-/** 独立于表格筛选，始终使用最新数据日结束的七个自然日。 */
-export function buildRoomInsights(dataset: LoadedDataset, roomId: string, slaSec: number) {
+/** 抽屉固定看最新数据日结束的七个自然日，与表格的筛选条件无关。 */
+export function roomInsightsWindow(dataset: LoadedDataset) {
   const end = dataset.meta.days.at(-1)!;
   const days = Array.from({ length: 7 }, (_, i) => addDays(end, i - 6));
+  return { days, from: days[0]!, to: end };
+}
+
+/**
+ * 群抽屉的模型 = **`/api/summary?room=X` ＋ `/api/categories?room=X` ＋ 群日记录**。
+ *
+ * ⚠️ **每日的 P50 / P90 来自 `summary.byDay`，是数据库按天现算的** ——
+ * 不能拿区间分位数摊到每天，也不能对每日 p50 求平均：分位数不可加。
+ *
+ * ⚠️ **`daily[].metrics` 只在那天「本轮已知成功」时才给值**，否则是 `null`：
+ * 聚合接口只统计成功的群日，把「没有行」读成 0 会让抽取失败的那天显示成清静的一天。
+ */
+export function buildRoomInsights(params: {
+  dataset: LoadedDataset;
+  roomId: string;
+  slaSec: number;
+  summary: SummaryRow;
+  level1: readonly CategoryAgg[];
+  level2: readonly CategoryAgg[];
+  tax: TaxonomyIndex;
+  parents: readonly ParentGroup[];
+}) {
+  const { dataset, roomId, slaSec, summary, level1, level2, tax, parents } = params;
+  const { days, from, to } = roomInsightsWindow(dataset);
   const dayset = new Set(days);
   const records = dataset.groupDaily.filter((row) => row.roomid === roomId && dayset.has(row.dt));
-  const roomEvents = dataset.events.filter(
-    (event) => event.roomid === roomId && dayset.has(event.occurred_on),
-  );
+  const byDay = new Map(summary.byDay.map((row) => [row.day, row]));
   const daily = days.map((day) => {
     const cells = records.filter((row) => row.dt === day);
     const status = groupDayStatus(cells[0]);
+    const point = byDay.get(day);
     return {
       day,
       status,
@@ -24,24 +49,26 @@ export function buildRoomInsights(dataset: LoadedDataset, roomId: string, slaSec
       senders: cells.length ? cells.reduce((sum, row) => sum + row.sender_count, 0) : null,
       metrics:
         status === "ok"
-          ? aggregate(
-              roomEvents.filter((event) => event.occurred_on === day),
-              slaSec,
-              day,
-            )
+          ? {
+              events: point?.events ?? 0,
+              merchant: point?.merchant ?? 0,
+              unreplied: point?.unreplied ?? 0,
+              overdue: point?.overdue ?? 0,
+              overdueRate: point?.overdueRate ?? null,
+              p50: point?.p50 ?? null,
+              p90: point?.p90 ?? null,
+            }
           : null,
     };
   });
-  const knownDays = new Set(daily.filter((day) => day.status === "ok").map((day) => day.day));
-  const events = roomEvents.filter((event) => knownDays.has(event.occurred_on));
+  const knownDays = daily.filter((day) => day.status === "ok").length;
   return {
     days,
     daily,
-    events,
     roomId,
     slaSec,
-    from: days[0]!,
-    to: end,
+    from,
+    to,
     msgs: records.length ? records.reduce((sum, row) => sum + row.msg_count, 0) : null,
     failed: daily.filter((day) => day.status === "failed").length,
     missing: daily.filter((day) => day.status === "missing").length,
@@ -52,11 +79,11 @@ export function buildRoomInsights(dataset: LoadedDataset, roomId: string, slaSec
     failedLabels: daily.filter(
       (day) => day.status === "ok" && day.classificationStatus === "failed",
     ).length,
-    // 分位数在七天事件上重算，不平均每日 P50 / P90。
-    metrics: knownDays.size ? aggregate(events, slaSec, end) : null,
+    // 分位数由数据库在七天的事件明细上重算，不是每日 P50 的平均。
+    metrics: knownDays ? summary : null,
     categories: {
-      level1: categoryRollup(events, "level1", dataset.taxIndex),
-      level2: categoryRollup(events, "level2", dataset.taxIndex),
+      level1: categoryRows(level1, "level1", tax, parents, summary.events),
+      level2: categoryRows(level2, "level2", tax, parents, summary.events),
     },
   };
 }

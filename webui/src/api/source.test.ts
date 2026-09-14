@@ -44,7 +44,9 @@ describe("数据源仲裁", () => {
     const fetch = stubDataset(raw);
     const dataset = await loadDataset("api");
     expect(dataset.source).toBe("api");
-    expect(dataset.events).toHaveLength(raw.events.length);
+    // ⚠️ **上下文里不再有事件明细** —— 指标走聚合接口，明细走 `/api/events` 翻页。
+    expect(dataset).not.toHaveProperty("events");
+    expect(dataset.groupDaily).toHaveLength(raw.groupDaily.length);
     expect(fetch.mock.calls.map(([url]) => url.pathname).sort()).toEqual([
       "/api/dataset",
       "/api/meta",
@@ -53,14 +55,26 @@ describe("数据源仲裁", () => {
     expect(dataset).not.toHaveProperty("failures");
   });
 
-  it.each([false, true])("rejects_taxonomy_mismatch_without_mock_fallback_%s", async (mixed) => {
-    const raw = buildMockDataset();
-    raw.events = raw.events.slice(0, 2).map((event, index) => ({
-      ...event,
-      taxonomy_version: mixed && index === 0 ? raw.meta.taxonomy_version : "v0",
-    }));
-    stubDataset(raw);
-    await expect(loadDataset()).rejects.toMatchObject({ kind: "contract", path: "/events" });
+  // ⚠️ **词表混版守卫搬到后端了**：`/api/dataset` 那条 `EXISTS` 不一致直接 409，
+  // 前端这边再查一遍已经不可能（明细不在这个响应里，而且是一页一页翻的）。
+  // 契约测试因此改成「后端拒绝时前端不回落模拟数据」。
+  it("mixed_taxonomy_conflict_is_reported_not_masked_by_mock", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL) =>
+        Promise.resolve(
+          new URL(String(input)).pathname === "/api/meta"
+            ? new Response(JSON.stringify(buildMockDataset().meta), {
+                headers: { "content-type": "application/json" },
+              })
+            : new Response(JSON.stringify({ error: "事件与当前词表版本不一致，请完成重打标" }), {
+                status: 409,
+                headers: { "content-type": "application/json" },
+              }),
+        ),
+      ),
+    );
+    await expect(loadDataset()).rejects.toMatchObject({ kind: "http", status: 409 });
   });
 
   it("keeps_v0_system_state_distinct_from_unmatched_categories", async () => {
@@ -74,7 +88,7 @@ describe("数据源仲裁", () => {
     }));
     stubDataset(raw);
     const dataset = await loadDataset("api");
-    expect(dataset.events[0]?.level2).toBe("未建词表");
+    expect(dataset.taxIndex.get("__untyped__")?.name).toBe("未建词表");
     expect(dataset.taxIndex.get("__untyped__")?.description).toContain("尚未建立词表");
   });
 

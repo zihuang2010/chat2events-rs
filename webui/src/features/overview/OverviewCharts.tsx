@@ -3,15 +3,10 @@ import { useState } from "react";
 import { DownOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
 import { EChart, type EChartsOption } from "@/components/charts/EChart";
-import {
-  type categoryRollup,
-  dailyCounts,
-  isMerchant,
-  isOverdue,
-  isUnreplied,
-} from "@/domain/metrics";
+import type { CategoryRow } from "@/domain/metrics";
+import { RESPONSE_BIN_EDGES, RESPONSE_BIN_LABELS } from "@/domain/definitions";
 import { formatPercent } from "@/lib/format";
-import type { DecoratedEvent } from "@/domain/schemas";
+import type { SummaryRow } from "@/domain/schemas";
 import { msgRollup, type OverviewProps } from "./overviewMetrics";
 import { WORKBENCH_THEME, chartBase } from "@/app/theme/workbench";
 
@@ -19,10 +14,11 @@ const skin = WORKBENCH_THEME;
 
 export function buildOverviewTrend(
   analytics: OverviewProps["analytics"],
+  summary: SummaryRow,
   msgs: ReturnType<typeof msgRollup>["byDay"],
   hourly: boolean,
 ): EChartsOption {
-  const { events, days, slaSec } = analytics;
+  const { days } = analytics;
   const base = chartBase(skin);
   const axis = {
     type: "value" as const,
@@ -46,12 +42,12 @@ export function buildOverviewTrend(
     tooltip: { ...base.tooltip, trigger: "axis" as const, confine: true },
   };
   if (hourly) {
+    // 接口只回**有事件的小时**，这里补齐 24 格 —— 没有事件的小时是真的 0。
     const counts = Array.from({ length: 24 }, () => 0);
     const overdue = Array.from({ length: 24 }, () => 0);
-    for (const e of events) {
-      const h = Number(e.first_msg_time.slice(11, 13));
-      counts[h] = (counts[h] ?? 0) + 1;
-      if (isOverdue(e, slaSec)) overdue[h] = (overdue[h] ?? 0) + 1;
+    for (const point of summary.byHour) {
+      counts[point.hour] = point.events;
+      overdue[point.hour] = point.overdue;
     }
     return {
       ...common,
@@ -78,8 +74,17 @@ export function buildOverviewTrend(
     };
   }
   // 全部群日失败时断开事件线；部分失败仍展示已知量并标记日期。
-  const known = (counts: number[]) =>
-    counts.map((n, i) => (!msgs[i]?.cells || msgs[i].failed === msgs[i].cells ? null : n));
+  // 接口只回有事件的天，缺的天在这里补零 —— 但「群日全失败」那天仍然是 null。
+  const byDay = new Map(summary.byDay.map((point) => [point.day, point]));
+  const known = (pick: (point: SummaryRow["byDay"][number]) => number) =>
+    days.map((day, i) =>
+      !msgs[i]?.cells || msgs[i].failed === msgs[i].cells
+        ? null
+        : (() => {
+            const point = byDay.get(day);
+            return point ? pick(point) : 0;
+          })(),
+    );
   const dates = {
     ...category,
     data: days,
@@ -122,7 +127,7 @@ export function buildOverviewTrend(
         type: "line",
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: known(dailyCounts(events, days)),
+        data: known((point) => point.events),
         smooth: false,
         showSymbol: true,
         symbolSize: 6,
@@ -134,7 +139,7 @@ export function buildOverviewTrend(
         type: "line",
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: known(dailyCounts(events, days, isUnreplied)),
+        data: known((point) => point.unreplied),
         smooth: false,
         symbolSize: 5,
         itemStyle: { color: skin.c.crit },
@@ -144,10 +149,14 @@ export function buildOverviewTrend(
   };
 }
 
-export function OverviewTrend({ analytics, api }: OverviewProps) {
+export function OverviewTrend({
+  analytics,
+  api,
+  summary,
+}: OverviewProps & { summary: SummaryRow }) {
   const [hourly, setHourly] = useState(false);
-  const msgs = msgRollup(analytics, api).byDay;
-  const option = buildOverviewTrend(analytics, msgs, hourly);
+  const msgs = msgRollup(analytics).byDay;
+  const option = buildOverviewTrend(analytics, summary, msgs, hourly);
   return (
     <>
       <div className="od-chart-toolbar">
@@ -222,7 +231,6 @@ export function OverviewTrend({ analytics, api }: OverviewProps) {
   );
 }
 
-type CategoryRow = ReturnType<typeof categoryRollup>[number];
 const CATEGORY_COLORS = [
   skin.c.accent,
   skin.c.good,
@@ -362,47 +370,37 @@ export function CategoryPie({ rows, api }: { rows: CategoryRow[]; api: OverviewP
   );
 }
 
-const RESPONSE_BINS = [
-  { min: 0, max: 60, label: "0–1 分" },
-  { min: 60, max: 300, label: "1–5 分" },
-  { min: 300, max: 900, label: "5–15 分" },
-  { min: 900, max: 1800, label: "15–30 分" },
-  { min: 1800, max: 3600, label: "30–60 分" },
-  { min: 3600, max: 7200, label: "1–2 小时" },
-  { min: 7200, max: 14400, label: "2–4 小时" },
-  { min: 14400, max: Infinity, label: ">4 小时" },
-];
-
+/**
+ * 首响时长分布 —— **计数由数据库按同一套边界分好**（`RESPONSE_BIN_EDGES` 随请求发上去），
+ * 这里只排标签。前端再分一次桶就会多出一处能和后端打架的口径。
+ */
 export function ResponseDistribution({
-  events,
+  buckets,
+  replied,
   slaSec,
 }: {
-  events: readonly DecoratedEvent[];
+  buckets: readonly number[];
+  replied: number;
   slaSec: number;
 }) {
-  const replied = events.filter((e) => isMerchant(e) && e.firstReplySec !== null);
-  const bins = RESPONSE_BINS.map((bin) => ({
-    ...bin,
-    n: replied.filter(
-      (e) =>
-        e.firstReplySec !== null &&
-        (bin.min === 0 ? e.firstReplySec >= 0 : e.firstReplySec > bin.min) &&
-        e.firstReplySec <= bin.max,
-    ).length,
-  }));
-  const max = Math.max(1, ...bins.map((b) => b.n));
+  const max = Math.max(1, ...buckets);
   return (
     <div className="od-distribution" aria-label="已回复商家事件的首响时长分布">
-      {bins.map((b) => (
-        <div className="od-bin" key={b.label} data-tone={b.min >= slaSec ? "warn" : undefined}>
-          <span>{b.label}</span>
-          <span className="od-bin-track">
-            <i style={{ width: `${(b.n / max) * 100}%` }} />
-          </span>
-          <b className="od-bin-count">{b.n}</b>
-        </div>
-      ))}
-      {!replied.length ? <p className="od-footnote">暂无已回复的商家事件</p> : null}
+      {RESPONSE_BIN_LABELS.map((label, index) => {
+        // 桶 i 的下界就是第 i-1 个边界（第一个桶从 0 起）。
+        const lower = index === 0 ? 0 : (RESPONSE_BIN_EDGES[index - 1] ?? 0);
+        const n = buckets[index] ?? 0;
+        return (
+          <div className="od-bin" key={label} data-tone={lower >= slaSec ? "warn" : undefined}>
+            <span>{label}</span>
+            <span className="od-bin-track">
+              <i style={{ width: `${(n / max) * 100}%` }} />
+            </span>
+            <b className="od-bin-count">{n}</b>
+          </div>
+        );
+      })}
+      {!replied ? <p className="od-footnote">暂无已回复的商家事件</p> : null}
     </div>
   );
 }

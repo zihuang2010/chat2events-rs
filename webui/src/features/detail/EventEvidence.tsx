@@ -76,9 +76,6 @@ export function EventProperties({ event, analytics }: EvidenceProps) {
             <span className="ed-mono">{event.first_agent_reply_time ?? "NULL（无响应）"}</span>
           </Field>
           <Field label="来源消息">{event.source_msg_ids.length} 条</Field>
-          <Field label="已解决">
-            <DataGap detail="没有 resolved 字段与解决判定口径。" />
-          </Field>
         </dl>
       </section>
     </div>
@@ -112,7 +109,7 @@ export function EventBasis({ event, analytics }: EvidenceProps) {
           </div>
         </div>
         <p className="ed-field-note">
-          first_agent_reply_time − first_msg_time，按自然时间计算，时区 UTC+8。
+          first_agent_reply_time − first_msg_time，只算 08:30–21:00 之内的时间，时区 UTC+8。
         </p>
         {event.firstReplySec === null ? (
           <p className="ed-basis-note">无响应事件不以 0 秒计入均值或分位数。</p>
@@ -136,7 +133,7 @@ export function EventBasis({ event, analytics }: EvidenceProps) {
               {merchant ? (isOverdue(event, analytics.slaSec) ? "超时" : "未超时") : "不适用"}
             </strong>
             <span className="ed-field-note">
-              当前阈值 {formatDuration(analytics.slaSec)}，自然时间口径
+              当前阈值 {formatDuration(analytics.slaSec)}，工作时段口径
             </span>
           </Field>
           <Field label="处理量">
@@ -159,13 +156,6 @@ export function EventBasis({ event, analytics }: EvidenceProps) {
             {event.source_msg_ids.length} 条 source_msg_ids
             <span className="ed-field-note">
               消息原文需同时匹配首响时间、平台客服身份及 first_responder，才能确认首响锚点。
-            </span>
-          </Field>
-          <Field label="解决节点">
-            <DataGap />
-            <span className="ed-field-note">
-              没有 resolved 字段与解决判定口径；still_open
-              仅是抽取模型的段内控制位，未写入事件记录。
             </span>
           </Field>
         </dl>

@@ -7,19 +7,17 @@
  * 两者都不是解决量 —— 库里根本没有解决量。
  */
 
+import { MetricInfo as InsightInfo } from "@/components/Metric";
 import { ArrowRightOutlined, DotChartOutlined, TableOutlined } from "@ant-design/icons";
 import { Alert, Button, Drawer, Table, Tabs, Tag } from "antd";
 import { Link } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo } from "react";
 import { METRIC } from "@/domain/definitions";
-import { agentRollup, isMerchant, quantile, type AgentRow } from "@/domain/metrics";
-import {
-  InsightsLayout,
-  InsightMetrics,
-  InsightSection,
-  InsightInfo,
-} from "@/features/insights/InsightsLayout";
+import { agentRollup, type AgentRow } from "@/domain/metrics";
+import { useAgentAggs, useRoomAggs, useSummary } from "@/api/queries";
+import { ErrorState, PageSkeleton } from "@/components/states";
+import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
 import { DurationOrNull, PercentOrNull } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import { TrendChart } from "@/components/charts/TrendChart";
@@ -31,35 +29,26 @@ import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
 import "./agents.css";
 
 export function AgentsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
-  const {
-    events,
-    days,
-    dayset,
-    roomLabel,
-    agentLabel,
-    slaSec,
-    aliasIsAuthoritative,
-    dataset,
-    agg,
-  } = analytics;
+  const { days, dayset, roomLabel, agentLabel, slaSec, aliasIsAuthoritative, dataset } = analytics;
   const { filters, patch, go, hrefWith, reset } = api;
   const unavailable = analytics.cov.known === 0;
+  const source = dataset.source;
+  const summary = useSummary(source, analytics.q);
+  const aggs = useAgentAggs(source, analytics.q);
 
   const rows = useMemo(
     () =>
       agentRollup({
-        events,
+        aggs: aggs.data ?? [],
         groupDaily: dataset.groupDaily,
-        agents: dataset.meta.agents,
         rooms: dataset.meta.rooms.filter((room) => !filters.room || room.roomid === filters.room),
         days,
         dayset,
-        slaSec,
         labelOf: agentLabel,
-        // events 已按摘要、群与客服统一筛选，不能再把关键词缩窄为仅姓名。
+        // 事件已按摘要、群与客服统一下推筛选，不能再把关键词缩窄为仅姓名。
         query: "",
       }).filter((row) => !filters.agent || row.key === filters.agent),
-    [events, dataset, days, dayset, slaSec, agentLabel, filters.agent, filters.room],
+    [aggs.data, dataset, days, dayset, agentLabel, filters.agent, filters.room],
   );
 
   const pageSize = Math.min(200, filters.pageSize);
@@ -82,6 +71,42 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
   );
 
   const focus = filters.focusAgent ? rows.find((r) => r.key === filters.focusAgent) : undefined;
+  // 抽屉里的分群明细：**两个口径分别问**（参与过 vs 首响归属），对应后端 `Filters`
+  // 的 `agent` 与 `responder`。合成一条 SQL 会把两个口径混起来，那是静默改数。
+  // 没展开抽屉时把数据源置空 —— hook 的 `enabled` 就是它，于是一个请求都不发。
+  const drawerSource = filters.focusAgent ? source : undefined;
+  const involvedByRoom = useRoomAggs(drawerSource, {
+    ...analytics.q,
+    agent: filters.focusAgent,
+  });
+  const ownedByRoom = useRoomAggs(drawerSource, {
+    ...analytics.q,
+    agent: null,
+    responder: filters.focusAgent,
+  });
+  const focusRooms = useMemo(() => {
+    const owned = new Map((ownedByRoom.data ?? []).map((room) => [room.roomid, room]));
+    return (involvedByRoom.data ?? [])
+      .map((room) => {
+        const mine = owned.get(room.roomid);
+        return {
+          roomId: room.roomid,
+          involved: room.events,
+          owned: mine?.events ?? 0,
+          // 首响归属的事件必然已回复（未回复的没有 `first_responder`），
+          // 所以有效样本就是其中的商家事件数，不用再减一次未回复。
+          replySamples: mine?.merchant ?? 0,
+          p50: mine?.p50 ?? null,
+        };
+      })
+      .sort((a, b) => b.involved - a.involved);
+  }, [involvedByRoom.data, ownedByRoom.data]);
+  const failed = [summary, aggs].find((query) => query.isError);
+  if (failed?.error)
+    return <ErrorState error={failed.error} onRetry={() => void failed.refetch()} />;
+  if (!summary.data || !aggs.data) return <PageSkeleton />;
+  const agg = summary.data;
+
   const involvedTotal = rows.reduce((sum, row) => sum + row.involved, 0);
   const maxInvolved = Math.max(1, ...rows.map((row) => row.involved));
   const closeFocus = () => patch({ focusAgent: null, page: currentPage });
@@ -90,7 +115,8 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       key: "ontime",
       label: "按时回复",
       count: agg.merchant - agg.overdue,
-      tone: "good",
+      tone: "good" as const,
+      note: `首响 ≤ ${formatDuration(slaSec)}`,
       status: "replied" as const,
       overdueOnly: false,
     },
@@ -98,7 +124,8 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       key: "late",
       label: "超时回复",
       count: agg.overdue - agg.unreplied,
-      tone: "warn",
+      tone: "warn" as const,
+      note: `首响 > ${formatDuration(slaSec)}`,
       status: "replied" as const,
       overdueOnly: true,
     },
@@ -106,7 +133,8 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       key: "unreplied",
       label: "无响应",
       count: agg.unreplied,
-      tone: "risk",
+      tone: "risk" as const,
+      note: `占商家事件 ${formatPercent(agg.unrepliedRate) ?? "—"}`,
       status: "unreplied" as const,
       overdueOnly: null,
     },
@@ -144,10 +172,12 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           >
             {r.label}
           </button>
-          {aliasIsAuthoritative ? null : (
+          {/* 只在 label 真被别名替换过时才标 —— 没有账号映射的人 label 就是
+              easyUserId 本身，那时挂个「账号」标签是在说谎。 */}
+          {aliasIsAuthoritative || r.label === r.key ? null : (
             <>
               {" "}
-              <span className="ag-alias">别名</span>
+              <span className="ag-alias">账号</span>
             </>
           )}
           <span className="c2e-sub">{shortId(r.key)}</span>
@@ -287,25 +317,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
     },
   ];
 
-  const perRoom = focus
-    ? focus.roomIds
-        .map((roomId) => {
-          const mine = events.filter((e) => e.agents.includes(focus.key) && e.roomid === roomId);
-          const owned = mine.filter((e) => e.first_responder === focus.key && isMerchant(e));
-          const secs = owned
-            .filter((e) => e.firstReplySec !== null)
-            .map((e) => e.firstReplySec as number)
-            .sort((a, b) => a - b);
-          return {
-            roomId,
-            involved: mine.length,
-            owned: mine.filter((e) => e.first_responder === focus.key).length,
-            replySamples: secs.length,
-            p50: quantile(secs, 0.5),
-          };
-        })
-        .sort((a, b) => b.involved - a.involved)
-    : [];
+  const perRoom = focusRooms;
 
   return (
     <InsightsLayout
@@ -319,28 +331,23 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         className="ag-summary"
         items={[
           {
-            key: "rooms",
-            label: "活跃群",
-            value: formatInt(agg.rooms),
-            unit: "个",
-            info: METRIC.rooms,
-            note: "当前事件涉及的群 · 按群去重",
-          },
-          {
             key: "events",
             label: "事件量",
             value: formatInt(agg.events),
             unit: "起",
             info: METRIC.events,
-            note: `${filters.agent ? "所选客服参与 · " : ""}按事件去重`,
-          },
-          {
-            key: "agents",
-            label: "活跃客服",
-            value: formatInt(rows.length),
-            unit: "人",
-            info: METRIC.agentsInvolved,
-            note: `累计参与 ${formatInt(involvedTotal)} 人次`,
+            note: (
+              <>
+                <span>商家发起 {formatInt(agg.merchant)}</span> ·{" "}
+                {agg.push > 0 ? (
+                  <Link to={responseHref("push", null)} title="平台发起事件不计入首响时效与超时率">
+                    平台发起 {formatInt(agg.push)} <ArrowRightOutlined aria-hidden="true" />
+                  </Link>
+                ) : (
+                  <span>平台发起 0</span>
+                )}
+              </>
+            ),
           },
           {
             key: "p50",
@@ -354,79 +361,21 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             label: "事件超时率",
             value: formatPercent(agg.overdueRate) ?? "—",
             info: METRIC.overdue,
-            tone: agg.overdue ? "mid" : undefined,
+            tone: agg.overdue ? "warn" : undefined,
             note: `${formatInt(agg.overdue)} / ${formatInt(agg.merchant)} 起商家事件 · 含无响应`,
           },
+          ...responseParts.map((part) => ({
+            key: part.key,
+            label: part.label,
+            value: formatInt(part.count),
+            tone: part.count > 0 ? part.tone : undefined,
+            unit: "起",
+            note: part.note,
+            to: part.count > 0 ? responseHref(part.status, part.overdueOnly) : undefined,
+          })),
         ]}
       />
-      {unavailable ? (
-        <Alert type="warning" showIcon title="当前范围事件统计暂缺" />
-      ) : (
-        <section className="ag-response" aria-label="事件响应构成">
-          <div className="ag-response-main">
-            <div className="ag-response-heading">
-              <h2>
-                商家发起 <b>{formatInt(agg.merchant)}</b>
-                <small>起</small>
-              </h2>
-              <span>首响阈值 {formatDuration(slaSec)}</span>
-            </div>
-            <div
-              className="ag-response-track"
-              role="img"
-              aria-label={responseParts.map((part) => `${part.label} ${part.count} 起`).join("，")}
-            >
-              {responseParts.map((part) => (
-                <span key={part.key} data-tone={part.tone} style={{ flexGrow: part.count }} />
-              ))}
-            </div>
-            <div className="ag-response-parts">
-              {responseParts.map((part) => {
-                const content = (
-                  <>
-                    <span>
-                      <i data-tone={part.tone} />
-                      {part.label}
-                    </span>
-                    <b>
-                      {formatInt(part.count)}
-                      <small>起</small>
-                    </b>
-                    {part.count > 0 ? <ArrowRightOutlined aria-hidden="true" /> : null}
-                  </>
-                );
-                return part.count > 0 ? (
-                  <Link
-                    key={part.key}
-                    className="ag-response-part"
-                    to={responseHref(part.status, part.overdueOnly)}
-                  >
-                    {content}
-                  </Link>
-                ) : (
-                  <div key={part.key} className="ag-response-part" data-empty="true">
-                    {content}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div className="ag-response-platform">
-            <h2>
-              平台发起 <b>{formatInt(agg.push)}</b>
-              <small>起</small>
-            </h2>
-            <p>不计入首响时效与超时率</p>
-            {agg.push > 0 ? (
-              <Link className="od-link" to={responseHref("push", null)}>
-                查看事件 <ArrowRightOutlined aria-hidden="true" />
-              </Link>
-            ) : (
-              <span className="ag-muted">当前范围无平台事件</span>
-            )}
-          </div>
-        </section>
-      )}
+      {unavailable ? <Alert type="warning" showIcon title="当前范围事件统计暂缺" /> : null}
       {rows.length === 0 ? (
         <EmptyState
           title="没有匹配的客服"
@@ -434,93 +383,102 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           onReset={reset}
         />
       ) : (
-        <>
-          <div className="ag-comparison">
-            <InsightSection
-              title="客服表现对照"
-              info={METRIC.agentReply}
-              subtitle={`${rows.length} 人 · 参与工作量与本人首响分别统计`}
-              extra={
-                <Link className="od-link" to={hrefWith({ focusAgent: null }, "/detail")}>
+        <section
+          className="ag-comparison ia-section ia-tabbed-section"
+          aria-labelledby="ag-comparison-title"
+        >
+          <Tabs
+            defaultActiveKey="table"
+            animated={false}
+            renderTabBar={(props, DefaultTabBar) => (
+              <div className="ia-tabs-toolbar">
+                <div className="ia-tabs-heading">
+                  <h2 id="ag-comparison-title">客服表现对照</h2>
+                  <span>{formatInt(rows.length)} 人</span>
+                  <InsightInfo label="客服表现对照口径" text={METRIC.agentReply} />
+                </div>
+                <DefaultTabBar {...props} />
+                <Link
+                  className="od-link ia-tabs-extra"
+                  to={hrefWith({ focusAgent: null }, "/detail")}
+                >
                   事件明细 <ArrowRightOutlined aria-hidden="true" />
                 </Link>
-              }
-              footer="参与事件可多人协作；首响归属包含平台事件，时效仅统计本人首响的商家事件。无响应事件不分摊至个人。"
-            >
-              <Tabs
-                defaultActiveKey="table"
-                animated={false}
-                items={[
-                  {
-                    key: "table",
-                    label: "指标明细",
-                    icon: <TableOutlined aria-hidden="true" />,
-                    children: (
-                      <Table<AgentRow>
-                        className="ag-table"
-                        size="small"
-                        tableLayout="fixed"
-                        rowKey="key"
-                        columns={columns}
-                        dataSource={rows}
-                        pagination={{
-                          current: currentPage,
-                          pageSize,
-                          showSizeChanger: true,
-                          pageSizeOptions: [10, 20, 50, 100, 200],
-                          showTotal: (total, range) => `${range[0]} - ${range[1]} / 共 ${total} 人`,
-                          onChange: (page, size) =>
-                            patch({ page: size === pageSize ? page : 1, pageSize: size }),
-                        }}
-                        onChange={(_, __, ___, extra) => {
-                          if (extra.action === "sort") patch({ page: 1 });
-                        }}
-                        scroll={{ x: 1100, y: "min(560px, 60vh)" }}
-                        rowClassName={(record) =>
-                          record.key === filters.focusAgent ? "ant-table-row-selected" : ""
-                        }
-                        onRow={(record) => ({
-                          className: "c2e-row-clickable",
-                          onClick: () => patch({ focusAgent: record.key, page: currentPage }),
-                        })}
-                      />
-                    ),
-                  },
-                  {
-                    key: "chart",
-                    label: "工作量与时效",
-                    icon: <DotChartOutlined aria-hidden="true" />,
-                    children: (
-                      <div className="ag-chart-view">
-                        <div className="ag-chart-meta">
-                          <span>参与事件 × 本人首响 P50</span>
-                          <span>
-                            {points.length} 人可比较 · {rows.length - points.length} 人无有效样本
-                          </span>
-                        </div>
-                        {points.length ? (
-                          <div className="ia-chart">
-                            <WorkloadQualityChart
-                              points={points}
-                              onPick={(key) => patch({ focusAgent: key })}
-                              height={340}
-                            />
-                          </div>
-                        ) : (
-                          <EmptyState
-                            title="没有可比较的客服"
-                            description="当前范围没有有效的商家首响时长样本。"
-                          />
-                        )}
-                        <p className="ag-muted">时长越低，响应越快；气泡大小表示活跃群数。</p>
+              </div>
+            )}
+            items={[
+              {
+                key: "table",
+                label: "指标明细",
+                icon: <TableOutlined aria-hidden="true" />,
+                children: (
+                  <Table<AgentRow>
+                    className="ag-table"
+                    size="small"
+                    tableLayout="fixed"
+                    rowKey="key"
+                    columns={columns}
+                    dataSource={rows}
+                    pagination={{
+                      current: currentPage,
+                      pageSize,
+                      showSizeChanger: true,
+                      pageSizeOptions: [10, 20, 50, 100, 200],
+                      showTotal: (total, range) => `${range[0]} - ${range[1]} / 共 ${total} 人`,
+                      onChange: (page, size) =>
+                        patch({ page: size === pageSize ? page : 1, pageSize: size }),
+                    }}
+                    onChange={(_, __, ___, extra) => {
+                      if (extra.action === "sort") patch({ page: 1 });
+                    }}
+                    scroll={{ x: 1100, y: "min(560px, 60vh)" }}
+                    rowClassName={(record) =>
+                      record.key === filters.focusAgent ? "ant-table-row-selected" : ""
+                    }
+                    onRow={(record) => ({
+                      className: "c2e-row-clickable",
+                      onClick: () => patch({ focusAgent: record.key, page: currentPage }),
+                    })}
+                  />
+                ),
+              },
+              {
+                key: "chart",
+                label: "工作量与时效",
+                icon: <DotChartOutlined aria-hidden="true" />,
+                children: (
+                  <div className="ag-chart-view">
+                    <div className="ag-chart-meta">
+                      <span>参与事件 × 本人首响 P50</span>
+                      <span>
+                        {points.length} 人可比较 · {rows.length - points.length} 人无有效样本
+                      </span>
+                    </div>
+                    {points.length ? (
+                      <div className="ia-chart">
+                        <WorkloadQualityChart
+                          points={points}
+                          onPick={(key) => patch({ focusAgent: key })}
+                          height={340}
+                        />
                       </div>
-                    ),
-                  },
-                ]}
-              />
-            </InsightSection>
-          </div>
-        </>
+                    ) : (
+                      <EmptyState
+                        title="没有可比较的客服"
+                        description="当前范围没有有效的商家首响时长样本。"
+                      />
+                    )}
+                    <p className="ag-muted">时长越低，响应越快；气泡大小表示活跃群数。</p>
+                  </div>
+                ),
+              },
+            ]}
+          />
+          <p className="od-footnote">
+            累计参与 {formatInt(involvedTotal)} 人次 ·
+            参与事件可多人协作；首响归属包含平台事件，时效仅统计本人首响的商家事件。无响应事件不分摊至个人。
+          </p>
+        </section>
       )}
       <details className="ag-definitions">
         <summary>统计口径与数据边界</summary>
@@ -540,8 +498,10 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           <div>
             <dt>数据边界</dt>
             <dd>
-              已解决事件数、客服回复消息数暂无数据来源。
-              {aliasIsAuthoritative ? "" : "客服姓名为占位别名，尚未接入权威名册。"}
+              客服回复消息数已入库（agent_msg_daily），本页尚未接入。
+              {aliasIsAuthoritative
+                ? ""
+                : "客服姓名暂以平台账号 officialUserId 展示，上游没给账号的人回落到 easyUserId；尚未接入权威名册。"}
               {METRIC.coverage}
             </dd>
           </div>
@@ -559,7 +519,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       >
         {focus ? (
           <>
-            <div className="ri-context">
+            <div className="od-drawer-context">
               <div>
                 <strong>
                   {days[0]} 至 {days.at(-1)}
@@ -573,9 +533,13 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                 事件明细 <ArrowRightOutlined aria-hidden="true" />
               </Link>
             </div>
-            <p className="ri-room-id">
+            <p className="od-drawer-id">
               {focus.key}
-              {aliasIsAuthoritative ? "" : " · 姓名为占位别名"}
+              {aliasIsAuthoritative
+                ? ""
+                : focus.label === focus.key
+                  ? " · 上游未提供平台账号，显示 easyUserId"
+                  : " · 显示名为平台账号，非权威姓名"}
             </p>
             {focus.failedCells ? (
               <Alert

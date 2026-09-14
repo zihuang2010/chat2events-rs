@@ -41,14 +41,13 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       agentRollup({
         aggs: aggs.data ?? [],
         groupDaily: dataset.groupDaily,
-        rooms: dataset.meta.rooms.filter((room) => !filters.room || room.roomid === filters.room),
         days,
         dayset,
         labelOf: agentLabel,
         // 事件已按摘要、群与客服统一下推筛选，不能再把关键词缩窄为仅姓名。
         query: "",
       }).filter((row) => !filters.agent || row.key === filters.agent),
-    [aggs.data, dataset, days, dayset, agentLabel, filters.agent, filters.room],
+    [aggs.data, dataset, days, dayset, agentLabel, filters.agent],
   );
 
   const pageSize = Math.min(200, filters.pageSize);

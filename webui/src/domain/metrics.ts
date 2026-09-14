@@ -397,19 +397,27 @@ export interface AgentRow {
  * 把参与当归属，同一起事件的工作量会重复计到每个参与者头上。后端 `read_agents`
  * 分开算，这里也分开放。
  *
- * ⚠️ **缺口按「那天有没有群日不完整」整天判**，不按客服判：没有独立的客服 × 群归属
- * 记录，失败或缺失的群日是否涉及这个人，无法从成功事件反推。宁可整天留空。
+ * ⚠️ **缺口按「这个人参与过的群」判，不按全部群判。**
+ *
+ * 此前的判据是「那天**任一**群不 ok」—— 而 `process/daily/run.rs` 的 `rotate_daily`
+ * 自己写着：1000 个群、每轮跑得完 400，某个群可能连续几百天一行数据都没有。
+ * **缺格是常态**，于是「任一群」几乎每天都成立：每个客服的两条折线全空、
+ * 「完整性未知」恒真 —— 那个保守选择退化成了「永远留空」，等于什么都没说。
+ *
+ * 改成按 `agg.roomIds`（这个人在窗口内参与过的群）判。残留的敞口是：某个群这个人
+ * 参与过、但它在窗口内**每一天都失败**，那它进不了 `roomIds`（那份名单来自成功事件），
+ * 于是漏判 —— 这就是下面那句「无法从成功事件反推」说的情况，没法消除，
+ * 但比「整天对所有人留空」诚实得多。
  */
 export function agentRollup(params: {
   aggs: readonly AgentAgg[];
   groupDaily: readonly GroupDailyRow[];
-  rooms: Meta["rooms"];
   days: readonly string[];
   dayset: ReadonlySet<string>;
   labelOf: (agent: string) => string;
   query: string;
 }): AgentRow[] {
-  const { aggs, groupDaily, rooms, days, dayset, labelOf, query } = params;
+  const { aggs, groupDaily, days, dayset, labelOf, query } = params;
   const cells = groupDaily.filter((row) => dayset.has(row.dt));
   const cellsByDay = groupBy(cells, (row) => row.dt);
   const failedByRoom = new Map<string, number>();
@@ -418,20 +426,22 @@ export function agentRollup(params: {
       failedByRoom.set(cell.roomid, (failedByRoom.get(cell.roomid) ?? 0) + 1);
     }
   }
-  const unknownDays = new Set(
-    days.filter((day) => {
-      const recorded = new Map((cellsByDay.get(day) ?? []).map((row) => [row.roomid, row]));
-      return (
-        rooms.length === 0 ||
-        rooms.some((room) => groupDayStatus(recorded.get(room.roomid)) !== "ok")
-      );
-    }),
+  // 按天索引一次，下面每个客服拿自己的群名单来查（否则是 客服 × 天 × 格子）。
+  const recordedByDay = new Map(
+    days.map((day) => [day, new Map((cellsByDay.get(day) ?? []).map((row) => [row.roomid, row]))]),
   );
 
   const out: AgentRow[] = [];
   for (const agg of aggs) {
     const label = labelOf(agg.agent);
     if (query && !`${label} ${agg.agent}`.toLowerCase().includes(query)) continue;
+    // 只看这个人参与过的群 —— 理由见函数头。名单为空时没有判断依据，不留空。
+    const unknownDays = new Set(
+      days.filter((day) => {
+        const recorded = recordedByDay.get(day);
+        return agg.roomIds.some((room) => groupDayStatus(recorded?.get(room)) !== "ok");
+      }),
+    );
     const byDay = new Map(agg.series.map((point) => [point.day, point]));
     const known = (pick: (point: { involved: number; owned: number }) => number) =>
       days.map((day) => (unknownDays.has(day) ? null : byDay.has(day) ? pick(byDay.get(day)!) : 0));

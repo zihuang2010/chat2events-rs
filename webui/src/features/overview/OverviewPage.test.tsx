@@ -302,7 +302,6 @@ describe("概览的三块分布", () => {
     const rows = agentRollup({
       aggs: agents,
       groupDaily: analytics.dataset.groupDaily,
-      rooms: analytics.dataset.meta.rooms,
       days: analytics.days,
       dayset: analytics.dayset,
       labelOf: analytics.agentLabel,
@@ -417,6 +416,11 @@ describe("D 概览指标边界与交互", () => {
     await settle(view);
     expect(view.container.textContent).toContain("最近 7 天");
     expect(view.container.textContent).toContain(`${2 * dataset.meta.rooms.length} 个群日无记录`);
+    // ⚠️ **有缺格也要给日均，而且标成下界。** 此前缺格就把日均整个换掉，而缺格是常态
+    // （`rotate_daily`：1000 群、每轮 400），于是这个数永远不显示 —— 而 `msg_count`
+    // 是消息级列、不依赖抽取，手里这些格子的和是实打实的已知量，缺格只让它偏小。
+    expect(view.container.textContent).toContain("日均 ≥ ");
+    expect(view.container.textContent).not.toContain("日均暂缺");
     expect(view.container.textContent).not.toContain("完整性未知");
     const dates = [...view.container.querySelectorAll(".od-table thead .od-day")].map(
       (el) => el.textContent,

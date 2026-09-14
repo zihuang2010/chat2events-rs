@@ -464,30 +464,23 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
   const rows = agentRollup({
     aggs: mockAgentAggs(raw, cells, tax, window),
     groupDaily: cells,
-    rooms: [{ roomid: "R1", alias: null }],
     days,
     dayset: new Set(days),
     labelOf: (a) => a,
     query: "",
   });
 
+  /**
+   * **别人的群不完整，不该把这个人的折线抹掉。**
+   *
+   * 此前的判据是「那天任一群不 ok」，而 `rotate_daily` 的 1000 群 / 每轮 400 意味着
+   * **缺格是常态** —— 于是每个客服的两条折线全空、「完整性未知」恒真，
+   * 那个保守选择退化成了「永远留空」。改成只看这个人参与过的群。
+   */
   it.each(["ok", "failed", "missing"] as const)(
-    "keeps_agent_coverage_unknown_for_unobserved_room_%s",
+    "another_rooms_gap_does_not_blank_this_agents_series_%s",
     (status) => {
-      const success: GroupDailyRow = {
-        corpid: "corp",
-        roomid: "R1",
-        dt: days[0]!,
-        msg_count: 2,
-        sender_count: 2,
-        event_count: 1,
-        merchant_event_count: 1,
-        unreplied_count: 0,
-        first_reply_p50_sec: 300,
-        first_reply_p90_sec: 300,
-        extraction_status: "ok",
-        classification_status: "ok",
-      };
+      const success = okCell("R1", days[0]!);
       const other: GroupDailyRow =
         status === "failed"
           ? {
@@ -506,19 +499,56 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
       const result = agentRollup({
         aggs: mockAgentAggs([ev()], gd, tax, window),
         groupDaily: gd,
-        rooms: ["R1", "R2"].map((roomid) => ({ roomid, alias: null })),
         days,
         dayset: new Set(days),
         labelOf: (agent) => agent,
         query: "",
       });
+      // 这个人只在 R1 —— R2 好不好跟他的参与量没关系。
       expect(result[0]).toMatchObject({
         roomIds: ["R1"],
         failedCells: 0,
         involved: 1,
-        coverageUnknown: status !== "ok",
-        involvedSeries: [status === "ok" ? 1 : null],
-        ownedSeries: [status === "ok" ? 1 : null],
+        coverageUnknown: false,
+        involvedSeries: [1],
+        ownedSeries: [1],
+      });
+    },
+  );
+
+  /** 反过来：**自己的群**那天不完整，仍然必须留空 —— 那才是真的算不出来。 */
+  it.each(["failed", "missing"] as const)(
+    "a_gap_in_this_agents_own_room_still_blanks_that_day_%s",
+    (status) => {
+      const twoDays = ["2026-08-25", "2026-08-26"];
+      const wide = { from: twoDays[0]!, to: twoDays[1]!, slaSec: 1800 };
+      const good = okCell("R1", twoDays[0]!);
+      const bad: GroupDailyRow = {
+        ...good,
+        dt: twoDays[1]!,
+        extraction_status: "failed",
+        classification_status: "failed",
+        event_count: null,
+        merchant_event_count: null,
+        unreplied_count: null,
+        first_reply_p50_sec: null,
+        first_reply_p90_sec: null,
+      };
+      const gd = status === "missing" ? [good] : [good, bad];
+      const result = agentRollup({
+        aggs: mockAgentAggs([ev()], gd, tax, wide),
+        groupDaily: gd,
+        days: twoDays,
+        dayset: new Set(twoDays),
+        labelOf: (agent) => agent,
+        query: "",
+      });
+      expect(result[0]).toMatchObject({
+        roomIds: ["R1"],
+        coverageUnknown: true,
+        // 08-25 有事实照常出数，08-26 是自己群的缺口 —— 留空不是 0。
+        involvedSeries: [1, null],
+        ownedSeries: [1, null],
       });
     },
   );
@@ -551,7 +581,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
     const result = agentRollup({
       aggs: mockAgentAggs(mine, cells, tax, window),
       groupDaily: cells,
-      rooms: [{ roomid: "R1", alias: null }],
       days,
       dayset: new Set(days),
       labelOf: (agent) => agent,

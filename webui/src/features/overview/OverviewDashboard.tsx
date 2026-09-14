@@ -53,7 +53,10 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
     QUEUE_PREVIEW,
   );
   const m = msgRollup(analytics);
-  const missingDays = cov.missing;
+  // ⚠️ **`cov.missing` 数的是「群 × 日」格子，不是天数** —— 名字别再叫 `missingDays`，
+  // 上一版就是照着天数在用它。而 `rotate_daily` 的 1000 群 / 每轮 400 意味着**缺格是
+  // 常态**，所以它几乎恒大于零。
+  const missingCells = cov.missing;
   const unavailable = cov.known === 0;
   const count = (n: number) => (unavailable ? "—" : formatInt(n));
   const slaLabel = SLA_OPTIONS.find((o) => o.value === slaSec)?.label ?? `${slaSec} 秒`;
@@ -89,7 +92,6 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
   const agentRows = agentRollup({
     aggs: agentsQuery.data ?? [],
     groupDaily: analytics.dataset.groupDaily,
-    rooms: analytics.dataset.meta.rooms,
     days,
     dayset: analytics.dayset,
     labelOf: analytics.agentLabel,
@@ -161,10 +163,18 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
           info={MSG_INFO}
           to={hrefWith({}, "/rooms")}
           note={
-            missingDays ? (
-              <>{missingDays} 个群日无记录 · 日均暂缺</>
+            // ⚠️ **有缺格也要给日均**，此前是直接换成「日均暂缺」—— 而缺格是常态，
+            // 于是这个数**永远不显示**。`msg_count` 是消息级列、不依赖抽取，
+            // 手里这些格子的和是实打实的已知量，缺格只让它**偏小**：
+            // 所以给的是下界（`≥`），再把缺了多少格说清楚。
+            days.length ? (
+              <>
+                日均 {missingCells ? "≥ " : ""}
+                {formatInt(Math.round(m.msgs / days.length))} 条
+                {missingCells ? <> · {missingCells} 个群日无记录</> : null}
+              </>
             ) : (
-              <>日均 {days.length ? formatInt(Math.round(m.msgs / days.length)) : "—"} 条</>
+              <>日均 —</>
             )
           }
         />

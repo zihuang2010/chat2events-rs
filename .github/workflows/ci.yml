@@ -1,10 +1,15 @@
-# CI —— 检查 + 出 Linux 二进制。
+# CI —— 检查 + 出发布产物：六个 Linux 二进制（跑批 + 只读后端 + 四个运维入口）
+# 和前端静态站。两个 tar 包，分别扔到 /opt 和 nginx 的 root。
 #
 # 离线逻辑与模型 HTTP 协议走默认测试；事务与只读取数另在隔离 MySQL 中验证。
 # 真实模型业务质量、OSS 权限与目标机部署仍需各自验收。
 #
 # ⚠️ 慢的原因是 DuckDB：Cargo.toml 开了 features = ["bundled", "json"]，
-#    要现场编 352 个 C++ unity TU（分钟级）。rust-cache 就是为它上的。
+#    要现场编 352 个 C++ unity TU（分钟级）。check 侧靠 rust-cache，
+#    release 侧靠 build job 里那份对象缓存，两边互不相干。
+#
+# tag 上的三个 job：build（编二进制）和 check / webui **并行**，
+# publish 等齐三个才发 Release —— 质量门在 publish，不在 build。
 
 name: CI
 
@@ -34,11 +39,38 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+          # setup-node 自带的 pnpm 缓存要求 pnpm 已经在 PATH 上，而它下一步才装 ——
+          # 所以关掉它，自己缓存 pnpm store（见下面那步）。
           package-manager-cache: false
       - run: npm install --global pnpm@11.21.0
+
+      # 缓存的是 pnpm 的**内容寻址 store**，不是 node_modules —— 后者是一堆指回
+      # store 的硬链接，跨 job 恢复会退化成真实拷贝，又大又慢。
+      # 键只认 lockfile：`--frozen-lockfile` 装的东西完全由它决定，
+      # 所以不要 restore-keys —— 命中就是全中，不中就老实下载。
+      - id: store
+        run: echo "dir=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.store.outputs.dir }}
+          key: pnpm-${{ hashFiles('webui/pnpm-lock.yaml') }}
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm build
+
+      # 前端产物必须在这里出：目标机（CentOS 7）上没有 Node，dist 是纯静态文件，
+      # 跟六个二进制一样属于"发出去的东西"。此前这一步编完就扔，Release 里只有二进制。
+      # 只在 tag 上传 —— 每个 PR 都传等于白占 artifact 存储。
+      - name: 交付前端静态产物
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          # ⚠️ path 不吃 defaults.run.working-directory（那只管 run 步），要写全。
+          path: webui/dist
+          retention-days: 1
+          if-no-files-found: error
 
   check:
     runs-on: ubuntu-latest
@@ -76,20 +108,68 @@ jobs:
           CHAT2EVENTS_TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/chat2events_test
         run: cargo test --locked mysql_ -- --ignored
 
-  # 只在打 tag 时构建产物 —— 平时的 PR 不该为 release profile 再编一遍 DuckDB
-  release:
+  # 只在打 tag 时构建产物 —— 平时的 PR 不该为 release profile 再编一遍 DuckDB。
+  #
+  # ⚠️ **故意不 needs check** —— 编 DuckDB 的十几分钟和 check 的十几分钟之间
+  #    没有因果关系，串起来就是 tag 的墙钟翻倍。质量门落在 publish 上
+  #    （它 needs check ＋ webui），所以 check 红了照样发不出去，
+  #    代价只是 check 失败时白编一轮 runner 时间。
+  build:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, webui]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     env:
       # 发出去的全部二进制。**符号自检 · json 自检 · 打包三处共用这一份** ——
       # 曾经三处各自逐字写死 `chat2events-rs webui`，于是 `src/bin/` 里新增的
       # 运维入口编得出来、却既不进基线也不进 tar 包，等于没发。
       BINS: chat2events-rs webui backfill recompute recover taxonomy
+      # 编译容器。**它的 digest 进对象缓存的键**，所以 docker run 和取 digest
+      # 那步必须认同一个串 —— 不许两处各写一遍。
+      IMAGE: quay.io/pypa/manylinux2014_x86_64
     steps:
       - uses: actions/checkout@v5
+
+      # crate 源码：省下 duckdb-sys 那个几十 MB 源码包的下载，键只认 Cargo.lock。
+      - name: 缓存 crate 源码
+        uses: actions/cache@v4
+        with:
+          path: .cargo-home/registry
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      # 先 pull 再取 digest：`docker run` 反正要拉这个镜像，这里只是把它提前，
+      # 好让 digest 能进下面那个缓存键。
+      - id: image
+        name: 解析编译容器的 digest
+        run: |
+          docker pull -q "$IMAGE"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | cut -d@ -f2)
+          echo "使用 $IMAGE@$digest"
+          echo "digest=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      # DuckDB 那 352 个 C++ TU 占了 release 构建绝大部分墙钟，而它的产物只随
+      # **duckdb 版本 · 编译选项 · 编译器**变化 —— 本仓库的 Rust 代码改一行不影响它。
+      # 所以只缓存这一个 crate 的对象文件（本地实测 out/ 约 170 MB），
+      # **不缓存整个 target/**（GB 级，压缩传输的时间反过来吃掉省下的编译时间）。
+      #
+      # ⚠️ 键里这三样都必须在，少一个就是「拿另一套配置编出来的 .o 去链」：
+      #   镜像 digest  —— manylinux2014 是**滚动 tag**，devtoolset 的 gcc 会悄悄升版
+      #   本文件        —— RUSTFLAGS / CXXFLAGS 改了，对象就不能复用
+      #   Cargo.lock   —— duckdb 版本
+      #
+      # ⚠️ **没有 restore-keys，只认精确命中** —— 前缀回退恢复的正是上面要挡的东西。
+      #    不中就老实编十几分钟，那是正确行为，不是退化。
+      #
+      # 兜底：下面「校验 glibc / libstdc++ 下界」每轮都跑，陈旧对象带来的符号回归
+      # 会在那里当场暴露，不会一路发到目标机。另外 cc-rs 会 emit
+      # rerun-if-env-changed=CXXFLAGS，所以编译选项变了 cargo 自己也会重跑构建脚本。
+      - name: 缓存 DuckDB 的 C++ 对象
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/release/build/libduckdb-sys-*
+            target/release/.fingerprint/libduckdb-sys-*
+          key: duckdb-${{ steps.image.outputs.digest }}-${{ hashFiles('Cargo.lock', '.github/workflows/ci.yml') }}
 
       # ⚠️ 不在 runner 上直接 cargo build：runner 的 glibc(2.39) 会成为部署机的下界，
       #    而目标机是 CentOS 7（glibc 2.17 / libstdc++ 来自 GCC 4.8，最高 GLIBCXX_3.4.19）。
@@ -122,7 +202,7 @@ jobs:
             -e CARGO_TERM_COLOR=always \
             -e RUSTFLAGS='-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc' \
             -e CXXFLAGS='-DDUCKDB_CUSTOM_PLATFORM=linux_amd64_gcc4' \
-            quay.io/pypa/manylinux2014_x86_64 \
+            "$IMAGE" \
             bash -euxo pipefail -c '
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
                 | sh -s -- -y --default-toolchain stable --profile minimal
@@ -172,9 +252,48 @@ jobs:
               || { echo "::error::$BIN 的 json 扩展没链进去"; exit 1; }
           done
 
-      - name: 打包
+      - name: 打包二进制
         run: |
           tar -czf chat2events-rs-linux-x86_64.tar.gz -C target/release $BINS
+
+      # 传的是打好的 tar，不是六个裸二进制 —— 每个都几十 MB（DuckDB 静态链进去了），
+      # 让 artifact 再压一遍纯属浪费。publish 拿到就能直接发。
+      - name: 交付二进制与符号基线
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bins
+          path: |
+            chat2events-rs-linux-x86_64.tar.gz
+            glibc-baseline.txt
+          retention-days: 1
+          if-no-files-found: error
+
+  # 质量门：check / webui 红了就发不出去，哪怕 build 已经编完。
+  # 这个 job 只搬文件、不编译，所以也**不 checkout** —— `gh` 用 -R 直接打 API。
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, webui, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 取回二进制与符号基线
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bins
+
+      # 前端不在 manylinux 容器里编（纯静态 JS，跟 glibc 无关），从 webui job 取回。
+      - name: 取回前端静态产物
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui-dist
+
+      - name: 打包前端
+        run: |
+          # 解开即 nginx 的 root：index.html 和 assets/ 在压缩包根上，
+          # 不套一层 dist/ —— 部署是 `tar -xzf ... -C /srv/chat2events-webui`。
+          tar -czf chat2events-webui-dist.tar.gz -C webui-dist .
 
       # gh 是 runner 自带的，不引第三方 action
       - name: 发 Release
@@ -182,5 +301,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            chat2events-rs-linux-x86_64.tar.gz glibc-baseline.txt \
+            -R "${GITHUB_REPOSITORY}" \
+            chat2events-rs-linux-x86_64.tar.gz \
+            chat2events-webui-dist.tar.gz \
+            glibc-baseline.txt \
             --generate-notes

@@ -49,8 +49,11 @@ rustc -V    # 必须 ≥ 1.85：本仓库是 edition 2024
 ```bash
 # 构建
 cargo build --release
-# 产物（六个二进制，CI 的 release job 打成一个 tar 包）：
+# 产物（六个二进制）：
 # target/release/{chat2events-rs, webui, backfill, recompute, recover, taxonomy}
+# CI 的 build job 把它们打成 chat2events-rs-linux-x86_64.tar.gz，
+# 前端静态站另出一个 chat2events-webui-dist.tar.gz（见下面「只读工作台」），
+# 由 publish job 一起发成 Release。
 ```
 
 ⚠️ **首次编译会现场编 DuckDB 的 amalgamation**：慢（分钟级到十几分钟）、吃内存
@@ -65,7 +68,7 @@ cargo build --release
 
 **目标机是 CentOS 7：glibc 2.17，libstdc++ 来自 GCC 4.8（最高 `GLIBCXX_3.4.19`）。**
 而 GitHub runner 的 `ubuntu-latest` 是 glibc 2.39 —— 直接在 runner 上
-`cargo build --release`，产物到机器上一行都跑不了。所以 CI 的 release job
+`cargo build --release`，产物到机器上一行都跑不了。所以 CI 的 build job
 **只把编译这一步丢进 `quay.io/pypa/manylinux2014_x86_64` 容器**
 （CentOS 7 底 + devtoolset-10 的 gcc 10，DuckDB 用 4.8 编不动），并且
 `-static-libstdc++ -static-libgcc` 把新 gcc 的 C++ 符号静态链进去。
@@ -74,15 +77,34 @@ cargo build --release
 > node20 runtime 要 glibc ≥ 2.28，CentOS 7 里 `checkout` / `rust-toolchain`
 > 全部起不来。job 照常跑在 ubuntu-latest，容器只包住 `cargo build`。
 
+tag 上是三个 job：`build`（编二进制）与 `check` / `webui` **并行跑**，
+`publish` 等齐三个才发 Release。**质量门在 `publish`** —— `check` 或 `webui`
+任一红了，Release 就不会出现，但 `build` 已经白编了一轮 runner 时间。
+这是有意的取舍：编 DuckDB 和跑测试之间没有因果关系，串起来只是让 tag 的墙钟翻倍。
+
 产物实际要求的符号版本由 CI 里的「校验 glibc / libstdc++ 下界」一步断言
 （`objdump -T`，最高符号超过 `GLIBC_2.17` 或 `GLIBCXX_3.4.19` 就 fail），同时作为
 `glibc-baseline.txt` 随 Release 发出来。换镜像、换 `RUSTFLAGS` 之后二进制悄悄
 要上新 glibc，这条会当场拦住，不必等部署到机器上才发现。
 
-> 明确没做：`cross` 交叉编译、musl 全静态、release job 的构建缓存。
+> 明确没做：`cross` 交叉编译、musl 全静态、**整个 `target/` 的缓存**。
 > 前两条 bundled DuckDB（C++）都要另配一套工具链，容器已经解决问题；
-> 第三条是因为 `CARGO_HOME` 在容器里，跨不过 `rust-cache` 的边界 ——
-> release 只在打 tag 时跑，多花的十几分钟不值得为它维护一套缓存。
+> 第三条是因为 `target/release` 是 GB 级，压缩上传下载的时间反过来吃掉省下的编译时间。
+
+`build` job 上的三份缓存（`CARGO_HOME` 在容器里，跨不过 `rust-cache` 的边界，
+所以都用裸 `actions/cache`）：
+
+| 缓存 | 键 |
+|---|---|
+| `.cargo-home/registry`（crate 源码） | `Cargo.lock` |
+| `target/release/build/libduckdb-sys-*` ＋ 同名 `.fingerprint`（DuckDB 的 C++ 对象，约 170 MB） | 镜像 digest ＋ `Cargo.lock` ＋ `ci.yml` |
+
+⚠️ **DuckDB 那份键里三样都必须在**，少一个就是「拿另一套配置编出来的 `.o` 去链」：
+镜像 digest（`manylinux2014` 是滚动 tag，gcc 会悄悄升版，所以 CI 里先 `docker pull`
+取 digest 再拼键）· `ci.yml`（`RUSTFLAGS` / `CXXFLAGS` 改了对象就不能复用）·
+`Cargo.lock`（duckdb 版本）。**没有 `restore-keys`，只认精确命中** ——
+前缀回退恢复的正是要挡的东西，不中就老实编十几分钟。
+兜底是每轮都跑的「校验 glibc / libstdc++ 下界」：陈旧对象带来的符号回归在那里当场暴露。
 
 ---
 
@@ -650,9 +672,17 @@ webUI 是**两个进程**：Rust 只读 JSON 后端（`webui`）＋ 前端静态
 
 ### 生产
 
+前端产物**不在目标机上编** —— 那台机器没有 Node。CI 的 webui job 会把
+`webui/dist` 打成 `chat2events-webui-dist.tar.gz` 随 Release 发出来，
+解开即 nginx 的 root（压缩包根上就是 `index.html` 和 `assets/`，不套一层 `dist/`）：
+
 ```bash
+tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 ./webui /etc/chat2events <corpid> 127.0.0.1:8787
 ```
+
+⚠️ 那个包是**根路径**部署的构建（`VITE_BASE` 默认 `/`）。子路径部署要自己
+`VITE_BASE=/board/ pnpm build`，Release 里那个包用不了。
 
 ### 本地开发（两个终端）
 

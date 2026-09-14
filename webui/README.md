@@ -78,7 +78,8 @@ src/
 ## 质量检查
 
 `pnpm check` 执行 lint、格式、类型检查与全部前端测试；`pnpm build` 单独验证生产打包。
-仓库 CI 的 `webui` 任务使用 Node.js 24、固定 pnpm 和 frozen lockfile 执行相同检查，无自动部署。
+仓库 CI 的 `webui` 任务使用 Node.js 24、固定 pnpm 和 frozen lockfile 执行相同检查。
+打 tag 时它会把 `dist/` 打成 `chat2events-webui-dist.tar.gz` 随 Release 发出来（根路径构建，`VITE_BASE` 默认 `/`）；**没有自动部署** —— 解包到静态目录仍由人执行。
 jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局、Canvas 与 Portal 行为需浏览器验证。
 
 完整审核范围、清理清单、修复与验证边界见 [前端审核报告](AUDIT.md)。

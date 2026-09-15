@@ -47,6 +47,7 @@
 | `docs/architecture.md` | 七模块各自内部 · 端口上什么不许出门 · MySQL 表键的理由 · webUI |
 | `docs/database-conventions.md` | 公司《数据库规范》的适用条款与四条已取下的例外 |
 | `docs/deploy.md` | 构建 · 部署 · 目标机约束 |
+| `docs/deploy-webui.md` | 只读工作台在 39.98.175.5:30001 的 runbook（nginx · systemd · 验证） |
 
 ⚠️ **决策记录（`docs/adr/`）和进度流水账（`docs/status.md`）已删。**
 那些取舍的**结论和实测数字都内联在对应的代码注释里** —— 「为什么是这个值」

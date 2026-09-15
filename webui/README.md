@@ -84,7 +84,8 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 
 ## 部署
 
-产出是纯静态文件，`/api/*` 反向代理到只读 JSON 服务，示例见 `deploy/nginx.conf`。
+产出是纯静态文件，`/api/*` 反向代理到只读 JSON 服务，配置见 `deploy/nginx.conf`，
+逐步 runbook 见 `../docs/deploy-webui.md`。
 两条必须做到：`try_files` 回落 `index.html`（前端走 BrowserRouter，深链接要能刷新），
 `index.html` 不许缓存（带 hash 的资源可以长缓存，入口不行）。
 

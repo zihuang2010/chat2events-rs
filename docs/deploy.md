@@ -743,6 +743,9 @@ webUI 是**两个进程**：Rust 只读 JSON 后端（`webui`）＋ 前端静态
 
 ### 生产
 
+⚠️ **当前生产环境（39.98.175.5:30001）的逐步 runbook 在 `docs/deploy-webui.md`** ——
+nginx、systemd、验证命令、故障对照都在那边，这一节只留通用约束。
+
 前端产物**不在目标机上编** —— 那台机器没有 Node。CI 的 webui job 会把
 `webui/dist` 打成 `chat2events-webui-dist.tar.gz` 随 Release 发出来，
 解开即 nginx 的 root（压缩包根上就是 `index.html` 和 `assets/`，不套一层 `dist/`）：
@@ -773,7 +776,8 @@ cd webui && pnpm install --frozen-lockfile && pnpm dev    # http://localhost:527
 前端只使用真实接口，需启动后端并连接 MySQL；接口不可用时页面直接报错。
 
 与跑批共用配置文件格式，但只读取必需字段；**不需要访问 raw 镜像**。生产应为工作台配置独立的 MySQL 只读账号。
-它不构造 LLM 或 OSS 客户端，不写表；监听默认仅本机，nginx 示例在 `webui/deploy/nginx.conf`。
+它不构造 LLM 或 OSS 客户端，不写表；监听默认仅本机，nginx 配置在 `webui/deploy/nginx.conf`
+（当前生产值：listen 30001，`/api/` 反代 127.0.0.1:8787）。
 前端的打包、子路径部署与质量检查见 `webui/README.md`。服务停止使用 SIGINT，可等待在飞请求结束。
 
 日期查询默认最近七天，可显式选全部历史；更宽窗口仍会增加响应体和浏览器内存。

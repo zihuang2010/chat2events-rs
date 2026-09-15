@@ -1,5 +1,8 @@
-# CI —— 检查 + 出发布产物：六个 Linux 二进制（跑批 + 只读后端 + 四个运维入口）
+# CI —— 检查 + 出发布产物：跑批 · 只读后端 · 全部运维入口这些 Linux 二进制，
 # 和前端静态站。两个 tar 包，分别扔到 /opt 和 nginx 的 root。
+#
+# ⚠️ 这里不写二进制的**个数**，`BINS` 也不手写 —— 那个数会跟着 `src/bin/` 变，
+#    写死在注释里只会变成下一次的误导。清单由 build job 从源码布局算出来。
 #
 # 离线逻辑与模型 HTTP 协议走默认测试；事务与只读取数另在隔离 MySQL 中验证。
 # 真实模型业务质量、OSS 权限与目标机部署仍需各自验收。
@@ -120,15 +123,26 @@ jobs:
     permissions:
       contents: read
     env:
-      # 发出去的全部二进制。**符号自检 · json 自检 · 打包三处共用这一份** ——
-      # 曾经三处各自逐字写死 `chat2events-rs webui`，于是 `src/bin/` 里新增的
-      # 运维入口编得出来、却既不进基线也不进 tar 包，等于没发。
-      BINS: chat2events-rs webui backfill recompute recover taxonomy
       # 编译容器。**它的 digest 进对象缓存的键**，所以 docker run 和取 digest
       # 那步必须认同一个串 —— 不许两处各写一遍。
       IMAGE: quay.io/pypa/manylinux2014_x86_64
     steps:
       - uses: actions/checkout@v5
+
+      # 发出去的全部二进制。**符号自检 · json 自检 · 打包三处共用这一份**，
+      # 而且**从源码布局算出来、不手写** —— 照 cargo 的默认目标发现规则：
+      # `src/main.rs` → 包名，`src/bin/*.rs` → 文件名（Cargo.toml 里没有 `[[bin]]`
+      # 段，所以这两条就是全部；加了显式 `[[bin]]` 就要回来改这里）。
+      #
+      # ⚠️ **手写过两轮，两轮都漏。** 第一轮三处各自写死 `chat2events-rs webui`，
+      #    四个运维入口编得出来却既不进基线也不进 tar 包；收成一个 env 补齐到六个
+      #    之后，v0.1.7 新增的 `src/bin/retry.rs` 又漏了一遍 —— 发出去的包里没有它。
+      #    清单和 `src/bin/` 本来就是同一件事，让它自己数，这个错就再也犯不出来。
+      - name: 枚举要发布的二进制
+        run: |
+          bins="chat2events-rs $(basename -s .rs -a src/bin/*.rs | tr '\n' ' ')"
+          echo "发布二进制：$bins"
+          echo "BINS=$bins" >> "$GITHUB_ENV"
 
       # crate 源码：省下 duckdb-sys 那个几十 MB 源码包的下载，键只认 Cargo.lock。
       - name: 缓存 crate 源码
@@ -224,9 +238,13 @@ jobs:
       #    要命的是「要了目标机给不出的版本」，所以比版本，不比有无。
       - name: 校验 glibc / libstdc++ 下界
         run: |
-          # ⚠️ 六个二进制全查 —— 运维入口（backfill/recompute/recover/taxonomy）也发到
-          #    目标机上跑，漏掉它们等于基线只覆盖了一半产物。清单在 job 的 env.BINS 里，
+          # ⚠️ **全查，一个不漏** —— 运维入口也发到目标机上跑，漏掉它们等于基线
+          #    只覆盖了一半产物。清单来自「枚举要发布的二进制」那步，
           #    符号自检 / json 自检 / 打包三处共用同一份，**不许各写各的**。
+          #
+          # 顺带当了存在性检查：清单是从 src/bin/ 算的、构建是 cargo 做的，
+          # 两边要是对不上（比如有人加了显式 [[bin]] 改名），ldd 在这里就报文件不存在，
+          # 而不是等到 tar 那步悄悄打出一个少了东西的包。
           PATHS=$(for b in $BINS; do echo -n "target/release/$b "; done)
           ldd $PATHS
           objdump -T $PATHS | grep -o 'GLIB[A-Z_]*_[0-9.]*[0-9]' | sort -Vu | tee glibc-baseline.txt

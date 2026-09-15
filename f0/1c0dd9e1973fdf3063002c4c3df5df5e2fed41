@@ -1,0 +1,30 @@
+CLAUDE.md
+  s_79ea77cd38b084::t_65da41ffc8731f 50
+docs/deploy.md
+  s_79ea77cd38b084::t_d6f1a65559f4e3 746-748,779-780
+webui/README.md
+  s_79ea77cd38b084::t_65da41ffc8731f 87-88
+docs/deploy-webui.md
+  s_79ea77cd38b084::t_caa474b199b15c 1-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f01c0dd9e1973fdf3063002c4c3df5df5e2fed41",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_79ea77cd38b084": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f3be73aa-73b1-404e-aa71-289d6f852b2b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

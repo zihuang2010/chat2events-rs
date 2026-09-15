@@ -5,7 +5,7 @@
 
 use super::{
     download::{Outcome, download_with_retry},
-    error::Result,
+    error::{MirrorError, Result},
     index::{MonthFile, list_month_files},
     oss::OssClient,
 };
@@ -37,15 +37,25 @@ pub struct SyncResult {
 /// `deadline` 是**整轮**的预算（`daily::run` 算的，不是这个函数自己的）。到点之后
 /// 不再启动新的下载，剩下的文件按「没拉成」处理 —— 本地那份很可能缺今天的字节，
 /// 拿去跑批就是用残缺数据覆盖完整数据，正是不变量 3 要禁的事。
+///
+/// `only` 非空 = **只跑这几个群**（`officialRoomId`，也就是文件名，承重不变量 8），
+/// 人工重跑单群用；空切片 = 本轮索引里的全部群，日常跑批走这条。
+///
+/// **过滤落在这里，不落在 `daily::run_span` 的群列表上。** 那儿过滤时月文件已经
+/// 拉完了 —— 为跑 1 个群把上千个群的文件全过一遍（本地已有也要一次 HEAD）。
+/// 放在索引之后、下载之前，才是「只拉这个群」而不是「拉完再挑」。
+/// 连带好处：`SyncResult.failed` 自然也只含目标群，`run_span` 不会给不相干的群
+/// 记 `run_failure`、把退出码搞成非零。
 pub async fn sync(
     cfg: &Config,
     pool: &MySqlPool,
     secrets: &OssSecrets,
     w: &Window,
     deadline: Instant,
+    only: &[String],
 ) -> Result<SyncResult> {
     let oss = Arc::new(OssClient::new(&cfg.ingest.oss, secrets)?);
-    let files = list_month_files(pool, w).await?;
+    let files = pick(list_month_files(pool, w).await?, only)?;
     tracing::info!(
         months = %ingest::months(w).join(","),
         files = files.len(),
@@ -60,6 +70,33 @@ pub async fn sync(
         deadline,
     )
     .await)
+}
+
+/// 按 `only` 挑群（空 = 全部放行）。
+///
+/// **分出来只为让「拼错的 roomid 不静默跑 0 个群」这条性质离线可测** —— [`sync`]
+/// 自己要真 MySQL（`list_month_files`）才跑得动，跟 [`sync_files`] 同一个理由。
+fn pick(mut files: Vec<MonthFile>, only: &[String]) -> Result<Vec<MonthFile>> {
+    if only.is_empty() {
+        return Ok(files);
+    }
+    let listed = files.len();
+    let keep: BTreeSet<&str> = only.iter().map(String::as_str).collect();
+    // 挑中的群，**跨月的每一行都留下**：`sync_files` 靠「任一月份失败整群作废」保证
+    // 完整性（不变量 3），这里少留一个月等于用残缺数据覆盖完整数据。
+    files.retain(|f| keep.contains(f.room.as_str()));
+    // **群 ID 是人手敲进命令行的**，打错一个字符就会拉 0 个文件、跑 0 个群，
+    // 然后绿灯退出 —— 运维看到的是「跑完了」，实际什么都没重跑。
+    // 真实的信任边界，显式炸掉；`Round` 不是 `Room`：这是参数错，不是某个群的事。
+    if files.is_empty() {
+        return Err(MirrorError::Round(format!(
+            "指定的 {} 个群在本轮索引里一个都没命中（窗口内共 {listed} 个月文件）\
+             —— 确认 roomid 拼写和日期窗口",
+            only.len()
+        )));
+    }
+    tracing::info!(rooms = only.len(), files = files.len(), "只跑指定的群");
+    Ok(files)
 }
 
 /// 索引读取和文件同步分开，离线测试可用真实本地文件及 HTTP 响应驱动同步全程。
@@ -188,6 +225,37 @@ mod tests {
         let path = ingest::room_path(root, &f.month, &f.corp, &f.room);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, BODY).unwrap();
+    }
+
+    /// 挑群：跨月的行要全留，拼错的 roomid 要**显式炸**而不是静默跑 0 个群。
+    ///
+    /// 后半条是这个参数唯一危险的地方 —— 运维拿它重跑失败的群，参数打错一个字符
+    /// 而进程绿灯退出的话，看到的是「补跑完成」，实际一个群都没重跑。
+    #[test]
+    fn picking_rooms_keeps_every_month_and_a_typo_fails_loudly() {
+        let files = vec![
+            file("wanted", "202608"),
+            file("wanted", "202609"),
+            file("other", "202609"),
+        ];
+        assert_eq!(
+            pick(files.clone(), &[]).unwrap().len(),
+            3,
+            "不挑就该原样放行"
+        );
+
+        let got = pick(files.clone(), &["wanted".into()]).unwrap();
+        assert_eq!(
+            got.iter().map(|f| f.month.as_str()).collect::<Vec<_>>(),
+            ["202608", "202609"],
+            "挑中的群跨月两行都要留下"
+        );
+
+        let e = pick(files, &["wnated".into()]).unwrap_err();
+        assert!(
+            matches!(e, MirrorError::Round(_)),
+            "roomid 拼错该整轮失败，不是静默跑 0 个群：{e}"
+        );
     }
 
     #[tokio::test]

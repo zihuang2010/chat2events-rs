@@ -87,10 +87,9 @@ pub async fn review(
     let mut agg: BTreeMap<&str, (i64, usize, Vec<String>)> = BTreeMap::new();
     let mut untyped_samples = Vec::new();
     let (mut untyped_events, mut untyped_distinct, mut total_events) = (0i64, 0usize, 0i64);
-    // **按主类聚合。** 副类不进这份报告，理由和它不进指标一样：一个事件计两次会让
-    // `total_events` 不再等于事件总数，而未分类率的分母就是它。
+    // 一个事件一个类，所以 `total_events` 恒等于事件总数 —— 未分类率的分母就是它。
     for ((s, n), t) in summaries.iter().zip(&tags) {
-        let t = t.primary();
+        let t = t.type_id();
         total_events += n;
         if t == UNTYPED {
             untyped_events += n;

@@ -16,7 +16,7 @@ import {
   mockEventsPage,
   mockRoomAggs,
   mockSummary,
-} from "@/api/mock/aggregate";
+} from "@/test/mock/aggregate";
 import type { EventRow, GroupDailyRow } from "@/domain/schemas";
 import type { TaxonomyIndex } from "@/domain/metrics";
 
@@ -34,11 +34,11 @@ export function sourceStub(actual: typeof Source, stub: AggregateStub): typeof S
   const input = () => [stub.events, stub.groupDaily, stub.tax] as const;
   return {
     ...actual,
-    loadSummary: (_source, f) => Promise.resolve(mockSummary(...input(), f)),
-    loadRoomAggs: (_source, f, groups) => Promise.resolve(mockRoomAggs(...input(), f, groups)),
-    loadAgentAggs: (_source, f) => Promise.resolve(mockAgentAggs(...input(), f)),
-    loadCategories: (_source, f, groups) => Promise.resolve(mockCategories(...input(), f, groups)),
-    loadEventsPage: (_source, f, page, size, sorting) =>
+    loadSummary: (f) => Promise.resolve(mockSummary(...input(), f)),
+    loadRoomAggs: (f, groups) => Promise.resolve(mockRoomAggs(...input(), f, groups)),
+    loadAgentAggs: (f) => Promise.resolve(mockAgentAggs(...input(), f)),
+    loadCategories: (f, groups) => Promise.resolve(mockCategories(...input(), f, groups)),
+    loadEventsPage: (f, page, size, sorting) =>
       Promise.resolve(mockEventsPage(...input(), f, page, size, sorting)),
   };
 }

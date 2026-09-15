@@ -162,15 +162,7 @@ export function useFilters(): FiltersApi {
   );
 
   const reset = useCallback(() => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams();
-        const source = previous.get("source");
-        if (source === "api" || source === "mock") next.set("source", source);
-        return next;
-      },
-      { replace: false },
-    );
+    setSearchParams(new URLSearchParams(), { replace: false });
   }, [setSearchParams]);
 
   const hrefWith = useCallback(

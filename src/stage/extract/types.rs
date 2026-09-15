@@ -6,11 +6,24 @@ use chrono::{NaiveDate, NaiveDateTime};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// `summary` 契约上限，**按 Unicode 码点算**不是字节。两个消费点（`model::validate`
-/// 与 `assemble` 的双保险）跨子模块，所以住在这里而不是任何一个消费点里；
+/// `summary` 的**质量上限**，按 Unicode 码点算不是字节。
+///
+/// ⚠️ **它是软的 —— 超了只 warn 加重问一次，不整群作废。** 硬的是
+/// [`SUMMARY_COLUMN`]。此前两处（`model::validate` 与 `assemble`）都拿它当硬闸，
+/// 于是「模型写了 101 字」和「summary 里混进手机号」同等处罚：整群整日 0 事件。
+/// 实测一轮 11 个失败群里有 2 个是这么废的，而 `VARCHAR(200)` 明明装得下。
+///
 /// prompt / schemars description / `schema.sql` 里的「100」由
-/// `the_prompt_the_schema_and_summary_max_agree` 钉住一致。
+/// `the_prompt_the_schema_and_summary_max_agree` 钉住一致 —— 契约照旧写 100，
+/// 变的只是超了之后怎么办。
 pub(super) const SUMMARY_MAX: usize = 100;
+
+/// `summary` 的**存储上限** —— `schema.sql` 的 `VARCHAR(200)`，唯一的硬约束。
+///
+/// 超过它就真的写不进去（落库当场报错，而那是群级失败）。闸在两处：`model::validate`
+/// 把它归**规模相关**（重问一次不过就切小再试 —— 揉出一条 589 字 summary 的段本来
+/// 就太长），`assemble` 是最后一道。100 和 200 之间是「难看但能用」，放行。
+pub(super) const SUMMARY_COLUMN: usize = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 领域类型
@@ -86,9 +99,14 @@ impl EventDraft {
             summary,
             still_open,
         };
-        let mut drafts = super::model::validate(vec![wire], segment_size, open_refs)
+        // 软规则（超长）在这里直接放行 —— 它的处置是「重问一次再放行」，而这个
+        // 同步构造器没有模型可重问，生产路径最终也是放行。占位符照样被抹掉。
+        let mut checked = super::model::validate(vec![wire], segment_size, open_refs)
             .map_err(|e| crate::BoxError::from(e.to_string()))?;
-        Ok(drafts.pop().expect("单条输入校验成功后必有一条结果"))
+        Ok(checked
+            .events
+            .pop()
+            .expect("单条输入校验成功后必有一条结果"))
     }
 }
 

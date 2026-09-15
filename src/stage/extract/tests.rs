@@ -114,6 +114,83 @@ async fn live_model_retries_invalid_output_and_sends_a_strict_nested_schema() {
     );
 }
 
+/// **规模相关的校验失败也要走二分** —— 重问一次不好使就切小再试，不是一把打掉整群。
+///
+/// 序号越界这类错是模型在长段上数不清行号的表现（[`prompt`] 的模块注释记着实测案例：
+/// 391 行的一段里模型把行号当 ref 填，给出 E360 而便签最大编号是 102），
+/// 缩小问题真能解决它 —— 此前它走的却是 `SegError::Failed`，**永不触发二分**。
+#[tokio::test]
+async fn an_oversized_validation_failure_bisects_instead_of_killing_the_room() {
+    use serde_json::json;
+    let ev = |ix: serde_json::Value| {
+        json!({"events":[{"ref":null,"msg_indexes":ix,"summary":"商家要求改期","still_open":true}]})
+            .to_string()
+    };
+    // 前两次都把行号写到段外（本段只有 4 行）：一次原发 + 一次重问，然后才该切
+    let (base, server) = testutil::http_model(
+        vec![
+            (200, testutil::completion(&ev(json!([99])), "stop")),
+            (200, testutil::completion(&ev(json!([99])), "stop")),
+            // 切成 [0,2) / [2,4)，两半各 2 行，这回老实填
+            (200, testutil::completion(&ev(json!([1, 2])), "stop")),
+            (200, testutil::completion(&ev(json!([1, 2])), "stop")),
+        ],
+        false,
+    );
+    let input = msgs_with(4, Some(2));
+    let events = extract(
+        &input,
+        &LiveModel::new(testutil::test_llm(&base, "test")),
+        SEG,
+    )
+    .await
+    .expect("规模相关的校验失败该切小再试，不该打掉整群");
+    assert_eq!(events.len(), 2, "切出来的两半各该产出一个事件");
+    assert_eq!(
+        server.join().unwrap().len(),
+        4,
+        "该是「原发 + 重问 + 切开的两半」共 4 次"
+    );
+}
+
+/// 反向：**PII 不许触发二分**。切小救不回手机号，判错档就会一路切到底白烧上千次调用。
+///
+/// 没有这条，把判据写成「校验失败一律切」也不会红。
+#[tokio::test]
+async fn a_pii_validation_failure_does_not_bisect() {
+    use serde_json::json;
+    let dirty = json!({"events":[{
+        "ref": null, "msg_indexes": [1],
+        "summary": "客户18472625055要求改期", "still_open": true}]})
+    .to_string();
+    let (base, server) = testutil::http_model(
+        vec![
+            (200, testutil::completion(&dirty, "stop")),
+            (200, testutil::completion(&dirty, "stop")),
+        ],
+        false,
+    );
+    let error = extract(
+        &msgs_with(4, Some(2)),
+        &LiveModel::new(testutil::test_llm(&base, "test")),
+        SEG,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("summary 含手机号"),
+        "运维版该说清撞了哪条规则：{error}"
+    );
+    assert_eq!(
+        server.join().unwrap().len(),
+        2,
+        "原发 + 重问就该收手，一次都不许切"
+    );
+}
+
+/// ⚠️ 撞输出上限要**连中 `RUNAWAY_RETRIES + 1` 次**才算「这段太大」——
+/// 前几次是原地重发（跑飞和真太大在 `finish_reason = length` 上分不开，见
+/// [`RUNAWAY_RETRIES`]）。这里喂满那么多次截断，为的是走到真正的二分。
 #[tokio::test]
 async fn live_truncation_bisects_before_json_parsing_and_carries_notes() {
     use serde_json::json;
@@ -121,14 +198,12 @@ async fn live_truncation_bisects_before_json_parsing_and_carries_notes() {
         json!({"events":[{"ref":r,"msg_indexes":[1,2],"summary":"商家要求改期","still_open":true}]})
             .to_string()
     };
-    let (base, server) = testutil::http_model(
-        vec![
-            (200, testutil::completion("{broken", "length")),
-            (200, testutil::completion(&half(json!(null)), "stop")),
-            (200, testutil::completion(&half(json!("E1")), "stop")),
-        ],
-        false,
-    );
+    let mut replies: Vec<_> = (0..=RUNAWAY_RETRIES)
+        .map(|_| (200, testutil::completion("{broken", "length")))
+        .collect();
+    replies.push((200, testutil::completion(&half(json!(null)), "stop")));
+    replies.push((200, testutil::completion(&half(json!("E1")), "stop")));
+    let (base, server) = testutil::http_model(replies, false);
     let input = msgs_with(4, Some(2));
     let events = extract(
         &input,
@@ -143,9 +218,9 @@ async fn live_truncation_bisects_before_json_parsing_and_carries_notes() {
         input.iter().map(|m| m.msg_id.clone()).collect::<Vec<_>>()
     );
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), RUNAWAY_RETRIES as usize + 3);
     assert!(
-        requests[2]["messages"][1]["content"]
+        requests[RUNAWAY_RETRIES as usize + 2]["messages"][1]["content"]
             .as_str()
             .unwrap()
             .contains("E1")
@@ -168,7 +243,8 @@ async fn live_http_errors_do_not_bisect_the_conversation() {
     )
     .await
     .unwrap_err();
-    assert!(!error.to_string().contains("输出预算耗尽"));
+    // 文案跟着 `SegError::TooBig` 走 —— 它变了这条要跟着变，否则断言永远为真
+    assert!(!error.to_string().contains("撞输出上限"));
     assert_eq!(server.join().unwrap().len(), 1);
 }
 
@@ -371,12 +447,18 @@ async fn notes_flow_across_segments_because_the_room_shares_one_drafts() {
 // 跨文件的一致性 —— 多处必须逐字一致、其中一处是不可动的 prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 三处占位符必须逐字一致：[`body`] 产出 · [`PLACEHOLDER`] 拦截 · [`SYSTEM`] 教模型认。
+/// 四处占位符必须逐字一致：[`body`] 产出 · [`PLACEHOLDER`] 拦截 ·
+/// [`SYSTEM`] 教模型认 · [`SYSTEM`] 的 summary 规则明令不许写。
 ///
 /// 改了 const 而忘了 prompt（或反过来）不会有任何编译错误，后果却是承重的：
 /// 模型不知道 `<手机号>` 是脱敏记号，可能拿两条都带它的消息当同一个客户
 /// （prompt 明令禁止的事），而 validator 也不再拦得住它进 `summary` ——
 /// **`sha256(summary)` 是 ⑤ 的缓存键，PII 进去就焊死了**。
+///
+/// ⚠️ **「认得」和「不许写」是两件事，此前只钉了前一件。** prompt 前面那段教模型
+/// 认占位符（「不承载关联信息」），而 summary 那条字段规则一个字没提它们 ——
+/// 于是 validator 拦、模型不知情，实测一轮打挂 6 个群（`summary 含占位符`）。
+/// 这条测试当时是绿的：它只查了 `SYSTEM.contains`，而前面那段正好让它满足。
 #[test]
 fn the_prompt_and_the_masks_agree() {
     for m in [MASK_PHONE, MASK_FIELD, MASK_AT] {
@@ -384,6 +466,23 @@ fn the_prompt_and_the_masks_agree() {
         assert!(
             PLACEHOLDER.is_match(m),
             "validator 拦不住 summary 里的「{m}」"
+        );
+    }
+    // 规则**必须落在 summary 那一条里**，不能只在 prompt 别处出现过 ——
+    // 查整个 `SYSTEM` 正是上面那个洞的成因。查的是记号本身，不是那句散文
+    // （措辞要随样本调，钉住它只会制造噪声 —— 同
+    // [`the_prompt_teaches_exactly_the_fields_the_schema_declares`] 的判据）。
+    let rule = SYSTEM
+        .split("- summary：")
+        .nth(1)
+        .expect("prompt 没有「- summary：」这条字段规则")
+        .split("\n- ")
+        .next()
+        .expect("split 至少产出一段");
+    for m in [MASK_PHONE, MASK_FIELD, MASK_AT] {
+        assert!(
+            rule.contains(m),
+            "summary 规则没提「{m}」—— validator 拦它，prompt 却没说过不许写"
         );
     }
     // 反向：body 真的产出这三个（不是只在文档里一致）。

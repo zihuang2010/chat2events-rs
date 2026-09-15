@@ -94,7 +94,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       title: "事件构成",
       children: [
         {
-          title: "事件量",
+          title: "事件总数",
           dataIndex: "count",
           key: "count",
           align: "right",
@@ -185,11 +185,11 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
       ),
       children: [
         {
-          title: "事件量",
+          title: "无响应事件数",
           dataIndex: "unreplied",
           key: "unreplied",
           align: "right",
-          width: 100,
+          width: 125,
           sorter: (a, b) => a.unreplied - b.unreplied,
           render: (value: number, row) =>
             value ? (

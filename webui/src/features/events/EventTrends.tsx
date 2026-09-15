@@ -35,21 +35,12 @@ export function EventTrends({
 
   return (
     <div className="ev-trends-view">
-      <div className="ev-trend-context">
-        <div>
-          <strong>分类日走势</strong>
-          <span>
-            {rows.length} 个分类 · {days.length} 天
-          </span>
-        </div>
-        <span className="ev-trend-period">
-          {days[0]} 至 {days.at(-1)}
+      <p className="ev-trend-context">
+        <span>
+          {rows.length} 个分类 · {days.length} 天
         </span>
-      </div>
-      <div className="ev-trend-guide">
         <span>各分类独立刻度 · 仅比较走势</span>
-        <span>悬停查看每日事件量</span>
-      </div>
+      </p>
       {/* ⚠️ 条件是「有没有留空的天」而不是 `cov.failed` —— 抽取失败、缺记录、最新
           结果未知都会让那一天留空（见 `coverage`），只盯 failed 的话另外两种会画出
           一张空图、一个字解释都没有。打标未完成**不**在这几种里：事件计数是抽取的

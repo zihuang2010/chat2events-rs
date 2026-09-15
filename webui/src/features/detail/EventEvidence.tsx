@@ -12,7 +12,7 @@ interface EvidenceProps {
 }
 
 export function EventProperties({ event, analytics }: EvidenceProps) {
-  const { roomLabel, agentLabel, roomAliasIsAuthoritative, taxIndex } = analytics;
+  const { roomLabel, agentLabel, roomAliasIsAuthoritative } = analytics;
   return (
     <div className="ed-evidence">
       <section>
@@ -48,19 +48,8 @@ export function EventProperties({ event, analytics }: EvidenceProps) {
       <section>
         <h3>分类与时间</h3>
         <dl className="ed-fields">
-          <Field label="主分类">
+          <Field label="分类">
             {event.level1} / {event.level2}
-          </Field>
-          <Field label="副分类">
-            {event.event_types && event.event_types.length > 1
-              ? event.event_types
-                  .slice(1)
-                  .map((type) => taxIndex.get(type)?.name ?? type)
-                  .join("、")
-              : event.event_types === null
-                ? "打标未完成"
-                : "无"}
-            <span className="ed-field-note">副类不计入指标</span>
           </Field>
           <Field label="词表版本">
             <span className="ed-mono">{event.taxonomy_version ?? "打标未完成"}</span>

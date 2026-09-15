@@ -49,8 +49,8 @@ rustc -V    # 必须 ≥ 1.85：本仓库是 edition 2024
 ```bash
 # 构建
 cargo build --release
-# 产物（六个二进制）：
-# target/release/{chat2events-rs, webui, backfill, recompute, recover, taxonomy}
+# 产物（七个二进制）：
+# target/release/{chat2events-rs, webui, backfill, recompute, recover, retry, taxonomy}
 # CI 的 build job 把它们打成 chat2events-rs-linux-x86_64.tar.gz，
 # 前端静态站另出一个 chat2events-webui-dist.tar.gz（见下面「只读工作台」），
 # 由 publish job 一起发成 Release。
@@ -117,6 +117,7 @@ tag 上是三个 job：`build`（编二进制）与 `check` / `webui` **并行�
     backfill                    # 人工：补跑历史窗口（⚠️ 写穿冻结区）
     recompute                   # 人工：词表升版后重打标
     recover                     # 人工：补齐未完成分类
+    retry                       # 人工：按 run_failure 重跑还没修好的群（⚠️ 可能写穿冻结区）
     taxonomy                    # 人工：看语料 / 试打 / 转 SQL
 /etc/chat2events/
     config.toml                 # 调参与端点，跟仓库里那份同源
@@ -438,6 +439,57 @@ SQLite 页缓存目标为 2 MiB，禁止 mmap；新答案事务持久化后才�
 观测分类批次日志中的 `queue_wait_ms`、`classify_ms`；跑批汇总的 `projected_extract_hours`
 只外推抽取，不代表包含分类排空的整轮耗时。
 
+### 按 `run_failure` 自动重跑失败的群
+
+`b_merchant_group_run_failure` 里堆着失败的群，重跑此前要人工查 SQL 抄 roomid 和窗口。
+`retry` 把「挑活」这一段自动化了 —— 它**不是新的跑批**，只是算出该重跑哪些群、
+哪个窗口，再分别喂给 `backfill` 走的那条 `daily::run_span` 和 `recover`。
+
+```bash
+# ① 先空跑看规模和窗口，一个模型请求都不发
+/opt/chat2events/retry /etc/chat2events 2026-09-01 --dry-run
+# ② 确认没问题再真跑
+/opt/chat2events/retry /etc/chat2events 2026-09-01
+# 源码树里：cargo run --locked --bin retry -- /etc/chat2events 2026-09-01 --dry-run
+```
+
+`<since>` 夹的是 **`run_date`（跑批日）**，不是数据日 ——「重跑最近一周失败的」。
+
+**先停掉覆盖相同群日的日常跑批和重打标**：分类缓存是单写者互斥的，撞上直接报
+「无法独占分类缓存」。
+
+三个人工入口的分工：
+
+| 入口 | 挑群 | 定窗口 | 重抽事实 |
+|---|---|---|---|
+| `backfill` | 人给（可省略 = 全部） | 人给 | 是 |
+| `recover` | 不挑（按群日状态自动） | 人给（筛选范围，给宽无害） | 否，只补打标 |
+| `retry` | **查库算出来** | **查库算出来** | 抽取那支是，打标那支否 |
+
+两支的窗口来源不同，这不是疏漏：
+
+* **抽取支**（`stage='extract'`）按每条失败行自带的 `window_since/window_until`
+  **分组**，一组一趟 —— `run_span` 的窗口是**删重写范围**，放宽一天就多抽一天。
+* **打标支**（`stage='classify'`）取窗口**并集**，一趟交给 `recover` ——
+  它的窗口是**筛选范围**，内部按群日精确挑 `pending`/`failed`，给宽了不会多改一行。
+
+⚠️ **「已经修好的」靠查询排除，不是靠删行。** `run_failure` 只增不改，重跑成功不删
+旧失败行 —— 判据是「该窗口内有没有晚于这次失败的 `fact_completed_time`」，与只读
+工作台的 `KNOWN_OK_DAYS` 同一条口径（`src/web/query.rs`）。**改一处必须看另一处**：
+那边把群日算进聚合分母、这边还在重抽，就是每趟白烧一遍 token。
+
+⚠️ **`window_since IS NULL` 的历史行一律跳过**（升级前写的，按「影响全历史」保守
+处理，见上面「失败影响面升级」）。跳过多少条会打一条 `warn` —— 不能静默吞掉，
+否则「retry 查不到东西」会被读成「都好了」。真要修只能人工挑群跑 `backfill`。
+
+⚠️ **失败窗口早于日常窗口起点时会写穿冻结区**（承重不变量 1），和 `backfill` 同一个
+条件，日志里有一条 `warn` 点明最早的那个窗口。这也是 `--dry-run` 先看一眼是标准
+动作的原因。
+
+失败隔离到「一组窗口」：单组失败不中止其余组，最终有失败则非零退出；失败的群会重新
+写一行 `run_failure`，下一趟 `retry` 照样捞得到。逐组**串行**执行（分类缓存互斥），
+群内并发仍由 `ingest.room_concurrency` 与 `classify.concurrency` 管。
+
 2026-09-07 开发机合成容量检查（Rust debug 测试进程，不是生产承诺）：
 分类缓存 2,000 条的峰值 RSS 为 32,784,384 字节，100,000 条为 35,422,208 字节；后者重新打开并查三条答案约 1 ms。
 MySQL 8.4 的 1,000 行、10 企业样本中，日期查询使用企业日期索引，估计读 1 行；群失败查询估计读 10 行。
@@ -450,8 +502,7 @@ MySQL 8.4 的 1,000 行、10 企业样本中，日期查询使用企业日期索
 
 ```sql
 ALTER TABLE b_merchant_group_event
-    MODIFY COLUMN event_type VARCHAR(64) NULL COMMENT '主类；NULL=尚未完成打标',
-    MODIFY COLUMN event_types JSON NULL COMMENT '标签全集；NULL=尚未完成打标',
+    MODIFY COLUMN event_type VARCHAR(64) NULL COMMENT '事件类型；NULL=尚未完成打标',
     MODIFY COLUMN taxonomy_version VARCHAR(16) NULL COMMENT '词表版本；NULL=尚未完成打标';
 
 ALTER TABLE b_merchant_group_metric_daily
@@ -625,6 +676,26 @@ ALTER TABLE b_merchant_group_event
 它**不进 `idx_overview`**：今天只在事件明细逐行显示，没有聚合点；将来若要按它出全局占比，
 再评估加进那条覆盖索引，否则 47 万行的聚合会回表。
 
+### 已有库移除多标签列
+
+2026-09-14 起一个事件只有一个类，`event_types`（标签全集，副类只供 webUI 下钻）
+整列作废。**这一列没有任何指标、筛选或索引依赖它**，所以升级顺序很松：
+新版跑批不写它、只读后端不读它，旧列留着只是一列恒 NULL 的死数据。
+
+```sql
+ALTER TABLE b_merchant_group_event DROP COLUMN event_types;
+```
+
+⚠️ **不可逆，且历史副类无法重建** —— `recompute` 按新词表重打标只产出一个类。
+执行前想清楚有没有人拿这一列回答过「某类含副类一共多少起」；
+那个问题指标表本来就答不了（见 `docs/architecture.md`），删列之后彻底没有出处。
+
+⚠️ **分类缓存会整体失效一次。** 缓存路径带 prompt 指纹（`classify::Classifier::new`），
+而这次改了 prompt 的规则 2/3 —— 新版会开一个新缓存文件，**全量重新问一遍模型**，
+旧的 `<版本>-<旧指纹>.ndjson` / `.sqlite` 变成磁盘垃圾，可以删。
+真在新指纹路径上读到旧格式（`PRAGMA user_version = 1`，答案存成 JSON 数组），
+程序会带着文件路径显式报错而不是猜 —— 那说明有人手工搬过缓存文件。
+
 ### 验证命令
 
 ```bash
@@ -699,7 +770,7 @@ cd webui && pnpm install --frozen-lockfile && pnpm dev    # http://localhost:527
 `<raw_root>/<yyyyMM>/<corpId>/` 那一层的目录名。填错不会静默返回空数据集，
 `/api/meta` 直接 409「该企业尚无已落库的群日或事件」。
 
-不接 MySQL、只想看界面：后端可以不起，开 `http://localhost:5273/?source=mock` 走模拟数据源。
+前端只使用真实接口，需启动后端并连接 MySQL；接口不可用时页面直接报错。
 
 与跑批共用配置文件格式，但只读取必需字段；**不需要访问 raw 镜像**。生产应为工作台配置独立的 MySQL 只读账号。
 它不构造 LLM 或 OSS 客户端，不写表；监听默认仅本机，nginx 示例在 `webui/deploy/nginx.conf`。

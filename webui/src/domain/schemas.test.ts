@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { buildMockDataset } from "@/api/mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { eventSchema, groupDailySchema, metaSchema } from "./schemas";
 
 const raw = buildMockDataset();
@@ -8,15 +8,10 @@ it("accepts_pending_labels_and_rejects_partially_populated_label_columns", () =>
   const pending = {
     ...raw.events[0]!,
     event_type: null,
-    event_types: null,
     taxonomy_version: null,
   };
   expect(eventSchema.safeParse(pending).success).toBe(true);
-  for (const patch of [
-    { event_type: "urge_visit" },
-    { event_types: ["urge_visit"] },
-    { taxonomy_version: "v1" },
-  ]) {
+  for (const patch of [{ event_type: "urge_visit" }, { taxonomy_version: "v1" }]) {
     expect(eventSchema.safeParse({ ...pending, ...patch }).success).toBe(false);
   }
 });
@@ -48,7 +43,8 @@ it("拒绝会扭曲首响、归属日或主分类的事件", () => {
     { first_msg_time: "2026-02-30 09:00:00" },
     { first_agent_reply_time: "2026-01-01 00:00:00" },
     { occurred_on: "2026-01-01" },
-    { event_types: ["different"] },
+    // 有分类却没词表版本 —— 标签两列必须同生同死，否则页面会显示一个无从解释的分类
+    { taxonomy_version: null },
     { first_responder: null },
     { agents: [] },
   ]) {

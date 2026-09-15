@@ -1,5 +1,5 @@
 /** 词表逐字取自仓库 `taxonomy_v1.toml`：9 个一级 · 43 个二级。只有二级进 event_type。
- *  接真接口后这份由 GET /api/meta 提供，本常量只服务模拟数据源。 */
+ *  生产词表由 GET /api/meta 提供，本常量只服务测试样本。 */
 import type { TaxonomyType } from "@/domain/schemas";
 
 const RAW: [string, string, string][] = [

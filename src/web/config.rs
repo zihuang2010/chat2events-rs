@@ -70,6 +70,7 @@ pub async fn read_pool(
     Ok(MySqlPoolOptions::new()
         .max_connections(cfg.max_connections)
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
+        .idle_timeout(Duration::from_secs(cfg.idle_timeout_secs))
         .after_connect(move |conn, _| {
             Box::pin(async move {
                 sqlx::Executor::execute(&mut *conn, SET_SESSION_TZ).await?;
@@ -133,6 +134,7 @@ mod tests {
         let config = MysqlConfig {
             max_connections: 1,
             acquire_timeout_secs: 2,
+            idle_timeout_secs: 240,
         };
         let pool = read_pool(&config, &url, 1).await.unwrap();
         let settings: (u64, String) =

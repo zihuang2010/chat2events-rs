@@ -139,7 +139,7 @@ mod tests {
         let before = store::read_events(&pool, store::Shard::new("C", "R", &window))
             .await
             .unwrap();
-        sqlx::query("UPDATE b_merchant_group_event SET event_type='__untyped__',event_types=JSON_ARRAY('__untyped__'),taxonomy_version='v1' WHERE id=?")
+        sqlx::query("UPDATE b_merchant_group_event SET event_type='__untyped__',taxonomy_version='v1' WHERE id=?")
             .bind(before.0[0]).execute(&pool).await.unwrap();
         let time_before: Vec<(String, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
             "SELECT roomid,fact_completed_time FROM b_merchant_group_metric_daily ORDER BY roomid",
@@ -152,16 +152,13 @@ mod tests {
                 (
                     200,
                     testutil::completion(
-                        r#"{"assignments":[{"index":1,"type_ids":["__untyped__"]}]}"#,
+                        r#"{"assignments":[{"index":1,"type_id":"__untyped__"}]}"#,
                         "stop",
                     ),
                 ),
                 (
                     200,
-                    testutil::completion(
-                        r#"{"assignments":[{"index":1,"type_ids":["a"]}]}"#,
-                        "stop",
-                    ),
+                    testutil::completion(r#"{"assignments":[{"index":1,"type_id":"a"}]}"#, "stop"),
                 ),
             ],
             false,

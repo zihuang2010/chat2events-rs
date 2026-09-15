@@ -5,7 +5,7 @@
 //!                                   │
 //!                       ③ extract ──┴──> ④ assemble ──> Event
 //!                                                        │
-//!                                   ⑤ classify ──> Labels ┤
+//!                                   ⑤ classify ──> Label ┤
 //!                                   ⑥ metrics  ──> 指标行 ┤
 //!                                                        ▼
 //!                                                   ⑦ store（MySQL）

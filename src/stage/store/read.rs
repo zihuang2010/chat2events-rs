@@ -1,13 +1,14 @@
-//! **只读取数** —— 四个读者：每轮开跑取一次词表 · `taxonomy` 归纳 ·
-//! `recompute` 重打标 · `daily::recover` 补齐未完成分类。
+//! **只读取数** —— 五个读者：每轮开跑取一次词表 · `taxonomy` 归纳 ·
+//! `recompute` 重打标 · `daily::recover` 补齐未完成分类 · `daily::retry` 挑出
+//! 还没修好的失败群。
 //!
 //! 独立打标按群读取已保存事件；channel 不搬运正文。
 //! 全部是 `SELECT`，一条写语句都不许出现在这个文件里。
 
-use super::sql::{EVENT_FACT_COLS, Shard, T_EVENT, T_GROUP, T_TAXONOMY, TAXONOMY_COLS};
+use super::sql::{EVENT_FACT_COLS, Shard, T_EVENT, T_FAILURE, T_GROUP, T_TAXONOMY, TAXONOMY_COLS};
 use crate::{
     BoxError,
-    stage::classify::{Labels, TaxonomyType},
+    stage::classify::{Label, TaxonomyType},
     stage::extract::Event,
     stage::ingest::Role,
 };
@@ -32,14 +33,93 @@ pub fn unfinished_days(
     .fetch(pool)
 }
 
+/// 按 `run_failure` 找出**尚未修复**的抽取失败群窗口 —— `daily::retry` 的挑活查询。
+///
+/// 返回 `(待重跑的 (roomid, window_since, window_until)，跳过的历史行数)`，
+/// 前者按窗口排序，调用方顺序扫一遍就能分组，不需要 HashMap。
+///
+/// ⚠️ **「尚未修复」必须查出来，不能拿整张表重跑。** `run_failure` 是**纯追加表**
+/// （全仓没有一条 `DELETE` / `UPDATE`），重跑成功**不删旧失败行** —— 靠
+/// [`write_room`](super::write_room) 推进的 `fact_completed_time` 晚于
+/// `gmt_created_time` 让它自然失效。所以直接读全表会把历史上失败过的**全部**群
+/// 重抽一遍：白烧 token，而且窗口一旦早于日常窗口就写穿冻结区（承重不变量 1）。
+///
+/// 下面那段 `NOT EXISTS` 是 `web::query::KNOWN_OK_DAYS` 后两条判据的**补集**
+/// （有事实完成凭据 · 凭据晚于落在该窗口里的失败）。**两处口径分家是静默的** ——
+/// 那边把群日算进聚合分母，这边就不该再去重抽它；反过来这边漏判，那边的
+/// unknown 就永远修不好。改一处必须看另一处。
+///
+/// ⚠️ **`window_since IS NULL` 的历史行一律排除，但要数出来。** 那是加这两列之前
+/// 写的行，按「影响全历史」保守处理（`docs/deploy.md`「失败影响面升级」明确
+/// 不回填），重跑它们等于把这个群的**整个历史**重抽一遍。静默吞掉同样不行：
+/// 那会让运维以为「retry 查不到东西 = 都好了」，而库里还躺着一批永远修不到的群。
+///
+/// **不返回 `corpid`** —— `mirror::sync` 的 `pick` 只按 roomid 挑（roomid 就是文件名），
+/// 多带一列只会造出「按 corp 精确挑」的假象。
+///
+/// **收集成 `Vec` 不流式**（与 [`unfinished_days`] 不同）：调用方要先按窗口分组才能
+/// 决定跑几趟，本来就得全部拿到手，流式换不来任何东西。
+pub async fn unrepaired_extract_failures(
+    pool: &MySqlPool,
+    since: NaiveDate,
+) -> Result<(Vec<(String, NaiveDate, NaiveDate)>, i64), BoxError> {
+    let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT f.roomid, f.window_since, f.window_until FROM {T_FAILURE} f \
+        WHERE f.run_date >= ? AND f.stage = 'extract' AND f.window_since IS NOT NULL \
+          AND NOT EXISTS (SELECT 1 FROM {T_GROUP} g \
+                          WHERE g.corpid = f.corpid AND g.roomid = f.roomid \
+                            AND g.dt BETWEEN f.window_since AND f.window_until \
+                            AND g.extraction_status = 'ok' \
+                            AND g.fact_completed_time > f.gmt_created_time) \
+        ORDER BY f.window_since, f.window_until, f.roomid"
+    )))
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+    let legacy: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM {T_FAILURE} \
+        WHERE run_date >= ? AND stage = 'extract' AND window_since IS NULL"
+    )))
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+    Ok((rows, legacy))
+}
+
+/// 打标失败那一支的窗口**并集**。`None` = 这段跑批日里没有打标失败。
+///
+/// ⚠️ **并集在这里是安全的，换成抽取那支就不是。** `daily::recover` 的窗口是
+/// **筛选范围** —— 它内部靠 [`unfinished_days`] 按群日精确挑 `pending` / `failed`，
+/// 窗口给宽了只是多扫几天索引，不会多改一行。而 `run_span` 的窗口是
+/// **删重写范围**（`write_room` 按 `occurred_on BETWEEN` 整段删重写），给宽了
+/// 就是重抽已经成功的天、写穿冻结区。两支的窗口策略不同不是疏漏。
+///
+/// 所以这里只要两个端点，具体补哪些群日由 `recover` 自己定 ——
+/// 也因此**不需要**判「这条失败是不是已经修复了」：已经打上标的群日
+/// 根本不在 `unfinished_days` 的结果里。
+pub async fn classify_failure_span(
+    pool: &MySqlPool,
+    since: NaiveDate,
+) -> Result<Option<(NaiveDate, NaiveDate)>, BoxError> {
+    let (min, max): (Option<NaiveDate>, Option<NaiveDate>) =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT MIN(window_since), MAX(window_until) FROM {T_FAILURE} \
+            WHERE run_date >= ? AND stage = 'classify' AND window_since IS NOT NULL"
+        )))
+        .bind(since)
+        .fetch_one(pool)
+        .await?;
+    Ok(min.zip(max))
+}
+
 pub async fn read_event_labels(
     pool: &MySqlPool,
     shard: Shard<'_>,
     classifier: &crate::stage::classify::Classifier,
-) -> Result<BTreeMap<u64, Option<Labels>>, BoxError> {
+) -> Result<BTreeMap<u64, Option<Label>>, BoxError> {
     let (corp, room, since, until) = shard.parts();
     let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT id, event_type, CAST(event_types AS CHAR), taxonomy_version \
+        "SELECT id, event_type, taxonomy_version \
         FROM {T_EVENT} WHERE corpid=? AND roomid=? AND occurred_on BETWEEN ? AND ?"
     )))
     .bind(corp)
@@ -51,7 +131,7 @@ pub async fn read_event_labels(
     while let Some(row) = rows.try_next().await? {
         labels.insert(
             row.try_get(0)?,
-            classifier.saved_labels(row.try_get(1)?, row.try_get(2)?, row.try_get(3)?)?,
+            classifier.saved_labels(row.try_get(1)?, row.try_get(2)?)?,
         );
     }
     Ok(labels)

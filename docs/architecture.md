@@ -129,7 +129,8 @@ trait SegmentModel {
 必须能重放 `TooBig`、录音要写清理）—— 录的必须是 `body` 的产出，
 那样已脱敏，不引入新的 PII 外流面。
 
-- **端点知识跟着端点走**：把 async-openai 的错误翻译成「输出被截断」/「超时」两种信号住在 `LiveModel` 里 —— 换端点写法就变。`TooBig` 这个信号本身留在本模块，由二分逻辑消费：「太大就切」跟谁家端点无关。**「不认连接类错误」这条一起归 Live**（网络断了切成两半也一样断，当成「太大」会让一次故障放大成一整棵调用树）。
+- **端点知识跟着端点走**：把 async-openai 的错误翻译成「输出被截断」/「超时」两种信号住在 `LiveModel` 里 —— 换端点写法就变。`TooBig` 这个信号本身留在本模块，由二分逻辑消费：「太大就切」跟谁家端点无关。
+- **`TooBig` 有第二个来源，那个是领域知识不是端点知识**：`validate` 把校验失败按「缩小问题能不能解决它」分档，**规模相关**的那档（序号越界 / ref 错 / `msg_indexes` 空）重问一次仍不过就翻译成 `TooBig`，走同一条二分。判据不是「错得多严重」—— PII 那档切了也一样犯，一路切到底只是白烧上千次调用，所以它仍是 `Failed`。两个方向都由 `tests.rs` 的 `an_oversized_validation_failure_bisects_instead_of_killing_the_room` 与 `a_pii_validation_failure_does_not_bisect` 钉住。**「不认连接类错误」这条一起归 Live**（网络断了切成两半也一样断，当成「太大」会让一次故障放大成一整棵调用树）。
 - **自检也走这个端口**：`BisectStub` 按 `segment_size` 抛 `TooBig` 逼出二分。它每段返回 `msg_indexes=[1, segment_size]`，**真实的 `merge` 把它换算成 `{lo, hi-1}` 写进 drafts** —— 实际跑过的区间从 drafts 读回来，于是「划分性质」不需要打桩 `one_call` 也断言得了。
 - **断言 `cargo test` 就跑得到**：跨文件的性质测试与共享 fixture（含 `BisectStub`）在 `stage/extract/tests.rs`，各实现文件的单元测试在各自文件底部；样本布局用 `testutil`（`fresh_root` / `write_month`）摆成生产形状。
 
@@ -149,8 +150,10 @@ trait SegmentModel {
 
 **Rust 现状（v1）：一个 `Classifier`，一次运行构造一次，拿住三样状态** ——
 词表（`store::read_taxonomy` 读好传进来）· 预渲染的 system prompt · 结果缓存。
-当前唯一打标路径是**让大模型从封闭词表选择标签**：一批 50 条 summary、`{index, type_ids}`
-结构化输出、校验不过回灌报错重问一次。最多 3 个标签，第一个是主类，副类不重复计入指标。
+当前唯一打标路径是**让大模型从封闭词表选择标签**：一批 50 条 summary、`{index, type_id}`
+结构化输出、校验不过回灌报错重问一次。**一个事件一个类** —— 单值进 JsonSchema，
+模型给不出第二个。（2026-09-14 前是多标签，最多 3 个、第一个是主类、副类不进指标；
+整套已移除，理由见 `classify::Label` 的文档注释。）
 `daily` 与 `recompute` 都在启动时按指定版本从 MySQL 读取一次词表，交给同一个 `Classifier`。
 数据库词表和人工草稿共用 `classify::check_types` 校验；只有显式 v0 允许空词表，正式版本缺失直接失败。
 日常跑批先独立保存事实，再通过有界 channel 交接给 `process/daily/labeling.rs`。
@@ -273,7 +276,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 | 表 | 键 | 要点 |
 |---|---|---|
-| `b_merchant_group_event` | `idx_shard (corpid, roomid, occurred_on)` 分片删重写 | `source_msg_ids` 用 JSON 列，不拆关系表 · `event_type`（主类，单值）与 `event_types`（全集，JSON）是**两列**，见下 |
+| `b_merchant_group_event` | `idx_shard (corpid, roomid, occurred_on)` 分片删重写 | `source_msg_ids` 用 JSON 列，不拆关系表 · 标注列只有 `event_type` 一列（单值），见下 |
 | `b_merchant_group_metric_daily` | `uk_group_daily (corpid, roomid, dt)` REPLACE 覆盖 | 加一列 `extraction_status` |
 | `b_merchant_group_agent_metric_daily` | `uk_agent_daily (corpid, room, agent, dt, event_type, taxonomy_version)` **六列** | 加 `room` 使其嵌套进失败隔离粒度 |
 | `b_merchant_group_agent_msg_daily` | `uk_agent_msg_daily (corpid, room, agent, dt)` **四列** REPLACE 覆盖 | 客服自己发了多少条，用来对冲「只看处理量」。**跟着事实阶段走**，见下 |
@@ -308,12 +311,12 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 - `taxonomy_version` 进语义键 —— 词表会升版重打标，不记版本这张表就是一堆无法解释的数字。
 - **`room` 进语义键** —— 键必须嵌套在「群 × 日」的失败隔离粒度里，否则某个群失败时会用残缺数据覆盖完整数据。跨群总量查询时 `SUM`。
 - `event_type` 为空时用显式的 `__untyped__`，**不用 NULL**。
-- **进键的是主类，不是全集。** 一个事件确实可能同时属于两件事（`classify::Labels`：
-  `event_type` 是主类、`event_types` 是全集）。副类**不进这张表** —— 一个事件计进 N 行
+- **一个事件一个类，所以进键的就是它。** 2026-09-14 之前这里是「主类进键、全集落
+  `event_types` 只给 webUI 下钻」的多标签，整套已移除（理由见 `classify::Label`）。
+  ⚠️ **要把多标签加回来，这一列是第一个拦路的**：副类一旦进这张表，一个事件计进 N 行
   会让 `SUM(event_count) > 事件数`，客服主管拿它当处理量就是个虚高但看起来正常的数字。
-  `event_types` 只给 webUI 下钻用，不建索引。
-  想问「换人一共多少起（含副类）」，今天只能扫 `event` 表的 `event_types`，
-  **指标表答不了这个问题** —— 那是这个取舍买单的地方。
+  当年的取舍是「副类不进指标」，代价是「换人一共多少起（含副类）」只能扫 `event` 表 ——
+  删列之后这个问题彻底没有出处，这是本次移除买单的地方。
 - **不单独存总量行** —— 总量 = 求和。存两处会打架。
 - ⚠️ **但 `SUM(event_count)` ≠ 当天事件数，即使这个群完全成功。** `first_responder`
   口径下，**未回复的事件不落在任何人头上**（`first_responder IS NULL` 时
@@ -382,10 +385,10 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 （181 个群时默认七天窗口就开始报错）；现在它只回 meta ＋ 群日记录，行数是
 「群数 × 天数」，1000 群 7 天 = 7000 行。
 
-⚠️ **口径因此有两份实现**（SQL 一份、前端 `domain/metrics` 一份，后者是模拟数据源
+⚠️ **口径因此有两份实现**（SQL 一份、前端 `domain/metrics` 一份，后者是指标
 和视图测试的对照物）。两边由 `webui/src/domain/parity-vectors.json` 这组**金标向量**
 钉住：`mysql_summary_matches_the_frontend_definitions` 跑真 SQL、
-`api/mock/parity.test.ts` 跑 `mockSummary`，各自断言等于同一组 `expected`。
+`test/mock/parity.test.ts` 跑 `mockSummary`，各自断言等于同一组 `expected`。
 口径分家是静默的 —— 页面照样显示一个看起来合理的数字，所以这条对拍不可省。
 `GET /api/dataset?from=...&to=...` 在同一个明确的 REPEATABLE READ 只读事务中读取 meta、event 与群日记录。
 默认请求最近七天，日期筛选进入后端查询并参与前端缓存键；全部历史仍可显式选择。群抽屉按需加载独立七天，窗口外事件由 `GET /api/event/{id}` 读取，原文由 `GET /api/event/{id}/messages` 读取。

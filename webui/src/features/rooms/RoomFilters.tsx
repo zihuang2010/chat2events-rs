@@ -2,6 +2,7 @@ import "../filters/filters.css";
 import { Button, DatePicker, Form, Input, Segmented, Select } from "antd";
 import {
   CloseCircleOutlined,
+  CloseOutlined,
   DownOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -11,7 +12,7 @@ import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
 import { addDays, windowBounds } from "@/lib/format";
 import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
-import type { FiltersApi } from "@/features/filters/useFilters";
+import type { FilterPatch, FiltersApi } from "@/features/filters/useFilters";
 
 export function RoomFilters({
   meta,
@@ -34,24 +35,45 @@ export function RoomFilters({
   if (search.applied !== filters.query) {
     setSearch({ applied: filters.query, draft: filters.query });
   }
-  const moreCount =
-    [filters.level1, filters.level2, filters.status].filter(Boolean).length +
-    Number(filters.overdueOnly !== null);
+  const untypedLabel = meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去";
+  // 折叠区里生效的条件在收起时也要看得见：看不见的筛选会把读数悄悄改掉，
+  // 而用户只看到一个「看起来合理」的数字。每个条件一颗可点掉的筹码。
+  const level2 = meta.taxonomy.find((type) => type.type_id === filters.level2);
+  const moreChips: { key: string; label: string; clear: FilterPatch }[] = [];
+  if (filters.level1) {
+    moreChips.push({ key: "一级", label: filters.level1, clear: { level1: null } });
+  }
+  if (filters.level2) {
+    moreChips.push({
+      key: "二级",
+      label: level2 ? `${level2.parent_name} / ${level2.name}` : untypedLabel,
+      clear: { level2: null },
+    });
+  }
+  if (filters.status) {
+    moreChips.push({ key: "状态", label: EVENT_STATUS[filters.status], clear: { status: null } });
+  }
+  if (filters.overdueOnly !== null) {
+    moreChips.push({
+      key: "超时",
+      label: filters.overdueOnly ? "仅超时" : "仅未超时",
+      clear: { overdueOnly: null },
+    });
+  }
+  const moreCount = moreChips.length;
   const active =
     from !== defaults.from ||
     to !== defaults.to ||
     Boolean(filters.room || filters.agent || filters.query.trim() || moreCount) ||
     filters.slaSec !== DEFAULT_SLA_SEC;
   const preset =
-    from === first && to === last
-      ? "all"
-      : to === last && from === defaults.from
-        ? "7d"
-        : to === last && from === threeDaysFrom
-          ? "3d"
-          : from === to && to === last
-            ? "1d"
-            : "custom";
+    from === to && to === last
+      ? "1d"
+      : to === last && from === threeDaysFrom
+        ? "3d"
+        : to === last && from === defaults.from
+          ? "7d"
+          : "custom";
   const disabledDate = (date: Dayjs) => {
     const value = date.format("YYYY-MM-DD");
     return value < first || value > last;
@@ -82,8 +104,8 @@ export function RoomFilters({
           </Form.Item>
           <div className="ra-filter-actions">
             <Button
-              type="text"
               className="ra-more-toggle"
+              data-active={moreCount > 0}
               aria-label={`更多筛选${moreCount ? `（${moreCount}）` : ""}`}
               aria-expanded={expanded}
               aria-controls="room-filter-more"
@@ -130,16 +152,11 @@ export function RoomFilters({
               aria-label="快捷时间"
               value={preset}
               options={[
-                { label: `全部 ${meta.days.length} 天`, value: "all" },
-                ...(defaults.from !== first ? [{ label: "近 7 天", value: "7d" }] : []),
-                { label: "近 3 天", value: "3d" },
                 { label: "最后 1 天", value: "1d" },
-                ...(preset === "custom"
-                  ? [{ label: "自定义", value: "custom", disabled: true }]
-                  : []),
+                { label: "近 3 天", value: "3d" },
+                { label: "近 7 天", value: "7d" },
               ]}
               onChange={(value) => {
-                if (value === "all") patch({ from: first, to: last });
                 if (value === "7d") patch(defaults);
                 if (value === "3d") patch({ from: threeDaysFrom, to: last });
                 if (value === "1d") patch({ from: last, to: last });
@@ -184,6 +201,24 @@ export function RoomFilters({
           </Form.Item>
         </div>
       </div>
+      {!expanded && moreCount > 0 ? (
+        <div className="ra-filter-chips">
+          <span className="ra-filter-chips-label">更多筛选生效中</span>
+          {moreChips.map((chip) => (
+            <Button
+              key={chip.key}
+              size="small"
+              className="ra-filter-chip"
+              aria-label={`清除${chip.key}筛选：${chip.label}`}
+              onClick={() => patch(chip.clear)}
+            >
+              <span className="ra-chip-key">{chip.key}</span>
+              {chip.label}
+              <CloseOutlined aria-hidden="true" />
+            </Button>
+          ))}
+        </div>
+      ) : null}
       <div id="room-filter-more" className="ra-filter-more" hidden={!expanded}>
         <Form.Item label="一级分类" htmlFor="room-filter-level1">
           <Select
@@ -216,10 +251,7 @@ export function RoomFilters({
                 value: type.type_id,
                 label: `${type.parent_name} / ${type.name}`,
               })),
-              {
-                value: UNTYPED,
-                label: meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去",
-              },
+              { value: UNTYPED, label: untypedLabel },
             ]}
           />
         </Form.Item>

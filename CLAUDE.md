@@ -20,7 +20,7 @@
 | ② | 会话 | 同 ①，**不独立成模块**（分组必须下推给源） | `read_room()` | `Conversation` |
 | ③ | 抽取 | `stage/extract/` | `SegmentModel` —— 2 个适配器 = **真**接缝 | `EventDraft` |
 | ④ | 装配 | `stage/extract/assemble.rs` | **无，且不该有**（溯源守卫） | `Event`（只有事实列） |
-| ⑤ | 分类 | `stage/classify/` | 无 —— struct 不是 trait | `Labels`（主类 + 全集） |
+| ⑤ | 分类 | `stage/classify/` | 无 —— struct 不是 trait | `Label`（一个事件一个类） |
 | ⑥ | 指标 | `stage/metrics.rs` | 无（纯函数） | 指标行 |
 | ⑦ | 落库 | `stage/store/` | 无（已排除，MySQL 是唯一目标） | — |
 
@@ -71,10 +71,22 @@
 - **抽取段串行、打标批次并行** —— 抽取后一段读取前一段便签；模型吃不下才对半切。打标批次之间无便签依赖，最多 50 条摘要一批，跨群共享并发名额。
 - **保存与打标独立提交** —— 先保存事件，再发送群任务；抽取收尾后排空打标队列。标签未完成是 NULL，不能写成 `__untyped__`。内存 channel 不承诺跨重启恢复。
 - **人工补标恢复** —— `src/bin/recover.rs` 从群日状态补齐未完成分类（含零事件），保留已有标签与冻结事实；自动调度仍不跨重启恢复。首次缺失标签的补齐与词表升版重打是两种操作。
+- **人工重跑失败群** —— `src/bin/retry.rs` 按 `run_failure` 挑活：抽取失败按**每条失败行自带的窗口分组**重跑（那是删重写范围，放宽一天就多抽一天），打标失败取**并集**交给 `recover`（那是筛选范围，给宽无害）。**「已经修好的」靠查询排除不靠删行** —— `run_failure` 只增不改，判据与 webUI 的 `KNOWN_OK_DAYS` 同源，改一处必看另一处。`window_since IS NULL` 的历史行跳过并告警。
 - **事实新鲜度只认事实凭据** —— `fact_completed_time` 仅由成功保存事实推进；标签更新不能恢复旧事实新鲜度。升级后的未知历史凭据保持 NULL。
 - **代码风格交给 rustfmt** —— 没有 `rustfmt.toml`，**不加是有意的**。提交前 `cargo fmt --check` 必须干净。
 - **抽取实现必须可替换** —— 模型名 / API key / prompt 都是 ③ 的内部细节，换模型只换一个 `SegmentModel` 适配器。
-- **模型输出必须先校验再落库** —— 不通过 = 该批次失败。不做字段级兜底修补，不落库半个事件。
+- **模型输出必须先校验再落库** —— **校验分三档，判据是「缩小问题能不能解决它」**，
+  不是「错得多严重」。全都先重问一次（同段重问便宜，切小再跑贵，顺序不能反）：
+  - **规模相关**（序号越界 / ref / `msg_indexes` 空 / summary 超 `VARCHAR(200)` 列宽）→
+    仍不过就**切小再试**，走 `extract` 那套自适应二分 —— 模型数不清行号、
+    或把一长段揉成一条 589 字的 summary，多半都是因为这一段太长。
+  - **规模无关 · PII**（summary 含手机号 / 订单号 / 只有占位符）→ 该批次失败。切了也一样犯。
+  - **规模无关 · 可读性**（脱敏占位符 / summary 超 100 字但不超列宽）→ **根本不算失败**：
+    占位符就地抹除，超长放行（100 字是契约，硬闸是列宽，过了列宽归上一档）。
+
+  **不落库半个事件**；字段级兜底修补只此一处，范围钉死在 `redact` 那三个常量上。
+  ⚠️ 三档曾经是一档：可读性那档把 11 个群按 PII 处罚（9 个只因 ×1 条 summary 带了个脱敏
+  记号），规模相关那档则**永不触发二分** —— 400 行的段里数错一个行号就一把打掉整群。
 - **让程序错误显式暴露** —— 配置缺字段直接 panic（错误要在进程起来第一秒暴露）。⚠️ **判据是失败隔离粒度，不是「会不会被编译掉」**：群 / 日级失败一律走 `Result`（panic 会掀翻整轮），`panic!` / `unwrap` / `expect` 只留给启动期资源和构造已保证的不变量。**承重不变量绝不用 `debug_assert!`** —— 那个才会在 release 里蒸发。
 
 ## 明确不做
@@ -88,14 +100,14 @@
 
 ## 当前状态
 
-日常跑批、词表试打与重打标已经接通。只读工作台由 `src/bin/webui.rs` 独立启动，取数与原文契约在 `web/`，不参与跑批。
+日常跑批、词表试打与重打标已经接通。失败群的重跑由 `src/bin/retry.rs` 自动挑活（挑群与定窗口查库算，重跑本身仍走 `daily::run_span` / `daily::recover`）。只读工作台由 `src/bin/webui.rs` 独立启动，取数与原文契约在 `web/`，不参与跑批。
 
 验证命令与适用范围见 `docs/deploy.md` 的「上线前的检查」：默认测试覆盖离线逻辑与本地 HTTP 模型协议；`mysql_` 测试在隔离 MySQL 上验证事务和只读取数，CI 显式执行。
 真实 OSS 测试仍需手动启用；离线协议通过不能代替真实模型业务质量验收。
 
-⚠️ **指标口径有两份实现**（后端 SQL ＋ 前端 `domain/metrics`，后者是模拟数据源与视图测试的对照物），
+⚠️ **指标口径有两份实现**（后端 SQL ＋ 前端 `domain/metrics`，后者是指标与视图测试的对照物），
 由 `webui/src/domain/parity-vectors.json` 的**金标向量**钉住：Rust 侧
-`mysql_summary_matches_the_frontend_definitions` 跑真 SQL，前端 `api/mock/parity.test.ts`
+`mysql_summary_matches_the_frontend_definitions` 跑真 SQL，前端 `test/mock/parity.test.ts`
 跑 `mockSummary`，各自断言等于同一组 `expected`。**改口径必须同时改两边并更新金标**——
 分家是静默的，页面照样显示一个看起来合理的数字。
 ⚠️ **样本会被就地替换**，文档里带条数的实测数字必须注明是哪一版样本量的。
@@ -103,7 +115,7 @@
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（1895 节点 / 8309 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已建索引（2163 节点 / 10208 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。

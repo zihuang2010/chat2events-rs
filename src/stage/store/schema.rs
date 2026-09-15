@@ -45,7 +45,11 @@ pub async fn check_schema(pool: &MySqlPool) -> Result<(), BoxError> {
             .filter(|c| !have.contains(&c.to_lowercase()))
             .collect();
         if !missing.is_empty() {
-            return Err(format!("表 {table} 缺列 {missing:?} —— schema.sql 漂移了").into());
+            return Err(format!(
+                "表 {table} 缺列 {missing:?} —— schema.sql 漂移了，\
+                 去 docs/deploy.md 找带这几列的升级章节，照抄 ALTER 执行"
+            )
+            .into());
         }
         for row in &rows {
             let name: String = row.get(0);
@@ -61,7 +65,7 @@ pub async fn check_schema(pool: &MySqlPool) -> Result<(), BoxError> {
         if table == T_EVENT {
             for row in &rows {
                 let name: String = row.get(0);
-                if ["event_type", "event_types", "taxonomy_version"].contains(&name.as_str())
+                if ["event_type", "taxonomy_version"].contains(&name.as_str())
                     && row.get::<String, _>(1) != "YES"
                 {
                     return Err(format!(

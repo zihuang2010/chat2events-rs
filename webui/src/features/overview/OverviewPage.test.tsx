@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as echarts from "echarts";
-import { buildMockDataset } from "@/api/mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { Providers } from "@/app/providers";
 import { queryClient } from "@/app/queryClient";
 import {
@@ -16,7 +16,7 @@ import {
   decorate,
   roomRollup,
 } from "@/domain/metrics";
-import { mockAgentAggs, mockCategories, mockRoomAggs, mockSummary } from "@/api/mock/aggregate";
+import { mockAgentAggs, mockCategories, mockRoomAggs, mockSummary } from "@/test/mock/aggregate";
 import { parentGroups } from "@/features/filters/useAnalytics";
 import type { LoadedDataset } from "@/api/source";
 import type { DecoratedEvent } from "@/domain/schemas";
@@ -77,8 +77,7 @@ function loadMock(): TestDataset {
   const raw = buildMockDataset();
   const taxIndex = buildTaxonomyIndex(raw.meta.taxonomy, raw.meta.taxonomy_version);
   return {
-    source: "mock",
-    fallbackReason: null,
+    source: "api",
     taxIndex,
     loadedAt: 0,
     meta: raw.meta,
@@ -248,9 +247,7 @@ describe("整体概览", () => {
       );
       await settle(view);
       await waitFor(() => {
-        expect(seen.at(-1)).toBe(
-          search.includes("source=mock") ? "?source=mock&drawer=999999" : "?drawer=999999",
-        );
+        expect(seen.at(-1)).toBe("?drawer=999999");
       });
       expect(view.container.querySelector('[data-skin="D"] .od-overview')).not.toBeNull();
       expect(screen.getByRole("option", { name: "无响应数" })).toBeInTheDocument();

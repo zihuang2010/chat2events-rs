@@ -90,41 +90,19 @@
 .ev-muted {
   color: var(--color-muted);
 }
-.ev-trends-view {
-  padding-top: var(--space-sm);
-}
-.ev-trend-context,
-.ev-trend-context > div,
-.ev-trend-guide {
+.ev-trend-context {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-xs) var(--space-md);
-}
-.ev-trend-context,
-.ev-trend-guide {
-  justify-content: space-between;
-}
-.ev-trend-context {
-  padding-bottom: var(--space-xs);
-}
-.ev-trend-context strong {
-  color: var(--color-ink);
-  font-weight: 600;
+  gap: var(--space-2xs) var(--space-md);
+  padding-block: var(--space-xs);
 }
 .ev-trend-context span,
-.ev-trend-guide,
 .ev-trend-parent,
 .ev-trend-total > span,
 .ev-trend small {
   font-size: var(--text-sm);
   color: var(--color-muted);
-}
-.ev-trend-period {
-  font-family: var(--font-mono);
-}
-.ev-trend-guide {
-  padding-bottom: var(--space-md);
 }
 .ev-trend-gap {
   color: var(--color-warn);
@@ -272,10 +250,6 @@
 @media (max-width: 800px) {
   .ev-trends {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .ev-trend-context {
-    align-items: flex-start;
-    flex-direction: column;
   }
   .ev-risk-link {
     min-height: 44px;

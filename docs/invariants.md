@@ -49,7 +49,7 @@
 **绝不用 0 表示"没算出来"。**
 
 `classification_status` 独立于 `extraction_status`，取值为 `pending` / `ok` / `failed`。
-标签三列 `event_type` / `event_types` / `taxonomy_version` 在未打标时均为 NULL；一批成功后同时更新。
+标签两列 `event_type` / `taxonomy_version` 在未打标时均为 NULL；一批成功后同时更新。
 `__untyped__` 只表示 v0 无词表或模型无法归类，不能表示任务未完成。零事件也需完成分类指标清理并置 `ok`。
 
 ### 5. 失败群日不产生新的客服指标

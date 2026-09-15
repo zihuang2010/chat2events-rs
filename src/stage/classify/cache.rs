@@ -9,7 +9,7 @@
 
 use super::{
     model::validate,
-    types::{Assignment, Labels},
+    types::{Assignment, Label},
 };
 use crate::BoxError;
 use rusqlite::OptionalExtension;
@@ -50,13 +50,24 @@ fn unhex(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// `t` 是**全集**（第一个是主类），不是主类一个字符串 —— 只缓存主类的话，
-/// 副类每次都要重问，缓存就不再保证「同 summary 同答案」的那一半。
+/// **NDJSON 时代的行格式**，只被 `user_version = 0` 的一次性导入读。`t` 是数组是
+/// 因为那时是多标签；今天 sqlite 里存的是裸 `type_id` 一个字符串。
 #[derive(Serialize, Deserialize)]
 struct Entry {
     h: String,
     t: Vec<String>,
 }
+
+/// sqlite 里 `answers.labels` 的格式版本，写在 `PRAGMA user_version` 上。
+///   * `0` —— 还是 NDJSON 文件（或空文件），走一次性导入。
+///   * `1` —— 多标签时代：值是 JSON 数组（`["a","b"]`）。
+///   * `2` —— 今天：值是裸 `type_id`（`a`）。
+///
+/// 1 → 2 **不做迁移，直接拒绝**。多标签拿掉时 prompt 改了，而缓存路径带 prompt
+/// 指纹（`model::Classifier::new`），所以每个 `1` 号文件都躺在一个再也不会被打开的
+/// 路径上 —— 真在 `2` 号路径上读到 `1`，说明有人手工搬过缓存文件，那是该喊停的事，
+/// 不是该猜的事。
+const FORMAT: u32 = 2;
 
 pub(super) struct Cache {
     db: rusqlite::Connection,
@@ -118,8 +129,17 @@ impl Cache {
         // 页缓存按 2 MiB 控制，禁用 mmap；历史答案留在磁盘，事务提交后才对调用方可见。
         db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=-2048; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;")?;
         let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 1 {
+        if version > FORMAT {
             return Err("分类缓存格式版本高于当前程序，拒绝覆盖".into());
+        }
+        if version == 1 {
+            return Err(format!(
+                "{} 是多标签时代的分类缓存（答案存成 JSON 数组），当前程序存的是裸 type_id。\
+                 策略指纹变了本不该再打开它 —— 请确认没有手工搬动过缓存文件；\
+                 确认无误就删掉这个文件和同名 .ndjson 重跑，本轮会重新问模型",
+                database.display()
+            )
+            .into());
         }
         if version == 0 {
             // 旧 NDJSON 只导入一次，格式标记与答案同事务；中断后回滚，重试不会改变首个答案。
@@ -151,28 +171,30 @@ impl Cache {
                 }
                 let entry = serde_json::from_slice::<Entry>(&line).ok().and_then(|e| {
                     let key = unhex(&e.h)?;
-                    let labels = validate(
+                    // 旧行的 `t` 是全集，取第一个（那时的主类）—— 今天 `event_type`
+                    // 存的就是它，副类没有地方可去。多余的那几个直接丢。
+                    let label = validate(
                         vec![Assignment {
                             index: 1,
-                            type_ids: e.t,
+                            type_id: e.t.into_iter().next()?,
                         }],
                         1,
                         known,
                     )
                     .ok()?
                     .pop()?;
-                    Some((key, labels))
+                    Some((key, label))
                 });
-                if let Some((key, labels)) = entry {
+                if let Some((key, label)) = entry {
                     imported += tx.execute(
                         "INSERT OR IGNORE INTO answers (hash, labels) VALUES (?1, ?2)",
-                        rusqlite::params![key.as_slice(), serde_json::to_string(labels.all())?],
+                        rusqlite::params![key.as_slice(), label.type_id()],
                     )?;
                 } else {
                     bad += 1;
                 }
             }
-            tx.execute_batch("PRAGMA user_version=1;")?;
+            tx.execute_batch(&format!("PRAGMA user_version={FORMAT};"))?;
             tx.commit()?;
             tracing::info!(
                 imported,
@@ -193,7 +215,7 @@ impl Cache {
         })
     }
 
-    pub(super) fn get(&self, key: &[u8; 32]) -> Result<Option<Labels>, BoxError> {
+    pub(super) fn get(&self, key: &[u8; 32]) -> Result<Option<Label>, BoxError> {
         let raw: Option<String> = self
             .db
             .query_row(
@@ -202,18 +224,13 @@ impl Cache {
                 |r| r.get(0),
             )
             .optional()?;
-        raw.map(|raw| {
-            validate(
-                vec![Assignment {
-                    index: 1,
-                    type_ids: serde_json::from_str(&raw)?,
-                }],
-                1,
-                &self.known,
-            )
-            .map_err(|_| BoxError::from("持久分类答案损坏或与词表不符，拒绝重新请求以免答案漂移"))?
-            .pop()
-            .ok_or_else(|| "持久分类答案为空".into())
+        raw.map(|type_id| {
+            validate(vec![Assignment { index: 1, type_id }], 1, &self.known)
+                .map_err(|_| {
+                    BoxError::from("持久分类答案损坏或与词表不符，拒绝重新请求以免答案漂移")
+                })?
+                .pop()
+                .ok_or_else(|| "持久分类答案为空".into())
         })
         .transpose()
     }
@@ -228,8 +245,8 @@ impl Cache {
     /// 同一摘要采用第一个已提交的答案；每个模型批次只同步一次磁盘。
     pub(super) fn commit(
         &mut self,
-        entries: Vec<([u8; 32], Labels)>,
-    ) -> Result<Vec<Labels>, BoxError> {
+        entries: Vec<([u8; 32], Label)>,
+    ) -> Result<Vec<Label>, BoxError> {
         if self.write_failed {
             return Err("分类缓存此前写入失败，停止追加；请排查磁盘并重启本轮".into());
         }
@@ -237,27 +254,20 @@ impl Cache {
         self.write_failed = true;
         let tx = self.db.transaction()?;
         let mut accepted = Vec::with_capacity(entries.len());
-        for (key, labels) in entries {
+        for (key, label) in entries {
             tx.execute(
                 "INSERT OR IGNORE INTO answers (hash, labels) VALUES (?1, ?2)",
-                rusqlite::params![key.as_slice(), serde_json::to_string(labels.all())?],
+                rusqlite::params![key.as_slice(), label.type_id()],
             )?;
-            let raw: String = tx.query_row(
+            let type_id: String = tx.query_row(
                 "SELECT labels FROM answers WHERE hash=?1",
                 [key.as_slice()],
                 |r| r.get(0),
             )?;
-            let got = validate(
-                vec![Assignment {
-                    index: 1,
-                    type_ids: serde_json::from_str(&raw)?,
-                }],
-                1,
-                &self.known,
-            )
-            .map_err(|_| "持久分类答案损坏，拒绝发布")?
-            .pop()
-            .expect("一个已校验答案");
+            let got = validate(vec![Assignment { index: 1, type_id }], 1, &self.known)
+                .map_err(|_| "持久分类答案损坏，拒绝发布")?
+                .pop()
+                .expect("一个已校验答案");
             accepted.push(got);
         }
         tx.commit()?;
@@ -308,11 +318,11 @@ mod tests {
         let path = dir.join("v1.ndjson");
         let mut cache = Cache::open(&path, &known()).unwrap();
         cache.db.execute_batch("PRAGMA query_only=ON;").unwrap(); // 只读连接确定性制造事务写入错误。
-        assert!(cache.commit(vec![(digest("a"), lab(&["a"]))]).is_err());
+        assert!(cache.commit(vec![(digest("a"), lab("a"))]).is_err());
         assert_eq!(cache.len(), 0);
         assert!(
             cache
-                .commit(vec![(digest("b"), lab(&["b"]))])
+                .commit(vec![(digest("b"), lab("b"))])
                 .unwrap_err()
                 .to_string()
                 .contains("此前写入失败")
@@ -325,8 +335,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("v1.ndjson");
         let key = digest("旧答案");
+        // 第一行是多标签时代的形状（`t` 两个元素）—— 导入只取第一个，副类没处可去。
+        let multi = digest("旧的多标签答案");
         let original = format!(
-            "{}\n坏行\n{}\n半截",
+            "{}\n坏行\n{}\n{}\n半截",
             serde_json::to_string(&Entry {
                 h: hex(&key),
                 t: vec!["a".into()]
@@ -336,15 +348,18 @@ mod tests {
                 h: hex(&key),
                 t: vec!["b".into()]
             })
+            .unwrap(),
+            serde_json::to_string(&Entry {
+                h: hex(&multi),
+                t: vec!["b".into(), "a".into()]
+            })
             .unwrap()
         );
         std::fs::write(&path, &original).unwrap();
         let mut cache = Cache::open(&path, &known()).unwrap();
-        assert_eq!(cache.get(&key).unwrap(), Some(lab(&["a"])));
-        assert_eq!(
-            cache.commit(vec![(key, lab(&["b"]))]).unwrap(),
-            [lab(&["a"])]
-        );
+        assert_eq!(cache.get(&key).unwrap(), Some(lab("a")));
+        assert_eq!(cache.get(&multi).unwrap(), Some(lab("b")), "只留主类");
+        assert_eq!(cache.commit(vec![(key, lab("b"))]).unwrap(), [lab("a")]);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             original,
@@ -355,7 +370,7 @@ mod tests {
         std::fs::write(&path, "已经归档").unwrap();
         assert_eq!(
             Cache::open(&path, &known()).unwrap().get(&key).unwrap(),
-            Some(lab(&["a"]))
+            Some(lab("a"))
         );
     }
 
@@ -372,7 +387,7 @@ mod tests {
             cache
                 .commit(
                     (first..(first + BATCH).min(count))
-                        .map(|i| (digest(&i.to_string()), lab(&["a"])))
+                        .map(|i| (digest(&i.to_string()), lab("a")))
                         .collect(),
                 )
                 .unwrap();
@@ -382,10 +397,7 @@ mod tests {
         let cache = Cache::open(&path, &known()).unwrap();
         assert_eq!(cache.len(), count);
         for i in [0, count / 2, count.saturating_sub(1)] {
-            assert_eq!(
-                cache.get(&digest(&i.to_string())).unwrap(),
-                Some(lab(&["a"]))
-            );
+            assert_eq!(cache.get(&digest(&i.to_string())).unwrap(), Some(lab("a")));
         }
         let plan: String = cache
             .db
@@ -422,7 +434,7 @@ mod tests {
 
         let k1 = digest("商家要求取消订单");
         let mut c = Cache::open(&p, &known()).unwrap();
-        c.commit(vec![(k1, lab(&["a", "b"]))]).unwrap();
+        c.commit(vec![(k1, lab("a"))]).unwrap();
         drop(c);
 
         std::fs::write(
@@ -432,9 +444,7 @@ mod tests {
         .unwrap();
 
         let c = Cache::open(&p, &known()).unwrap();
-        // 缓存存的是**全集**不是主类 —— 只存主类的话副类每次都要重问，
-        // 「同 summary 同答案」就只保住了一半。
-        assert_eq!(c.get(&k1).unwrap(), Some(lab(&["a", "b"])));
+        assert_eq!(c.get(&k1).unwrap(), Some(lab("a")));
         assert_eq!(c.len(), 1, "坏行不该变成一条答案");
     }
 
@@ -450,9 +460,9 @@ mod tests {
         let dir = crate::testutil::fresh_root("classify", "first-answer");
         let mut c = Cache::open(&dir.join("v1.ndjson"), &known()).unwrap();
         let key = digest("同一摘要");
-        c.commit(vec![(key, lab(&["a"]))]).unwrap();
-        c.commit(vec![(key, lab(&["b"]))]).unwrap();
-        assert_eq!(c.get(&key).unwrap(), Some(lab(&["a"])));
+        c.commit(vec![(key, lab("a"))]).unwrap();
+        c.commit(vec![(key, lab("b"))]).unwrap();
+        assert_eq!(c.get(&key).unwrap(), Some(lab("a")));
     }
 
     #[test]
@@ -463,9 +473,9 @@ mod tests {
         std::fs::write(&path, b"{\"h\":\"unfinished").unwrap();
         let key = digest("新摘要");
         let mut c = Cache::open(&path, &known()).unwrap();
-        c.commit(vec![(key, lab(&["a"]))]).unwrap();
+        c.commit(vec![(key, lab("a"))]).unwrap();
         drop(c);
         let reopened = Cache::open(&path, &known()).unwrap();
-        assert_eq!(reopened.get(&key).unwrap(), Some(lab(&["a"])));
+        assert_eq!(reopened.get(&key).unwrap(), Some(lab("a")));
     }
 }

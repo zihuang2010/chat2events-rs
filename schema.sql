@@ -23,7 +23,7 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_event —— 按 (corpid, roomid, occurred_on) 分片删重写
 --
--- 事实列（冻结区 occurred_on < T-(N+1) 不可写）：除 event_type / event_types / taxonomy_version 外的全部。
+-- 事实列（冻结区 occurred_on < T-(N+1) 不可写）：除 event_type / taxonomy_version 外的全部。
 -- 标注列：新事实保存后独立补齐；冻结区已有标签只因词表升版重打。
 -- 已有库升级步骤见 docs/deploy.md 的「独立打标流水线升级」。
 -- summary 归**事实列** —— 它由抽取那一次的模型决定，而冻结区本来就不再跑抽取。
@@ -42,11 +42,10 @@ CREATE TABLE b_merchant_group_event (
     asker_role             ENUM('EXTERNAL','INTERNAL') NOT NULL COMMENT '发起方角色=首条来源消息发送方的identityType。EXTERNAL=商家发起，INTERNAL=平台发起（工单推送类，first_agent_reply_time恒等于first_msg_time、首响0秒，算首响指标前要先滤掉）',
     agents                 JSON            NOT NULL COMMENT '涉及的全部INTERNAL成员easyUserId数组，全存。归属口径换了不用重跑LLM',
     first_responder        CHAR(16)        NULL     COMMENT 'first_agent_reply_time那条消息的发送方easyUserId',
-    summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符（落库前由抽取校验器拦截）',
+    summary                VARCHAR(200)    NOT NULL COMMENT '事件摘要。契约：中文一句话≤100字，不含ID/脱敏占位符。ID 由抽取校验器硬拦（不通过即整批失败），脱敏占位符就地抹除；≤100 字是软的，超了只重问一次就放行，列宽 200 才是硬闸',
     last_msg_role          ENUM('EXTERNAL','INTERNAL') NULL COMMENT '末条来源消息发送方的identityType——asker_role的镜像，同源同形，只是取末条而非首条。EXTERNAL=商家说完没人接（把人晾着），INTERNAL=客服收的尾。确定性计算不经模型，与first_agent_reply_time同一条路。NULL=加这一列之前抽取的历史行，不是某一边（承重不变量4的形状），冻结区不可回填。不进idx_overview：今天只在事件明细逐行显示，没有聚合点',
     followup_wait_max_sec  INT UNSIGNED    NULL     COMMENT '后续轮次最长等待秒数（工作时段口径）。首响之后每次EXTERNAL→INTERNAL间隔取最大，扣除08:30-21:00之外的时间；周末与节假日不扣（没有工作日历）。末尾没人接的那一段不计——那是last_msg_role的活。⚠️与首响时效同一个工作时段口径（曾经只有本列这么算）。但两者可改性不同：首响由两个时间列查询期现算、口径随时可改，而后续等待查询期拿不到中间轮次，只能写入时算，口径就此定死。0=确实没有后续轮次（算出来的事实），NULL=没算过（加这一列之前的历史行，冻结区不可回填）——承重不变量4，两者绝不混。算指标前先滤掉asker_role=INTERNAL，与首响同一条WHERE。不进idx_overview：今天只在事件明细逐行显示',
-    event_type             VARCHAR(64)     NULL COMMENT '主类；NULL=尚未完成打标，__untyped__=模型归不上去或v0未建词表。分类指标只按主类统计',
-    event_types            JSON            NULL COMMENT '标签全集；NULL=尚未完成打标，完成后非空且首项等于event_type。副类只供下钻',
+    event_type             VARCHAR(64)     NULL COMMENT '事件类型；NULL=尚未完成打标，__untyped__=模型归不上去或v0未建词表。一个事件一个类——曾经还有一列event_types存标签全集（副类只供下钻、不进任何指标），2026-09-14连同整套多标签机制移除',
     taxonomy_version       VARCHAR(16)     NULL COMMENT '打标所用词表版本；NULL=尚未完成打标',
     source_messages        MEDIUMTEXT      NULL COMMENT '来源消息渲染快照。JSON数组，与source_msg_ids等长同序，元素就是webUI下钻接口的返回体（msg_id/at/sender_id/sender_role/text）。展示列——既非事实列也非标注列，不参与任何指标、不回读进Event、不参与抽取与打标。非TEXT消息的text已在抽取时换成占位符（[图片]等），媒体URL一律不存（带签名会过期）。NULL=升级前的历史行，不是空数组（承重不变量4的形状）。不用JSON类型：MySQL的JSON是带键偏移索引的二进制格式，比等价文本更大，而这一列只整块读写、从不JSON_EXTRACT',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',

@@ -276,7 +276,7 @@ async fn read_agent_accounts(
 /// 明细表和深链接就会从此显示不同的列，而页面照样渲染 —— 那正是这个项目里
 /// 最贵的那类错：没有任何东西会报错。
 ///
-/// 标签三列（`event_type` / `event_types` / `taxonomy_version`）在本群打标未完成时
+/// 标签两列（`event_type` / `taxonomy_version`）在本群打标未完成时
 /// 一律出 `NULL`：批次已更新但本群尚未完成时，事实照常可见，标签等到分类指标发布后
 /// 一起展示（承重不变量 4 —— 未完成是 NULL，不是 `__untyped__`，更不是 0）。
 const EVENT_DOCUMENT: &str = "CAST(JSON_OBJECT('id', e.id, 'corpid', e.corpid, 'roomid', e.roomid, \
@@ -287,7 +287,6 @@ const EVENT_DOCUMENT: &str = "CAST(JSON_OBJECT('id', e.id, 'corpid', e.corpid, '
          'agents', e.agents, 'first_responder', e.first_responder, 'summary', e.summary, \
          'last_msg_role', e.last_msg_role, 'followup_wait_max_sec', e.followup_wait_max_sec, \
          'event_type', IF(g.classification_status IN ('pending','failed'), NULL, e.event_type), \
-         'event_types', IF(g.classification_status IN ('pending','failed'), NULL, e.event_types), \
          'taxonomy_version', IF(g.classification_status IN ('pending','failed'), NULL, e.taxonomy_version)) AS CHAR) AS document";
 
 /// 事件明细的一页 —— **手动回表（延迟关联）**，不是直接 `LIMIT 偏移, 条数`。

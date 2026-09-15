@@ -40,15 +40,15 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
          ('other','R','其他企业群',2,0), ('C','empty-name','',NULL,0), \
          ('C','unused-room','未产生记录的群',3,0); \
          INSERT INTO b_merchant_group_event \
-         (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary,last_msg_role,event_type,event_types,taxonomy_version,source_messages) \
+         (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary,last_msg_role,event_type,taxonomy_version,source_messages) \
          VALUES ('C','R',JSON_ARRAY('m1','m2'),'2026-08-25 23:55:00','2026-08-26 00:05:00','2026-08-26 00:05:00','2026-08-25', \
-         'merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'agent00000000001','商家要求改期，平台已受理','INTERNAL','reschedule',JSON_ARRAY('reschedule'),'v1', \
+         'merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'agent00000000001','商家要求改期，平台已受理','INTERNAL','reschedule','v1', \
          CAST(JSON_ARRAY(\
            JSON_OBJECT('msg_id','m1','at','2026-08-25 23:55:00','sender_id','merchant00000001','sender_role','EXTERNAL','text','请改期，原文保留'),\
            JSON_OBJECT('msg_id','m2','at','2026-08-26 00:05:00','sender_id','agent00000000001','sender_role','INTERNAL','text','稍等，已受理')\
          ) AS CHAR)), \
          ('C','R',JSON_ARRAY('m3','m4'),'2026-08-26 09:00:00','2026-08-26 09:10:00','2026-08-26 09:10:00','2026-08-26', \
-         'merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'agent00000000001','商家问上门时间，平台已答复','INTERNAL','reschedule',JSON_ARRAY('reschedule'),'v1', \
+         'merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'agent00000000001','商家问上门时间，平台已答复','INTERNAL','reschedule','v1', \
          CAST(JSON_ARRAY(\
            JSON_OBJECT('msg_id','m3','at','2026-08-26 09:00:00','sender_id','merchant00000001','sender_role','EXTERNAL','text','几点上门'),\
            JSON_OBJECT('msg_id','m4','at','2026-08-26 09:10:00','sender_id','agent00000000001','sender_role','INTERNAL','text','十点前')\
@@ -1161,8 +1161,8 @@ async fn mysql_summary_matches_the_frontend_definitions() {
         sqlx::query(
             "INSERT INTO b_merchant_group_event (corpid,roomid,source_msg_ids,first_msg_time,\
              last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,\
-             summary,last_msg_role,followup_wait_max_sec,event_type,event_types,taxonomy_version) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             summary,last_msg_role,followup_wait_max_sec,event_type,taxonomy_version) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(e["corpid"].as_str())
         .bind(e["roomid"].as_str())
@@ -1179,7 +1179,6 @@ async fn mysql_summary_matches_the_frontend_definitions() {
         .bind(e["last_msg_role"].as_str())
         .bind(e["followup_wait_max_sec"].as_i64())
         .bind(e["event_type"].as_str())
-        .bind(e["event_types"].to_string())
         .bind(e["taxonomy_version"].as_str())
         .execute(&pool)
         .await

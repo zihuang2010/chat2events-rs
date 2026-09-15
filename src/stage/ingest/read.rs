@@ -47,8 +47,8 @@ static SEEN_UNKNOWN: LazyLock<Mutex<HashSet<String>>> =
 ///
 /// 不只是省开连接那点时间：`Connection::open_in_memory()` 每次都新建一个完整的数据库
 /// 实例 —— 实测 **24.5ms/次**，且每个实例自带 `threads = 核数` 个工作线程、声明
-/// `memory_limit = 80% RAM`。`room_concurrency = 8` 时那是 **8 × 12 个工作线程压在 12 个
-/// 核上、8 份各 12.7 GiB 的内存预算声明**。共享之后线程池和内存上限都只剩一份，
+/// `memory_limit = 80% RAM`。`room_concurrency = 10` 时那是 **10 × 12 个工作线程压在 12 个
+/// 核上、10 份各 12.7 GiB 的内存预算声明**。共享之后线程池和内存上限都只剩一份，
 /// `try_clone` 实测 **0.03ms**（10 个真实群的 `read_room` 共 957ms，其中 245ms 是纯开连接）。
 ///
 /// 锁只圈住 `try_clone` 这一下 —— 查询在各自的连接上跑，不进临界区。要锁是因为
@@ -70,8 +70,24 @@ static DB: LazyLock<Mutex<duckdb::Connection>> = LazyLock::new(|| {
     let con = duckdb::Connection::open_in_memory().expect("建 DuckDB 实例");
     con.execute_batch(
         // 两个独立进程各自限制工作集，另为 Rust 会话、事件、JSON 留内存；这不是 RSS 硬上限。
+        //
+        // ⚠️ **`memory_limit` 和 `threads` 是一组的，改一个必须重算另一个，还要连着
+        // `ingest.room_concurrency` 一起算。** JSON 扫描器每个工作线程固定申请
+        // **32 MiB** 读缓冲，**与文件大小无关**（148 KB 的月文件照样要 32 MiB）——
+        // DuckDB 1.5 里是硬编码的，`maximum_object_size` 参数改不动它，
+        // `duckdb_settings()` 里也没有任何旋钮。而 `room_concurrency` 个群同时在扫，
+        // 每个查询各握自己那份，峰值 ≈ (room_concurrency + threads) × 32 MiB。
+        //
+        // 实测（duckdb CLI 1.5.5，937 KB 的 ndjson）单次扫描的内存下限：
+        // threads=1 要 40 MB、threads=2 要 80 MB、threads=4 读两个月文件要 160 MB。
+        // 原先 `512MB`（DuckDB 按 10⁶ 算，实为 488 MiB）配 threads=4、room_concurrency=10，
+        // 峰值 (10+4)×32 = 448 MiB 贴着上限 —— 实跑在 362.5 MiB 上就有群 OOM 失败。
+        // 现在 (10+2)×32 = 384 MiB，对 1GB（= 953 MiB）留 2.5 倍余量。
+        //
+        // **扫描内部并行不值得买**：单群读取是毫秒级（138 个群并发 10 跑完 0.4s），
+        // 而它读完要等的模型调用是分钟级。threads 只是内存乘数，不是产能旋钮。
         "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; \
-         SET memory_limit = '512MB'; SET threads = 4; SET max_temp_directory_size = '1GB';",
+         SET memory_limit = '1GB'; SET threads = 2; SET max_temp_directory_size = '1GB';",
     )
     .expect("关闭扩展自动加载");
     Mutex::new(con)

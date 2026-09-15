@@ -29,7 +29,7 @@ use crate::{
     config::Config,
     join,
     llm::Llm,
-    stage::classify::{CURRENT_VERSION, Classifier, Labels},
+    stage::classify::{CURRENT_VERSION, Classifier, Label},
     stage::metrics::{self, Attribution},
     stage::store,
     window::Window,
@@ -169,8 +169,8 @@ async fn retag_room(
     }
     let sums: Vec<&str> = events.iter().map(|e| e.summary.as_str()).collect();
     let labels = classifier.classify(&sums).await?;
-    // ⑥ 只吃主类，⑦ 拿整份 `Labels`（主类 + 全集）—— 见 `classify::Labels`。
-    let types: Vec<&str> = labels.iter().map(Labels::primary).collect();
+    // ⑥ 吃 `type_id`，⑦ 拿整份 `Label` —— 见 `classify::Label`。
+    let types: Vec<&str> = labels.iter().map(Label::type_id).collect();
 
     // 口径跟 `daily` 一致 —— 换口径是另一件事，不该藏在重打标里顺手做了。
     let agent = metrics::agent_rows(

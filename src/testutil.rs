@@ -84,7 +84,7 @@ pub fn test_llm(base: &str, model: &str) -> crate::llm::Llm {
 
 /// ⑤ 打标那一队的 fixture。**凡是要喂给 `Classifier::new` 的都用这个。**
 ///
-/// 两队的 `max_tokens` 差一个量级（64000 对 6000），而 `classify.rs` 有一条测试正钉着
+/// 两队的 `max_tokens` 不是一个数（12000 对 6000），而 `classify.rs` 有一条测试正钉着
 /// 「打标请求真的带着小预算出门」—— 拿抽取那份去打标，它会静默从「预算被压小了」
 /// 翻转成「预算没被压小」：测试照样绿，保证没了。所以 fixture 必须分两个。
 pub fn test_classify_llm(base: &str, model: &str) -> crate::llm::Llm {

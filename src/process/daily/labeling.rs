@@ -2,7 +2,7 @@
 
 use crate::{
     BoxError,
-    stage::classify::{BATCH, Classifier, Labels},
+    stage::classify::{BATCH, Classifier, Label},
     stage::metrics::{self, Attribution},
     stage::store,
     window::Window,
@@ -141,7 +141,7 @@ async fn label_events(
         .into());
     }
     let mut saved = store::read_event_labels(pool, shard, classifier).await?;
-    let mut labels: Vec<Option<Labels>> = ids
+    let mut labels: Vec<Option<Label>> = ids
         .iter()
         .map(|id| {
             saved
@@ -224,7 +224,7 @@ async fn label_events(
             label
                 .as_ref()
                 .expect("所有批次成功，每个事件均已获得标签")
-                .primary()
+                .type_id()
         })
         .collect();
     let agent = metrics::agent_rows(

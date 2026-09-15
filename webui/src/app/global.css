@@ -231,6 +231,21 @@ body {
   outline: 2px solid var(--c2e-accent);
   outline-offset: -4px;
 }
+.c2e-asof {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--c2e-ink-secondary);
+}
+.c2e-asof em {
+  font-style: normal;
+  color: var(--c2e-ink-muted);
+}
+.c2e-asof[data-stale="true"] em {
+  color: var(--c2e-warning-ink);
+  font-weight: 600;
+}
 @media (max-width: 760px) {
   .c2e-topbar {
     height: auto;
@@ -253,5 +268,11 @@ body {
   }
   .c2e-nav-link::after {
     inset-inline: 8px;
+  }
+  /* 窄屏顶栏是换行布局，截至日单独占一行，不跟导航挤成横向滚动。 */
+  .c2e-asof {
+    flex-basis: 100%;
+    padding-bottom: 4px;
+    overflow-x: auto;
   }
 }

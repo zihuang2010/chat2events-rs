@@ -68,7 +68,6 @@ export function EventDrawer({
       title={
         <div className="ed-title">
           <span>{event ? `事件 #${event.id}` : "事件详情"}</span>
-          {analytics.dataset.source === "mock" ? <Tag color="warning">模拟数据</Tag> : null}
         </div>
       }
       footer={

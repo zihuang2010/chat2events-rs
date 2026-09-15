@@ -22,7 +22,7 @@ import {
 } from "./metrics";
 // 聚合口径已经搬进 SQL；`mock/aggregate` 是它在前端的对照实现，
 // 也是这些测试的输入来源 —— 于是「拼接」和「口径」各自被测到。
-import { mockAgentAggs, mockCategories, mockRoomAggs } from "@/api/mock/aggregate";
+import { mockAgentAggs, mockCategories, mockRoomAggs } from "@/test/mock/aggregate";
 import type { EventRow, GroupDailyRow, TaxonomyType } from "./schemas";
 
 const TAX: TaxonomyType[] = [
@@ -51,7 +51,6 @@ function ev(over: Partial<EventRow> = {}): EventRow {
     last_msg_role: "EXTERNAL",
     followup_wait_max_sec: null,
     event_type: "urge_visit",
-    event_types: ["urge_visit"],
     taxonomy_version: "v1",
     ...over,
   };
@@ -64,7 +63,7 @@ const PARENTS = [
 ];
 
 it("counts_pending_facts_without_publishing_them_as_a_category", () => {
-  const raw = [ev({ event_type: null, event_types: null, taxonomy_version: null })];
+  const raw = [ev({ event_type: null, taxonomy_version: null })];
   const rows = dec(raw);
   expect(rows[0]!.level1).toBe("打标未完成");
   expect(aggregate(rows, 1800, "2026-08-25").events).toBe(1);
@@ -136,7 +135,7 @@ describe("派生字段", () => {
   });
 
   it("归不上去的类型落到未归类，不是崩掉", () => {
-    const [e] = dec([ev({ event_type: "__untyped__", event_types: ["__untyped__"] })]);
+    const [e] = dec([ev({ event_type: "__untyped__" })]);
     expect(e?.level1).toBe("未归类");
     expect(e?.level2).toBe("归不上去");
   });
@@ -407,9 +406,7 @@ describe("群维度汇总", () => {
     // 每类的条数不同，用来钉住降序；截前四由后端 `ROW_NUMBER` 做，
     // 这里的对照实现（`mockRoomAggs`）用同一条规则。
     const many = [
-      ...Array.from({ length: 5 }, () =>
-        ev({ roomid: "R1", event_type: "fee_refund", event_types: ["fee_refund"] }),
-      ),
+      ...Array.from({ length: 5 }, () => ev({ roomid: "R1", event_type: "fee_refund" })),
       ...Array.from({ length: 2 }, () => ev({ roomid: "R1" })),
     ];
     const ranked = roomRollup({
@@ -625,12 +622,9 @@ describe("分类汇总只按主类", () => {
       classification_status: "ok",
     },
   ];
-  const raw = [
-    ev({ event_type: "urge_visit", event_types: ["urge_visit", "fee_refund"] }), // 带副类
-    ev({ event_type: "fee_refund", event_types: ["fee_refund"] }),
-  ];
+  const raw = [ev({ event_type: "urge_visit" }), ev({ event_type: "fee_refund" })];
 
-  it("副类不进指标，否则合计会大于事件数", () => {
+  it("一个事件只计一次，合计恒等于事件数", () => {
     const l2 = categoryRows(mockCategories(raw, cells, tax, window), "level2", tax, PARENTS, 2);
     expect(l2.reduce((s, c) => s + c.count, 0)).toBe(2);
     expect(l2.find((c) => c.key === "fee_refund")?.count).toBe(1);

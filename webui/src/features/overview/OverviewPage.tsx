@@ -9,7 +9,7 @@ import { useAnalytics, type Analytics } from "@/features/filters/useAnalytics";
 import { parseFilters, type FiltersApi } from "@/features/filters/useFilters";
 import { OverviewDashboard } from "./OverviewDashboard";
 
-const KEEP_ON_OVERVIEW = new Set(["drawer", "source"]);
+const KEEP_ON_OVERVIEW = new Set(["drawer"]);
 
 export function OverviewPage(props: { analytics: Analytics; api: FiltersApi }) {
   const [searchParams, setSearchParams] = useSearchParams();

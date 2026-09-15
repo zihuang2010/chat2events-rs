@@ -50,7 +50,6 @@ const events: EventRow[] = [
   last_msg_role: "EXTERNAL",
   followup_wait_max_sec: null,
   event_type: null,
-  event_types: null,
   taxonomy_version: null,
 }));
 

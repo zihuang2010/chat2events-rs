@@ -21,18 +21,22 @@
 //!                （**不叫 classify.rs**：⑤ 是 `crate::stage::classify`，同名会让
 //!                 `use super::classify` 和 `use crate::stage::classify` 挤在同一屏）
 //!   recover.rs   人工恢复：按群日补齐未完成分类，不重新抽取冻结事实
+//!   retry.rs     人工重跑：按 run_failure 挑出还没修好的群，两支各自定窗口
 //!   tally.rs     抽取结果与预算记账
 //! ```
 //!
 //! [`run`] 是日常跑批（窗口 `[T-(N+1), T-2]`）；[`run_span`] 让调用方自己给窗口，
-//! 补跑历史走它（`src/bin/backfill.rs`）。
+//! 补跑历史走它（`src/bin/backfill.rs`）。[`retry`] 不自己跑批，它只是**挑活**：
+//! 算出该重跑哪些群、哪个窗口，再分别喂给 [`run_span`] 和 [`recover`]。
 
 mod labeling;
 mod recover;
+mod retry;
 mod run;
 mod tally;
 
 pub use recover::recover;
+pub use retry::retry;
 pub use run::{run, run_span};
 
 #[cfg(test)]

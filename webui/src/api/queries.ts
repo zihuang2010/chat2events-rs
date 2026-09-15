@@ -13,7 +13,6 @@ import {
   loadSummary,
   type LoadedDataset,
   type SourceKind,
-  type SourcePreference,
 } from "./source";
 import type { MessageRow } from "@/domain/schemas";
 import type { EventSorting, QueryFilters } from "./client";
@@ -31,7 +30,7 @@ export function useStoredEvent(
     queryKey: ["event", source, eventId, taxonomyVersion],
     queryFn: () => {
       if (eventId === null) throw new Error("缺少事件 ID");
-      return loadEvent(source, eventId, taxonomyVersion);
+      return loadEvent(eventId, taxonomyVersion);
     },
     enabled: eventId !== null,
     staleTime: 5 * 60_000,
@@ -42,26 +41,19 @@ export function useStoredEvent(
 export function useDataset(): UseQueryResult<LoadedDataset, Error> {
   const [params] = useSearchParams();
   const { pathname } = useLocation();
-  const value = params.get("source");
-  const source: SourcePreference = value === "api" || value === "mock" ? value : "auto";
   const overview = pathname === "/" || pathname.endsWith("/overview");
-  return useWindowDataset(
-    source,
-    overview ? null : params.get("from"),
-    overview ? null : params.get("to"),
-  );
+  return useWindowDataset(overview ? null : params.get("from"), overview ? null : params.get("to"));
 }
 
 /** 主视图按 URL 范围取数；群抽屉用默认七天，共用同一份查询缓存。 */
 export function useWindowDataset(
-  source: SourcePreference,
   from: string | null = null,
   to: string | null = null,
   enabled = true,
 ): UseQueryResult<LoadedDataset, Error> {
   return useQuery({
-    queryKey: ["dataset", source, from, to],
-    queryFn: () => loadDataset(source, { from, to }),
+    queryKey: ["dataset", from, to],
+    queryFn: () => loadDataset({ from, to }),
     enabled,
     // 每日跑批，一天只换一次数据。窗口重新聚焦时不该再打一轮接口。
     staleTime: 5 * 60_000,
@@ -79,7 +71,7 @@ export function useEventMessages(
     queryKey: ["messages", source, eventId],
     queryFn: () => {
       if (source === undefined || eventId === null) throw new Error("消息查询缺少数据源或事件 ID");
-      return loadMessages(source, eventId);
+      return loadMessages(eventId);
     },
     enabled: source !== undefined && eventId !== null,
     staleTime: 10 * 60_000,
@@ -105,7 +97,7 @@ const AGG_CACHE = {
 export function useSummary(source: SourceKind | undefined, f: QueryFilters) {
   return useQuery({
     queryKey: ["summary", source, f],
-    queryFn: () => loadSummary(source!, f),
+    queryFn: () => loadSummary(f),
     enabled: source !== undefined,
     ...AGG_CACHE,
   });
@@ -119,7 +111,7 @@ export function useRoomAggs(
 ) {
   return useQuery({
     queryKey: ["roomAggs", source, f, groups],
-    queryFn: () => loadRoomAggs(source!, f, groups),
+    queryFn: () => loadRoomAggs(f, groups),
     enabled: source !== undefined,
     ...AGG_CACHE,
   });
@@ -129,7 +121,7 @@ export function useRoomAggs(
 export function useAgentAggs(source: SourceKind | undefined, f: QueryFilters) {
   return useQuery({
     queryKey: ["agentAggs", source, f],
-    queryFn: () => loadAgentAggs(source!, f),
+    queryFn: () => loadAgentAggs(f),
     enabled: source !== undefined,
     ...AGG_CACHE,
   });
@@ -148,7 +140,7 @@ export function useCategories(
 ) {
   return useQuery({
     queryKey: ["categories", source, f, groups],
-    queryFn: () => loadCategories(source!, f, groups),
+    queryFn: () => loadCategories(f, groups),
     enabled: source !== undefined,
     ...AGG_CACHE,
   });
@@ -169,7 +161,7 @@ export function useEventsPage(
   return useQuery({
     // 排序进 key：换一列排就是另一份结果，共用缓存会拿到上一列的顺序。
     queryKey: ["eventsPage", source, f, page, pageSize, sorting],
-    queryFn: () => loadEventsPage(source!, f, page, pageSize, sorting),
+    queryFn: () => loadEventsPage(f, page, pageSize, sorting),
     enabled: source !== undefined,
     placeholderData: (previous) => previous,
     ...AGG_CACHE,

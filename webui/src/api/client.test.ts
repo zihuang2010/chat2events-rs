@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchEvent, fetchMessages, probeMeta } from "./client";
-import { buildMockDataset } from "./mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 
 afterEach(() => {
   vi.unstubAllGlobals();

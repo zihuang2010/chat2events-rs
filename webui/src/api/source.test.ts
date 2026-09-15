@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildMockDataset } from "./mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { loadDataset } from "./source";
 import type { RawDataset } from "./client";
 
@@ -29,12 +29,12 @@ describe("数据源仲裁", () => {
     const raw = buildMockDataset();
     raw.meta.days = ["2026-08-01", ...raw.meta.days];
     const fetch = stubDataset(raw);
-    await loadDataset("api");
+    await loadDataset();
     let url = fetch.mock.calls.find(([url]) => url.pathname === "/api/dataset")![0];
     expect(url.searchParams.get("from")).toBe("2026-08-25");
     expect(url.searchParams.get("to")).toBe("2026-08-31");
     fetch.mockClear();
-    await loadDataset("api", { from: "2026-08-01", to: "2026-08-03" });
+    await loadDataset({ from: "2026-08-01", to: "2026-08-03" });
     url = fetch.mock.calls.find(([url]) => url.pathname === "/api/dataset")![0];
     expect(url.searchParams.get("from")).toBe("2026-08-01");
     expect(url.searchParams.get("to")).toBe("2026-08-03");
@@ -42,7 +42,7 @@ describe("数据源仲裁", () => {
   it("loads_without_unused_agent_or_failure_endpoints", async () => {
     const raw = buildMockDataset();
     const fetch = stubDataset(raw);
-    const dataset = await loadDataset("api");
+    const dataset = await loadDataset();
     expect(dataset.source).toBe("api");
     // ⚠️ **上下文里不再有事件明细** —— 指标走聚合接口，明细走 `/api/events` 翻页。
     expect(dataset).not.toHaveProperty("events");
@@ -84,39 +84,31 @@ describe("数据源仲裁", () => {
       ...event,
       taxonomy_version: "v0",
       event_type: "__untyped__",
-      event_types: ["__untyped__"],
     }));
     stubDataset(raw);
-    const dataset = await loadDataset("api");
+    const dataset = await loadDataset();
     expect(dataset.taxIndex.get("__untyped__")?.name).toBe("未建词表");
     expect(dataset.taxIndex.get("__untyped__")?.description).toContain("尚未建立词表");
   });
 
-  it("强制模拟模式不访问接口", async () => {
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
-    expect((await loadDataset("mock")).source).toBe("mock");
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("默认模式仅在探活不可达时回落，强制真实源则报错", async () => {
+  it("reports_network_errors_without_demo_fallback", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.reject(new TypeError("offline"))),
     );
-    const dataset = await loadDataset();
-    expect(dataset.source).toBe("mock");
-    expect(dataset.fallbackReason).toContain("网络不可达");
-    await expect(loadDataset("api")).rejects.toMatchObject({ kind: "network" });
+    await expect(loadDataset()).rejects.toMatchObject({ kind: "network" });
   });
 
-  it.each([401, 403])("探活返回 %i 不回落模拟", async (status) => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(new Response(null, { status }))),
-    );
-    await expect(loadDataset()).rejects.toMatchObject({ kind: "http", status });
-  });
+  it.each([401, 403, 404, 500, 503])(
+    "reports_probe_http_%i_without_demo_fallback",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.resolve(new Response(null, { status }))),
+      );
+      await expect(loadDataset()).rejects.toMatchObject({ kind: "http", status });
+    },
+  );
 
   it("探活契约错误不回落模拟", async () => {
     vi.stubGlobal(

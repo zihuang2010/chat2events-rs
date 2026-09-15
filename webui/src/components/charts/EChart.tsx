@@ -11,6 +11,8 @@ import {
   DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkAreaComponent,
+  MarkLineComponent,
   TooltipComponent,
 } from "echarts/components";
 import * as echarts from "echarts/core";
@@ -28,6 +30,8 @@ echarts.use([
   TooltipComponent,
   LegendComponent,
   DataZoomComponent,
+  MarkLineComponent,
+  MarkAreaComponent,
   LabelLayout,
   CanvasRenderer,
 ]);

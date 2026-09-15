@@ -16,7 +16,7 @@
 
 use super::{
     redact::{ORDER_NO, body},
-    types::{Draft, Event, EventDraft, SUMMARY_MAX, SourceMessage},
+    types::{Draft, Event, EventDraft, SUMMARY_COLUMN, SourceMessage},
 };
 use crate::{
     BoxError,
@@ -243,9 +243,14 @@ pub(super) fn assemble(d: &Draft, msgs: &[Message]) -> Result<Event, BoxError> {
     if ev.first_msg_time > ev.last_msg_time {
         return Err(format!("时间倒挂: {} > {}", ev.first_msg_time, ev.last_msg_time).into());
     }
+    // ⚠️ 闸在**列宽**上，不在 `SUMMARY_MAX` 上。拿 100 当硬闸的时候，模型多写一个字
+    // 就整群整日 0 事件 —— 而 `VARCHAR(200)` 装得下，那是可读性问题不是数据问题。
+    // 200 这一条仍是硬的：超了落库当场报错，同样是群级失败，不如在这里说清楚。
+    // 正常走不到这里 —— `model::validate` 已把超列宽归规模相关、重问加切小拦在前面。
+    // 这是最后一道：走到了说明切到底都没救回来，那本就该整群失败。
     let n = ev.summary.chars().count();
-    if n > SUMMARY_MAX {
-        return Err(format!("summary 超长: {n} 字").into());
+    if n > SUMMARY_COLUMN {
+        return Err(format!("summary 超出列宽: {n} 字 > {SUMMARY_COLUMN}").into());
     }
     if ev.first_agent_reply_time.is_none() {
         if ev.first_responder.is_some() || !ev.agents.is_empty() {
@@ -488,10 +493,24 @@ mod tests {
         assert!(e.to_string().contains("承重不变量 6"), "{e}");
     }
 
+    /// 闸在**列宽**上，不在契约上限上。
+    ///
+    /// ⚠️ 这条此前拿 `SUMMARY_MAX`（100）当硬闸，于是模型多写一个字就整群整日 0 事件
+    /// —— 而 `VARCHAR(200)` 装得下。两个方向都钉：101 字必须放行（否则
+    /// `validate` 那边的「软规则放行」是假的，装配这一关照样把整群打掉），
+    /// 201 字必须拒（真的写不进去）。
     #[test]
-    fn assemble_refuses_an_overlong_summary() {
-        let e = assemble(&draft(&[1], &"啊".repeat(101), true), &msgs(10)).unwrap_err();
-        assert!(e.to_string().contains("summary 超长"), "{e}");
+    fn assemble_lets_an_overlong_summary_through_but_refuses_one_past_the_column() {
+        assert!(
+            assemble(&draft(&[1], &"啊".repeat(SUMMARY_COLUMN), true), &msgs(10)).is_ok(),
+            "契约上限和列宽之间是「难看但能用」，不该在这里打掉整群"
+        );
+        let e = assemble(
+            &draft(&[1], &"啊".repeat(SUMMARY_COLUMN + 1), true),
+            &msgs(10),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("超出列宽"), "{e}");
     }
 
     #[test]

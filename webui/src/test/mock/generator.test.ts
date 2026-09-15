@@ -59,14 +59,11 @@ describe("边界场景覆盖", () => {
     expect(push.every((e) => e.first_agent_reply_time === e.first_msg_time)).toBe(true);
   });
 
-  it("有跨天事件、多客服协作事件、带副类的事件、归不上去的事件", () => {
+  it("有跨天事件、多客服协作事件、归不上去的事件", () => {
     expect(
       data.events.filter((e) => e.last_msg_time.slice(0, 10) !== e.occurred_on).length,
     ).toBeGreaterThan(0);
     expect(data.events.filter((e) => e.agents.length > 1).length).toBeGreaterThan(0);
-    expect(
-      data.events.filter((e) => e.event_types !== null && e.event_types.length > 1).length,
-    ).toBeGreaterThan(0);
     expect(data.events.filter((e) => e.event_type === "__untyped__").length).toBeGreaterThan(0);
   });
 
@@ -107,10 +104,6 @@ describe("契约不变量", () => {
       expect(e.source_msg_ids.length).toBeGreaterThan(0);
       expect(data.messages.get(e.id)?.length).toBe(e.source_msg_ids.length);
     }
-  });
-
-  it("event_types 的第一个恒等于 event_type", () => {
-    expect(data.events.every((e) => e.event_types?.[0] === e.event_type)).toBe(true);
   });
 
   it("摘要是中文一句话、不超过 100 字、不含订单号等 ID", () => {

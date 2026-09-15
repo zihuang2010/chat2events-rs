@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 import * as echarts from "echarts";
-import { mockCategories, mockSummary } from "@/api/mock/aggregate";
-import { buildMockDataset } from "@/api/mock/generator";
+import { mockCategories, mockSummary } from "@/test/mock/aggregate";
+import { buildMockDataset } from "@/test/mock/generator";
 import type { LoadedDataset } from "@/api/source";
 import { buildTaxonomyIndex } from "@/domain/metrics";
 import type { EventRow, GroupDailyRow } from "@/domain/schemas";
@@ -21,8 +21,7 @@ const dataset: LoadedDataset = {
   meta: raw.meta,
   groupDaily: raw.groupDaily,
   taxIndex,
-  source: "mock",
-  fallbackReason: null,
+  source: "api",
   loadedAt: 0,
 };
 const roomId = raw.meta.rooms[0]!.roomid;
@@ -151,7 +150,6 @@ describe("群聊近七天指标", () => {
         asker_role: "EXTERNAL" as const,
         first_responder: "a1",
         agents: ["a1"],
-        event_types: ["urge_visit"],
         event_type: "urge_visit",
         taxonomy_version: raw.meta.taxonomy_version,
       };
@@ -173,7 +171,7 @@ describe("群聊近七天指标", () => {
       overdue: 1,
       overdueRate: 0.1,
     });
-    // 副类不进指标：合计恒等于事件数，否则一个事件会被计进 N 行。
+    // 一个事件一个分类：合计恒等于事件数，否则一个事件会被计进 N 行。
     expect(model.categories.level1.reduce((sum, row) => sum + row.count, 0)).toBe(11);
     expect(model.categories.level2.reduce((sum, row) => sum + row.count, 0)).toBe(11);
   });

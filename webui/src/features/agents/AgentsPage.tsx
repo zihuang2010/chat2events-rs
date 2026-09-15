@@ -9,7 +9,7 @@
 
 import { MetricInfo as InsightInfo } from "@/components/Metric";
 import { ArrowRightOutlined, DotChartOutlined, TableOutlined } from "@ant-design/icons";
-import { Alert, Button, Drawer, Table, Tabs, Tag } from "antd";
+import { Alert, Button, Drawer, Table, Tabs } from "antd";
 import { Link } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo } from "react";
@@ -155,14 +155,14 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
       dataIndex: "label",
       key: "label",
       fixed: "left",
-      width: 160,
+      width: 190,
       sorter: (a, b) => a.label.localeCompare(b.label, "zh"),
       render: (_, r) => (
-        <>
+        <div className="ag-identity">
           <button
             type="button"
             className="ia-table-link"
-            title={r.label}
+            title={`${r.label}\n客服 ID：${r.key}`}
             aria-haspopup="dialog"
             onClick={(event) => {
               event.stopPropagation();
@@ -172,15 +172,13 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             {r.label}
           </button>
           {/* 只在 label 真被别名替换过时才标 —— 没有账号映射的人 label 就是
-              easyUserId 本身，那时挂个「账号」标签是在说谎。 */}
+              easyUserId 本身，那时挂个「企微账号」标签是在说谎。 */}
           {aliasIsAuthoritative || r.label === r.key ? null : (
-            <>
-              {" "}
-              <span className="ag-alias">账号</span>
-            </>
+            <span className="ag-alias" title="企微账号，非权威姓名">
+              企微账号
+            </span>
           )}
-          <span className="c2e-sub">{shortId(r.key)}</span>
-        </>
+        </div>
       ),
     },
     {
@@ -197,7 +195,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         {
           title: (
             <span className="ag-column-title">
-              参与事件 <InsightInfo label="参与事件口径" text={METRIC.involved} />
+              参与事件数 <InsightInfo label="参与事件数口径" text={METRIC.involved} />
             </span>
           ),
           dataIndex: "involved",
@@ -227,27 +225,31 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         {
           title: (
             <span className="ag-column-title">
-              归属事件 <InsightInfo label="归属事件口径" text={METRIC.owned} />
+              首响归属事件数 <InsightInfo label="首响归属事件数口径" text={METRIC.owned} />
             </span>
           ),
           dataIndex: "owned",
           key: "owned",
           align: "right",
-          width: 120,
+          width: 160,
           sorter: (a, b) => a.owned - b.owned,
           render: (v: number, r) => (
             <>
               <b>{formatInt(v)}</b>
-              <span className="c2e-sub">商家 {formatInt(r.merchantOwned)}</span>
+              <span className="c2e-sub">商家发起 {formatInt(r.merchantOwned)} 起</span>
             </>
           ),
         },
         {
-          title: "有效样本",
+          title: (
+            <span className="ag-column-title">
+              首响统计样本数 <InsightInfo label="首响统计样本数口径" text={METRIC.agentReply} />
+            </span>
+          ),
           dataIndex: "replySamples",
           key: "replySamples",
           align: "right",
-          width: 96,
+          width: 160,
           sorter: (a, b) => a.replySamples - b.replySamples,
           render: (v: number) => formatInt(v),
         },
@@ -454,20 +456,38 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                       </span>
                     </div>
                     {points.length ? (
-                      <div className="ia-chart">
-                        <WorkloadQualityChart
-                          points={points}
-                          onPick={(key) => patch({ focusAgent: key })}
-                          height={340}
-                        />
-                      </div>
+                      <>
+                        <div className="ia-chart ag-chart-plot">
+                          <ul className="ag-chart-legend">
+                            <li>
+                              <i className="ag-dot ag-dot-ok" aria-hidden="true" />
+                              达标 · 首响 ≤ {formatDuration(slaSec)}
+                            </li>
+                            <li>
+                              <i className="ag-dot ag-dot-late" aria-hidden="true" />
+                              超时 · 首响 &gt; {formatDuration(slaSec)}
+                            </li>
+                            <li className="ag-legend-note">
+                              气泡大小＝活跃群数 · 仅标注两侧工作量最高的几人
+                            </li>
+                          </ul>
+                          <WorkloadQualityChart
+                            points={points}
+                            slaSec={slaSec}
+                            onPick={(key) => patch({ focusAgent: key })}
+                          />
+                        </div>
+                        <p className="ag-muted">
+                          越靠右工作量越大，越靠上首响越慢 ——
+                          <b>右上角是要优先盯的人</b>。点击气泡查看该客服明细。
+                        </p>
+                      </>
                     ) : (
                       <EmptyState
                         title="没有可比较的客服"
                         description="当前范围没有有效的商家首响时长样本。"
                       />
                     )}
-                    <p className="ag-muted">时长越低，响应越快；气泡大小表示活跃群数。</p>
                   </div>
                 ),
               },
@@ -514,7 +534,6 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         size="min(960px, 100vw)"
         rootClassName="ia-drawer ia-agent-drawer"
         title={focus ? `${focus.label} · 服务表现` : "客服服务表现"}
-        extra={dataset.source === "mock" ? <Tag color="warning">模拟数据</Tag> : null}
       >
         {focus ? (
           <>

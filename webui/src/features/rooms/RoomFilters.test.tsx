@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { buildMockDataset } from "@/api/mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { useFilters } from "@/features/filters/useFilters";
 import { RoomFilters } from "./RoomFilters";
 
@@ -53,21 +53,29 @@ function params() {
 }
 
 describe("群聊分析筛选", () => {
-  it("重置筛选保留明确选择的数据源", async () => {
+  it("reset_clears_filters_and_legacy_source", async () => {
     mount("?source=api&q=关键词&page=2");
     await userEvent.setup().click(screen.getByRole("button", { name: "重置" }));
-    expect(params().toString()).toBe("source=api");
+    expect(params().toString()).toBe("");
   });
-  it("日期预设即时更新 URL，同时保留群与排行，复位页码", async () => {
+  it("date_presets_update_range_and_preserve_room_and_rank", async () => {
     const user = userEvent.setup();
     const view = mount("?room=R-test&rank=p90&page=3");
+    expect(
+      [...view.container.querySelectorAll(".ant-segmented-item-label")].map(
+        (item) => item.textContent,
+      ),
+    ).toEqual(["最后 1 天", "近 3 天", "近 7 天"]);
     await user.click(screen.getByText("近 3 天", { exact: true }));
     await waitFor(() => expect(params().get("from")).toBe(meta.days.at(-3)));
     expect(params().get("to")).toBe(meta.days.at(-1));
     expect(params().get("room")).toBe("R-test");
     expect(params().get("rank")).toBe("p90");
     expect(params().has("page")).toBe(false);
-    await user.click(screen.getByText(`全部 ${meta.days.length} 天`, { exact: true }));
+    await user.click(screen.getByText("最后 1 天", { exact: true }));
+    expect(params().get("from")).toBe(meta.days.at(-1));
+    expect(params().get("to")).toBe(meta.days.at(-1));
+    await user.click(screen.getByText("近 7 天", { exact: true }));
     expect(params().get("from")).toBe(meta.days[0]);
     view.unmount();
   });
@@ -160,6 +168,26 @@ describe("群聊分析筛选", () => {
     await waitFor(() => expect(params().has("q")).toBe(false));
     expect(input).toHaveValue("");
     expect(params().get("room")).toBe("R-test");
+    view.unmount();
+  });
+
+  it("collapsed_filters_show_removable_chips", async () => {
+    const user = userEvent.setup();
+    const type = meta.taxonomy[0]!;
+    const view = mount(`?l2=${encodeURIComponent(type.type_id)}&overdue=0`);
+    expect(screen.getByRole("button", { name: "更多筛选（2）" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: `清除二级筛选：${type.parent_name} / ${type.name}` }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清除超时筛选：仅未超时" }));
+    await waitFor(() => expect(params().has("overdue")).toBe(false));
+    expect(params().get("l2")).toBe(type.type_id);
+    // 展开后条件在下拉框里看得见，筹码行让位
+    await user.click(screen.getByRole("button", { name: "更多筛选（1）" }));
+    expect(screen.queryByRole("button", { name: /清除二级筛选/ })).toBeNull();
     view.unmount();
   });
 });

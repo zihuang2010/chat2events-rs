@@ -6,7 +6,7 @@
  *
  * 用它的两处：
  *   - `domain/metrics.ts` 的 `decorate()` 算 `firstReplySec`（首响 / 超时 / 分位数全靠它）
- *   - `api/mock/generator.ts` 造 `followup_wait_max_sec`
+ *   - `test/mock/generator.ts` 造 `followup_wait_max_sec`
  *
  * ⚠️ **每天都算工作日**：周末与节假日不扣。扣它们要一份工作日历，今天没有。
  *

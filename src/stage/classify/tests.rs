@@ -5,7 +5,7 @@
 //! 迁移），fixture 从这里借（`super::super::tests::{ty, known, lab, …}`）。
 //! 留在这里的是端到端的 [`Classifier`]：构造校验 · 缓存指纹 · 去重与顺序 · 重试。
 
-use super::{Classifier, Labels, TaxonomyType, UNTYPED, cache::digest, types::Assignment};
+use super::{Classifier, Label, TaxonomyType, UNTYPED, cache::digest, types::Assignment};
 use crate::{llm::Llm, rejection::Rejection, testutil::test_classify_llm};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -23,14 +23,14 @@ fn http_model(
     )
 }
 
-fn reply(types: &[&str]) -> Value {
-    json!({"assignments":[{"index":1,"type_ids":types}]})
+fn reply(type_id: &str) -> Value {
+    json!({"assignments":[{"index":1,"type_id":type_id}]})
 }
 
 #[tokio::test]
 async fn rejected_model_evidence_is_only_sent_back_to_the_model() {
     let marker = "PRIVATE-ADDRESS-TEST";
-    let (base, server) = http_model(vec![reply(&[marker]), reply(&[marker])], false);
+    let (base, server) = http_model(vec![reply(marker), reply(marker)], false);
     let root = crate::testutil::fresh_root("classify", "private-rejection");
     let classifier =
         Classifier::new("v1", vec![ty("a")], test_classify_llm(&base, "test"), &root).unwrap();
@@ -88,7 +88,7 @@ fn the_published_taxonomy_passes_the_database_loading_checks() {
 
 #[tokio::test]
 async fn concurrent_model_answers_return_the_same_committed_labels() {
-    let (base, server) = http_model(vec![reply(&["a"]), reply(&["b"])], true);
+    let (base, server) = http_model(vec![reply("a"), reply("b")], true);
     let dir = crate::testutil::fresh_root("classify", "concurrent-http");
     let llm = test_classify_llm(&base, "test");
     let classifier = Classifier::new("v1", vec![ty("a"), ty("b")], llm.clone(), &dir).unwrap();
@@ -118,9 +118,9 @@ async fn saved_answers_cannot_populate_a_different_policy_cache() {
     old.cache
         .lock()
         .await
-        .commit(vec![(digest("已保存摘要"), lab(&["a"]))])
+        .commit(vec![(digest("已保存摘要"), lab("a"))])
         .unwrap();
-    let answers = [("已保存摘要", lab(&["a"]))];
+    let answers = [("已保存摘要", lab("a"))];
     old.check_saved_answers(&answers).await.unwrap();
     let changed = Classifier::new(
         "v1",
@@ -139,8 +139,8 @@ async fn saved_answers_cannot_populate_a_different_policy_cache() {
 
 #[tokio::test]
 async fn model_batches_deduplicate_and_keep_input_order() {
-    let first = json!({"assignments":(1..=50).rev().map(|index| json!({"index":index,"type_ids":["a"]})).collect::<Vec<_>>()});
-    let (base, server) = http_model(vec![first, reply(&["b"])], false);
+    let first = json!({"assignments":(1..=50).rev().map(|index| json!({"index":index,"type_id":"a"})).collect::<Vec<_>>()});
+    let (base, server) = http_model(vec![first, reply("b")], false);
     let dir = crate::testutil::fresh_root("classify", "batch-http");
     let classifier = Classifier::new(
         "v1",
@@ -153,7 +153,7 @@ async fn model_batches_deduplicate_and_keep_input_order() {
         .cache
         .lock()
         .await
-        .commit(vec![(digest("已缓存摘要"), lab(&["b"]))])
+        .commit(vec![(digest("已缓存摘要"), lab("b"))])
         .unwrap();
     let mut summaries: Vec<_> = (0..51).map(|i| format!("摘要{i}")).collect();
     summaries.extend([
@@ -166,15 +166,15 @@ async fn model_batches_deduplicate_and_keep_input_order() {
         .await
         .unwrap();
     assert_eq!(got.len(), 54);
-    assert!(got[..50].iter().all(|label| label.primary() == "a"));
-    assert_eq!(got[50].primary(), "b");
-    assert_eq!(got[51].primary(), "a");
-    assert!(got[52..].iter().all(|label| label.primary() == "b"));
+    assert!(got[..50].iter().all(|label| label.type_id() == "a"));
+    assert_eq!(got[50].type_id(), "b");
+    assert_eq!(got[51].type_id(), "a");
+    assert!(got[52..].iter().all(|label| label.type_id() == "b"));
     let requests = server.join().unwrap();
     // **打标请求必须带着 `[llm.classify]` 那份小预算出门** —— 这是全仓唯一一处
     // 运行时证明它的地方。此前钉的是 `CLASSIFY_MAX_TOKENS` 那个常量（代码里的
     // 无条件钳位），现在真相在 config.toml，所以钉**关系**不钉字面量：
-    // 6000 调成 5000 不该让这条误报，而抄成抽取那个 64000 必须让它红。
+    // 6000 调成 5000 不该让这条误报，而抄成抽取那份（整段复制）必须让它红。
     let cfg: crate::config::Config = toml::from_str(include_str!("../../../config.toml")).unwrap();
     assert_eq!(requests[0]["max_tokens"], cfg.llm.classify.max_tokens);
     assert!(
@@ -200,11 +200,11 @@ async fn model_batches_deduplicate_and_keep_input_order() {
 
 #[tokio::test]
 async fn invalid_model_output_is_retried_and_never_cached_as_untyped() {
-    let (base, server) = http_model(vec![reply(&["unknown"]), reply(&["a"])], false);
+    let (base, server) = http_model(vec![reply("unknown"), reply("a")], false);
     let dir = crate::testutil::fresh_root("classify", "retry-http");
     let classifier =
         Classifier::new("v1", vec![ty("a")], test_classify_llm(&base, "test"), &dir).unwrap();
-    assert_eq!(classifier.classify(&["摘要"]).await.unwrap(), [lab(&["a"])]);
+    assert_eq!(classifier.classify(&["摘要"]).await.unwrap(), [lab("a")]);
     let requests = server.join().unwrap();
     assert!(
         requests[1]["messages"][3]["content"]
@@ -213,7 +213,7 @@ async fn invalid_model_output_is_retried_and_never_cached_as_untyped() {
             .contains("不在词表里")
     );
 
-    let (base, server) = http_model(vec![reply(&["unknown"]), reply(&["unknown"])], false);
+    let (base, server) = http_model(vec![reply("unknown"), reply("unknown")], false);
     let classifier = Classifier::new(
         "v1",
         vec![ty("a")],
@@ -281,24 +281,24 @@ pub(super) fn known() -> BTreeSet<String> {
         .collect()
 }
 
-/// `(行号, 该行的 type_ids)`
-pub(super) fn asg(pairs: &[(u32, &[&str])]) -> Vec<Assignment> {
+/// `(行号, 该行的 type_id)`
+pub(super) fn asg(pairs: &[(u32, &str)]) -> Vec<Assignment> {
     pairs
         .iter()
-        .map(|(i, ts)| Assignment {
+        .map(|(i, t)| Assignment {
             index: *i,
-            type_ids: ts.iter().map(|t| (*t).to_string()).collect(),
+            type_id: (*t).to_string(),
         })
         .collect()
 }
 
-/// 校验结果拍平成 `Vec<Vec<&str>>`，好和字面量直接比。
-pub(super) fn flat(r: Result<Vec<Labels>, Rejection>) -> Vec<Vec<String>> {
+/// 校验结果拍平成 `Vec<String>`，好和字面量直接比。
+pub(super) fn flat(r: Result<Vec<Label>, Rejection>) -> Vec<String> {
     r.unwrap().into_iter().map(|l| l.0).collect()
 }
 
-pub(super) fn lab(ts: &[&str]) -> Labels {
-    Labels(ts.iter().map(|t| (*t).to_string()).collect())
+pub(super) fn lab(t: &str) -> Label {
+    Label(t.to_string())
 }
 
 /// 缓存文件名**不许依赖词表传进来的顺序**。
@@ -350,6 +350,6 @@ async fn an_empty_taxonomy_is_v0_and_asks_nothing() {
     assert_eq!(c.type_count(), 0);
     assert_eq!(
         c.classify(&["甲", "乙"]).await.unwrap(),
-        [lab(&[UNTYPED]), lab(&[UNTYPED])]
+        [lab(UNTYPED), lab(UNTYPED)]
     );
 }

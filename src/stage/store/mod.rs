@@ -31,7 +31,7 @@
 //!              （表名 `pub(crate)`：`web/cache.rs` 的数据戳要用同一份）
 //!   facts.rs   write_room —— 事实列唯一写入方，不变量 1（冻结）/ 2（两分片同事务）
 //!   labels.rs  标注列与分类指标唯一写入方，不变量 5（整群发布）
-//!   read.rs    只读取数（daily::recover · taxonomy · recompute）
+//!   read.rs    只读取数（daily::recover · daily::retry · taxonomy · recompute）
 //!
 //! ⚠️ **webUI 的取数不在这里，在 `web/query.rs` —— 有意分家。** 只读旁路只从
 //! 本文件拿两样：`read_taxonomy` 和 `check_schema`。**不要把两边合并**：合并会把
@@ -49,8 +49,8 @@ mod sql;
 pub use facts::{prune_source_messages, record_failure, write_room};
 pub use labels::{fail_classification, finish_classification, retag_room, update_event_labels};
 pub use read::{
-    read_event_labels, read_event_rooms, read_events, read_summary_counts, read_taxonomy,
-    unfinished_days,
+    classify_failure_span, read_event_labels, read_event_rooms, read_events, read_summary_counts,
+    read_taxonomy, unfinished_days, unrepaired_extract_failures,
 };
 pub use schema::{check_schema, refresh_statistics};
 pub use sql::Shard;

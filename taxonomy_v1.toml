@@ -1,308 +1,377 @@
 version = "v1"
 
-# Chat2Events 业务事件标签体系 v1 —— 人手写，来源见「业务事件标签体系 V1.md」。
+# Chat2Events 业务事件标签体系 v1 —— **本文件以生产库 `b_merchant_group_taxonomy`
+# （version='v1'，54 行）为准回填**，不是反过来。库里那份是线上正在用的词表，
+# 已有事件的 event_type 都指向它的 type_id，改 type_id 等于作废已打的标。
 #
-# 9 个一级 · 43 个二级。**只有二级进 event_type**，一级（parent_name）只用于
+# 14 个一级 · 54 个二级。**只有二级进 event_type**，一级（parent_name）只用于
 # 分类 prompt 里分组和报表按一级汇总。
 #
-# 对着源文档做过 5 处调整（Draft::check 的并列词规则拒了 13 个原名）：
-#   1. 一级「费用与结算」→「费用结算」、「损坏与赔付」→「损坏赔付」（去「与」，语义不变）
-#   2. 7 个斜杠是同义词分隔，取一个：更换/改派师傅→改派师傅 · 恢复/重开服务→恢复服务 ·
-#      订单查无/不可见→订单查不到 · 服务未完成/漏项→服务漏项 · 返工/二次上门→返工上门 ·
-#      退款/退费→退款 · 费用核实与承担→费用承担
-#   3. 3 个斜杠是**真的两件事**，拆开：加单/减单→加单+减单 ·
-#      挂起/恢复订单→挂起订单+（恢复并入恢复服务）· 重复/关联异常→重复下单+订单关联错误
-#   4. 「上下文不足/无法判断」**删掉** —— 它的定义跟 __untyped__ 逐字重合，
-#      留着会让「vN + __untyped__ 占比」这个升版信号永远压在低位（承重不变量 4）
-#   5. 源文档说的 reason / fee_type / service_type 等一律不建类，作为事件属性
+# ⚠️ 与库的唯一差异：**7 个 name 去掉了并列词**（`check_types` 的 COMPOSITE 规则拒斜杠，
+#    见 src/stage/classify/check.rs）。type_id / parent_name / description 一个字没动：
+#      order_create → 新建订单
+#      order_edit_media → 修改订单附件
+#      order_return_intercept → 拦截退货
+#      service_unavailable → 无法安排师傅
+#      evidence_request → 凭证核实
+#      order_checkin_verify → 订单核验
+#      account_store_operation → 店铺账号操作
+#    **库里必须执行同样的 7 条 UPDATE**，否则 webUI 的 read_meta 仍然过不了校验。
 #
 # ⚠️ description 逐字进分类 system prompt，改它 = 改 prompt 指纹 = 缓存全失效。
 #    parent_name 同理。两者都要改就走升版，别热改。
 
-
-# ─── 履约催促 ─── 不改订单、不改师傅，只要求当前订单继续往前推进 ────────────
+# ─── 履约催促 ─── 不改订单、不改师傅，只要求当前订单继续往前推进 ───
 
 [[types]]
 type_id = "urge_accept"
 parent_name = "履约催促"
 name = "催接单"
-description = "订单挂出后迟迟没有师傅接单，商家催促尽快有人接手。关键是抱怨没人接，区别于催派单（那是要求平台去指派）。"
+description = "订单已挂出但迟迟没有师傅接单，重点是抱怨没人接，不是要求平台指派。"
 
 [[types]]
 type_id = "urge_dispatch"
 parent_name = "履约催促"
 name = "催派单"
-description = "商家催促平台尽快指派师傅，比如赶紧派个师傅、安排一下。区别于催接单——那是抱怨没人接单。"
+description = "要求平台尽快指派师傅、安排师傅。"
 
 [[types]]
 type_id = "urge_appointment"
 parent_name = "履约催促"
 name = "催预约"
-description = "已有师傅但迟迟没有约定上门时间，商家催促尽快把预约时间定下来。"
+description = "已有师傅但迟迟没有约定上门时间，催促尽快定时间。"
 
 [[types]]
 type_id = "urge_contact_customer"
 parent_name = "履约催促"
 name = "催联系客户"
-description = "商家要求师傅打电话联系客户，比如让师傅联系一下客户。落点是联系动作本身，不是约时间。"
+description = "要求师傅打电话或联系客户，落点是联系动作，不是预约时间。"
 
 [[types]]
 type_id = "urge_visit"
 parent_name = "履约催促"
 name = "催上门"
-description = "时间已约定或已逾期，商家催促师傅尽快实际上门施工。"
+description = "时间已约定或已逾期，催促师傅实际到场施工。"
 
 [[types]]
 type_id = "urge_expedite"
 parent_name = "履约催促"
 name = "加急履约"
-description = "商家笼统要求整单加快，没有指向接单、派单、预约、上门中的具体某一环，比如麻烦加急处理。"
+description = "笼统要求整单加快，没有指向接单、派单、预约或上门中的具体环节。"
 
-
-# ─── 师傅调度 ─── 核心诉求是改变、指定或重新协调履约师傅 ────────────────────
+# ─── 师傅调度 ─── 核心诉求是改变、指定或重新协调履约师傅 ───────
 
 [[types]]
 type_id = "tech_reassign"
 parent_name = "师傅调度"
 name = "改派师傅"
-description = "商家要求把订单从当前师傅换给另一位。换人原因（爽约、没时间、不会装、没梯子、太远、客户不满意）不单独建类，作为事件属性。"
+description = "要求将订单从当前师傅换给另一位师傅。换人原因记录为属性。"
 
 [[types]]
 type_id = "tech_assign_specific"
 parent_name = "师傅调度"
 name = "指定师傅"
-description = "商家点名要求把订单派给某位具体的师傅，比如这单给刘师傅做。"
+description = "点名要求由某位具体师傅接单或施工。"
 
 [[types]]
 type_id = "tech_coordinate"
 parent_name = "师傅调度"
 name = "协调师傅"
-description = "商家要求平台居中协调师傅，但既不换人也不点名，比如让师傅带上工具、跟师傅说明现场情况。"
+description = "要求平台居中协调师傅，但既不换人也不指定具体人员。"
 
+# ─── 订单操作 ─── 新建订单，或改变订单已有的内容、资料、状态与履约要求 ─
 
-# ─── 订单变更 ─── 要求改变订单已有的内容、资料、状态或履约要求 ──────────────
+[[types]]
+type_id = "order_create"
+parent_name = "订单操作"
+name = "新建订单"
+description = "提交新的安装、维修、拆旧等需求，要求平台创建订单、生成工单或进入履约。已有订单的增删改不归此类。"
 
 [[types]]
 type_id = "order_add_item"
-parent_name = "订单变更"
-name = "加单"
-description = "在已有订单上增加服务数量或项目，比如加两个吸顶灯安装、加一个拆旧。区别于修改服务内容——那是把服务换成另一种，数量不变。"
+parent_name = "订单操作"
+name = "加单操作"
+description = "在已有订单上增加服务数量或项目，订单本身不变更为新单。"
 
 [[types]]
 type_id = "order_remove_item"
-parent_name = "订单变更"
-name = "减单"
+parent_name = "订单操作"
+name = "减单操作"
 description = "在已有订单上减少服务数量或项目，订单本身不取消。"
 
 [[types]]
 type_id = "order_cancel_service"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "取消服务"
-description = "商家要求取消整单或其中某项服务。"
+description = "取消整单或其中一项服务。"
 
 [[types]]
 type_id = "order_resume_service"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "恢复服务"
-description = "商家要求把已取消或已挂起的订单重新开启，比如恢复一下那个维修单。"
+description = "将已取消或挂起的订单重新开启。"
 
 [[types]]
 type_id = "order_edit_profile"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "修改订单资料"
-description = "改客户的地址、电话、联系人等资料，服务内容不变。区别于客户资料异常——那是发现资料错了或打不通，还没提出改。"
+description = "修改地址、电话、联系人、店铺等资料，服务内容不变。"
 
 [[types]]
 type_id = "order_edit_service"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "修改服务内容"
-description = "把服务换成另一种类型，比如普通拆改成保护拆、安装改成维修。不是增减数量。"
+description = "将服务类型换成另一种，如安装改维修、普通拆改保护拆；不包括增减数量。"
 
 [[types]]
 type_id = "order_edit_schedule"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "修改履约要求"
-description = "改上门时间、时段或其他履约约束，比如周五改周六、要求上午到。"
+description = "修改已有订单的上门日期、时间段或其他履约约束。"
+
+[[types]]
+type_id = "order_edit_media"
+parent_name = "订单操作"
+name = "修改订单附件"
+description = "修改产品图片、补充或替换图片、上传现场附件。"
 
 [[types]]
 type_id = "order_hold"
-parent_name = "订单变更"
+parent_name = "订单操作"
 name = "挂起订单"
-description = "商家要求暂停订单，先不派单也不上门，等后续通知再继续。区别于取消服务——挂起是暂停，订单还在。"
+description = "暂停订单，先不派单也不上门，等待后续通知；订单仍保留。"
 
+# ─── 订单售后 ─── 订单尚未进入服务，要把它拦回来 ───────────
 
-# ─── 业务查询 ─── 只想知道答案，不要求平台改变现状 ──────────────────────────
+[[types]]
+type_id = "order_return_intercept"
+parent_name = "订单售后"
+name = "拦截退货"
+description = "申请拦截退回、退货等，不等同于服务费用退款。"
+
+# ─── 业务查询 ─── 只想知道答案，不要求平台改变现状 ──────────
 
 [[types]]
 type_id = "query_progress"
 parent_name = "业务查询"
 name = "履约进度查询"
-description = "只问订单进行到哪一步了，比如预约了吗、师傅出发没有。不带催促——要是同时要求加快，归履约催促。"
+description = "只询问订单进行到哪一步，不带催促。"
 
 [[types]]
 type_id = "query_order_info"
 parent_name = "业务查询"
 name = "订单信息查询"
-description = "只问订单本身的状态或内容，比如这个单现在什么状态。不要求改动。"
+description = "询问订单状态、内容或基础信息，不要求平台改动。"
 
 [[types]]
 type_id = "query_tech_info"
 parent_name = "业务查询"
 name = "师傅信息查询"
-description = "只问接单师傅是谁、电话多少、什么时候来。不要求换人或催促。"
+description = "询问接单师傅、电话或预计到达时间，不要求换人或催促。"
 
 [[types]]
 type_id = "query_coverage"
 parent_name = "业务查询"
 name = "区域覆盖查询"
-description = "只问某个地址或区域在不在服务范围内，比如这个区域覆盖吗。"
+description = "询问某地址或区域是否在服务范围内。"
 
 [[types]]
 type_id = "query_capability"
 parent_name = "业务查询"
 name = "服务能力查询"
-description = "只问某种商品或场景能不能做，比如支持这种灯的安装吗、这个高度做得了吗。"
+description = "询问某种商品、灯具或场景能否提供服务。"
 
+[[types]]
+type_id = "query_product_info"
+parent_name = "业务查询"
+name = "商品信息咨询"
+description = "询问能效、耗电量、规格、配件等商品本身信息，不是服务能力咨询。"
 
-# ─── 费用结算 ─── 围绕价格、收费、费用产生、费用承担和退款 ──────────────────
+# ─── 费用结算 ─── 围绕价格、收费、费用产生、费用承担、退款与支付 ───
 
 [[types]]
 type_id = "fee_price_inquiry"
 parent_name = "费用结算"
 name = "价格咨询"
-description = "问某项服务的收费标准，比如拆旧多少钱、这个安装怎么算。还没有实际产生费用。"
+description = "询问服务收费标准，尚未产生实际费用。"
 
 [[types]]
 type_id = "fee_surcharge"
 parent_name = "费用结算"
 name = "附加费用"
-description = "告知或申请在基础费用之外产生的费用。具体费种（远程费、空跑费、加急费、二次上门费、超高费、加固费）作为事件属性，不单独建类。"
+description = "告知或申请基础费用之外的远程费、空跑费、加急费、超高费等。具体费种作为属性。"
 
 [[types]]
 type_id = "fee_liability"
 parent_name = "费用结算"
 name = "费用承担"
-description = "争的是这笔费用该由谁出（商家、客户还是平台），比如空跑费谁承担。费用本身对不对不是重点。"
+description = "争议重点是谁承担费用，而不是费用金额是否正确。"
 
 [[types]]
 type_id = "fee_dispute"
 parent_name = "费用结算"
 name = "收费争议"
-description = "认为收费不合理或有误，比如师傅多收钱、重复收费、收费跟报价对不上。"
+description = "认为收费不合理、重复收费或与报价不一致。"
 
 [[types]]
 type_id = "fee_refund"
 parent_name = "费用结算"
-name = "退款"
-description = "要求把已收的费用退回，比如没安装成要求退款。"
+name = "费用退款"
+description = "要求退回已经收取的服务费用。"
 
+[[types]]
+type_id = "fee_payment"
+parent_name = "费用结算"
+name = "订单支付"
+description = "执行或催促订单支付，如扫码支付、余额支付、支付链接、加急支付。"
 
-# ─── 信息异常 ─── 订单、客户或系统里的信息错误、不一致、不存在或关联错乱 ────
+[[types]]
+type_id = "fee_recharge"
+parent_name = "费用结算"
+name = "账户充值"
+description = "充值账户余额、对公转账、催财务充值或提交充值凭证。"
+
+# ─── 信息异常 ─── 订单、客户或系统里的信息错误、不一致、不存在或关联错乱 ─
 
 [[types]]
 type_id = "info_order_not_found"
 parent_name = "信息异常"
 name = "订单查不到"
-description = "订单在系统里查不到，或师傅端看不见这个单。"
+description = "系统或师傅端查不到订单。"
 
 [[types]]
 type_id = "info_status_mismatch"
 parent_name = "信息异常"
 name = "订单状态异常"
-description = "系统显示的状态跟实际不符，比如系统已完成但实际没做、系统显示已预约但客户说没接到电话。"
+description = "系统状态与实际履约情况不一致。"
 
 [[types]]
 type_id = "info_content_mismatch"
 parent_name = "信息异常"
 name = "订单内容不一致"
-description = "订单上的数量或商品跟实际不符，比如系统显示两件实际应该六件。"
+description = "订单中的数量、商品或服务内容与实际不一致。"
 
 [[types]]
 type_id = "info_customer_data_error"
 parent_name = "信息异常"
 name = "客户资料异常"
-description = "客户的电话、地址等资料本身是错的或联系不上。区别于修改订单资料——那是明确要求改成什么。"
+description = "客户电话、地址等资料错误或无法联系，但尚未明确要求改成什么。"
 
 [[types]]
 type_id = "info_duplicate_order"
 parent_name = "信息异常"
 name = "重复下单"
-description = "同一笔业务被下了多个订单，需要平台识别并处理重复的那些。"
+description = "同一业务产生多个订单，需要识别和处理重复订单。"
 
 [[types]]
 type_id = "info_link_error"
 parent_name = "信息异常"
 name = "订单关联错误"
-description = "订单之间的关联关系挂错了，比如子单挂到了错的主单上、拆旧单没跟安装单对上。"
+description = "主单、子单、拆旧单等订单关联关系挂错。"
 
+# ─── 履约异常 ─── 还没到现场就推不下去——派不出人 ──────────
 
-# ─── 服务售后 ─── 服务已开始或完成，但结果没达到预期，需要继续处理 ──────────
+[[types]]
+type_id = "service_unavailable"
+parent_name = "履约异常"
+name = "无法安排师傅"
+description = "下单前或派单阶段明确没有师傅、不覆盖或暂时无法安排；现场客观无法施工仍归 service_blocked。"
+
+# ─── 服务售后 ─── 服务已开始或完成，但结果没达到预期，需要继续处理 ──
 # 具体业务类型（安装、维修、检修、送装、拆旧、家政）作为事件属性，不建类。
 
 [[types]]
 type_id = "service_quality_issue"
 parent_name = "服务售后"
 name = "服务质量异常"
-description = "服务已做但做得不好，比如灯装歪了、装完晃动异响。服务对象本身没做好，没有造成额外损失。"
+description = "服务已完成但质量不好，如装歪、松动、异响；没有产生额外财产损失。"
 
 [[types]]
 type_id = "service_incomplete"
 parent_name = "服务售后"
 name = "服务漏项"
-description = "应做的项目没做完就走了，比如五件只装了三件。"
+description = "应做项目未完成就离场。"
 
 [[types]]
 type_id = "service_rework"
 parent_name = "服务售后"
 name = "返工上门"
-description = "要求师傅再上门一次做调整或补做，落点是再来一趟这个动作。"
+description = "要求师傅再次上门调整、补做或修复。"
 
 [[types]]
 type_id = "service_result_dispute"
 parent_name = "服务售后"
 name = "服务结果争议"
-description = "师傅说做好了、客户说没做好，双方对服务结果的说法不一致，需要平台判定。"
+description = "师傅称已完成、客户称未完成，双方对结果说法不一致。"
 
 [[types]]
 type_id = "service_blocked"
 parent_name = "服务售后"
 name = "服务无法完成"
-description = "师傅到现场后因客观条件做不了，比如没电、墙体不允许、货不对版。"
+description = "师傅到现场后因没电、墙体条件、货不对版等客观原因无法施工。"
 
+[[types]]
+type_id = "provider_complaint"
+parent_name = "服务售后"
+name = "师傅投诉"
+description = "投诉师傅态度、行为、乱评价、违规操作等，非单纯施工质量问题。"
 
-# ─── 损坏赔付 ─── 服务过程中产生了额外财产损失，要核实责任或赔偿 ────────────
+[[types]]
+type_id = "evidence_request"
+parent_name = "服务售后"
+name = "凭证核实"
+description = "要求提供或核实图片、录音、聊天记录、现场证明等证据。"
+
+# ─── 损坏赔付 ─── 服务过程中产生了额外财产损失，要核实责任或赔偿 ───
 
 [[types]]
 type_id = "damage_incident"
 parent_name = "损坏赔付"
 name = "损坏事件"
-description = "服务过程中造成了服务对象之外的财产损失，比如接错线把灯烧坏、安装碰坏墙面。区别于服务质量异常——那是服务本身没做好，没有新的损失。"
+description = "服务过程造成服务对象之外的财产损失。"
 
 [[types]]
 type_id = "damage_liability_check"
 parent_name = "损坏赔付"
 name = "责任核实"
-description = "损失已经发生，正在确认是谁造成的，比如核实墙面是不是师傅弄坏的。"
+description = "损失已经发生，正在确认由谁造成。"
 
 [[types]]
 type_id = "damage_compensation"
 parent_name = "损坏赔付"
 name = "赔付处理"
-description = "责任明确后商谈或执行赔偿，比如要求师傅赔一个灯、走理赔流程。"
+description = "责任明确后商谈或执行赔偿。"
 
+# ─── 履约确认 ─── 确认履约走到了某一步：签到、核销、验收 ───────
 
-# ─── 无明确诉求 ─── 信息不足以判断商家希望平台做什么 ────────────────────────
-# ⚠️ 这两个是**可观测的行为**（确实只发了资料 / 只发了媒体），不是「归不上去」。
+[[types]]
+type_id = "order_checkin_verify"
+parent_name = "履约确认"
+name = "订单核验"
+description = "订单签到、核销、验收验证码、确认完工等履约确认动作。具体动作记录为属性。"
+
+# ─── 账号店铺 ─── 诉求不在某一张订单上，而在平台账户与店铺本身 ────
+
+[[types]]
+type_id = "account_store_operation"
+parent_name = "账号店铺"
+name = "店铺账号操作"
+description = "登录、解冻、权限、绑定店铺、新店审核、店铺归属等平台账户和店铺管理操作。"
+
+# ─── 履约信息 ─── 商家单向同步履约状态，没有要求平台做什么 ──────
+
+[[types]]
+type_id = "fulfillment_status_notice"
+parent_name = "履约信息"
+name = "履约状态推送"
+description = "平台主动通知已下单、已安排、已完工、正在协调等正常状态，不是商家查询。"
+
+# ─── 无明确诉求 ─── 信息不足以判断商家希望平台做什么 ─────────
+# ⚠️ 它是**可观测的行为**（确实发了消息但没提诉求），不是「归不上去」。
 #    真正归不上去的走 __untyped__ —— 源文档的「上下文不足/无法判断」就是它，故意没建类。
 
 [[types]]
-type_id = "noreq_info_only"
+type_id = "noreq_none"
 parent_name = "无明确诉求"
-name = "仅提供资料"
-description = "只发了订单号、手机号、地址等资料，没有说明要平台做什么。"
-
-[[types]]
-type_id = "noreq_media_only"
-parent_name = "无明确诉求"
-name = "仅发送媒体"
-description = "只发了图片、视频或语音，没有文字说明诉求。"
+name = "无明确诉求"
+description = "只发送单一的订单号、手机号、地址、图片、视频、语音，或发送稍等、已处理、分隔符等没有独立业务动作的消息。若同一事件后续出现明确请求，应按明确请求重新分类。"

@@ -47,9 +47,9 @@ pub(crate) const T_AGENT_MSG: &str = "b_merchant_group_agent_msg_daily";
 pub(crate) const T_FAILURE: &str = "b_merchant_group_run_failure";
 pub(crate) const T_TAXONOMY: &str = "b_merchant_group_taxonomy";
 
-/// ⚠️ `event_type` 与 `event_types` 是**两列不是一列**：前者是主类（单值，进指标
-/// 语义键），后者是全集（JSON，只给 webUI 下钻）。副类不进任何指标 —— 一个事件
-/// 计进 N 行会让 `SUM(event_count) > 事件数`，见 [`crate::stage::classify::Labels`]。
+/// ⚠️ **标注列只有 `event_type` 一列。** 曾经还有一个 `event_types`（JSON 全集，
+/// 副类只给 webUI 下钻），2026-09-14 连同整套多标签机制移除 ——
+/// 见 [`crate::stage::classify::Label`]。
 /// ⚠️ `source_messages` 排在**最末尾**，而且**只在这里和 [`check_schema`] 出现** ——
 /// 它是展示列（既非事实列也非标注列）。放进 [`EVENT_FACT_COLS`] 会让 `read_events`
 /// 自动开始读它（那个列表是从 `EVENT_FACT_COLS` 派生的），于是 ⑤ 打标和
@@ -57,7 +57,7 @@ pub(crate) const T_TAXONOMY: &str = "b_merchant_group_taxonomy";
 /// 写入侧在 `facts.rs` 里显式拼上它，不走这个常量。
 pub(super) const EVENT_COLS: &str = "corpid, roomid, source_msg_ids, first_msg_time, last_msg_time, \
     first_agent_reply_time, occurred_on, asker, asker_role, agents, first_responder, summary, \
-    last_msg_role, followup_wait_max_sec, event_type, event_types, taxonomy_version, source_messages";
+    last_msg_role, followup_wait_max_sec, event_type, taxonomy_version, source_messages";
 pub(super) const GROUP_COLS: &str = "corpid, roomid, dt, msg_count, sender_count, event_count, \
     merchant_event_count, unreplied_count, first_reply_p50_sec, first_reply_p90_sec, \
     extraction_status, classification_status, agent_accounts, fact_completed_time";
@@ -77,7 +77,7 @@ pub(super) const AGENT_MSG_COLS: &str = "corpid, room, agent, dt, msg_count";
 /// 而冻结区不会再被重抽。写入方三处（抽取失败 · 只记账 · 打标失败）手里都有 `Shard`。
 pub(super) const FAILURE_COLS: &str =
     "run_date, corpid, roomid, reason, stage, window_since, window_until";
-/// [`EVENT_COLS`] 的前 14 个 —— **事实列**。末尾三个 `event_type` / `event_types` /
+/// [`EVENT_COLS`] 的前 14 个 —— **事实列**。末尾两个 `event_type` /
 /// `taxonomy_version` 是标注列，不在这里：[`read_events`] 还原的是 `Event`，而 `Event`
 /// 只装事实列（标签不刻在它上面，是每次算出来的）。下面那条测试钉住「它必须是
 /// EVENT_COLS 的前缀」。
@@ -138,13 +138,13 @@ mod tests {
     /// 占位符个数从列名串数出来 —— 加列忘了改数字就是一次运行期的列数不匹配。
     #[test]
     fn placeholder_count_follows_the_column_list() {
-        assert_eq!(EVENT_COLS.split(',').count(), 18);
+        assert_eq!(EVENT_COLS.split(',').count(), 17);
         assert_eq!(GROUP_COLS.split(',').count(), 14);
         assert_eq!(AGENT_COLS.split(',').count(), 8);
         assert_eq!(AGENT_MSG_COLS.split(',').count(), 5);
         assert_eq!(FAILURE_COLS.split(',').count(), 7);
         assert_eq!(TAXONOMY_COLS.split(',').count(), 4);
-        // 读回来还原 Event 的那 14 列，必须就是 EVENT_COLS 去掉末尾三个标注列与展示列 ——
+        // 读回来还原 Event 的那 14 列，必须就是 EVENT_COLS 去掉末尾两个标注列与展示列 ——
         // 加一列事实列却忘了改这里，`read_events` 会静默少读一个字段。
         assert_eq!(EVENT_FACT_COLS.split(',').count(), 14);
         assert!(
@@ -153,7 +153,7 @@ mod tests {
         );
         assert_eq!(
             EVENT_COLS[EVENT_FACT_COLS.len()..].trim_start_matches(", "),
-            "event_type, event_types, taxonomy_version, source_messages"
+            "event_type, taxonomy_version, source_messages"
         );
         // 展示列**不许**混进事实列：进去了 `read_events` 就会自动开始读正文。
         assert!(!EVENT_FACT_COLS.contains("source_messages"));

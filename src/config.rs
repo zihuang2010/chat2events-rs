@@ -219,6 +219,18 @@ pub struct MysqlConfig {
 
     /// 池子满了、等一条空闲连接的上限。超时报错，不无限挂着。
     pub acquire_timeout_secs: u64,
+
+    /// 空闲连接活多久就主动扔掉。**必须小于服务端 `wait_timeout`**（以及中间
+    /// 代理 / LB 的空闲超时，取两者更小的那个）—— 否则是服务端先关，池里留下
+    /// 一条已死的连接，下次 acquire 探活拿到
+    /// `expected to read 4 bytes, got 0 bytes at EOF`，再花一次完整握手重建。
+    ///
+    /// ⚠️ **跑批的形状让这件事必然发生**：抽取全程不占连接，一个群的 LLM 调用
+    /// 要跑几分钟到几十分钟，池里连接就一直闲着。实测 sqlx 的默认 600 秒没救住
+    /// （仍读到 EOF），说明服务端侧比 10 分钟更短。重建一次实测 18.5 秒，而
+    /// `acquire_timeout_secs` 是 30 —— 再慢一点就超时，报出来是「落库失败」，
+    /// 那个群整轮作废。
+    pub idle_timeout_secs: u64,
 }
 
 /// 会话时区。**sqlx 建连接时会把会话设成 `+00:00`**，而 `schema.sql` 里
@@ -242,6 +254,7 @@ pub async fn mysql_pool(cfg: &MysqlConfig, url: &str) -> Result<MySqlPool, sqlx:
     MySqlPoolOptions::new()
         .max_connections(cfg.max_connections)
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
+        .idle_timeout(Duration::from_secs(cfg.idle_timeout_secs))
         // 池里每条连接都要拨一次 —— 会话变量是连接级的，只在建池时设一次管不到后开的连接。
         .after_connect(|conn, _meta| {
             Box::pin(async move {
@@ -348,10 +361,12 @@ pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
     //
     // 它拦的是**唯一的现实失效模式**：把 `[llm.extract]` 整段抄到 `[llm.classify]` 底下
     // 只改 model —— 在「两节长得几乎一样」的结构里，这是最顺手的操作。
-    // 抄过去 max_tokens 就是 64000，而打标一批 50 条 × 每条一个小对象正常不过 2000 token。
+    // 抄过去就拿到抽取那份预算，而打标一批 50 条 × 每条一个小对象正常不过 2000 token。
     // 上限一大，模型跑飞（strict JSON schema 下随机陷入重复生成，实测中招率约三分之一）
     // 就没有任何东西拦得住，只能安静生成到撞满 timeout_secs，再报一个无从下手的 Timeout。
     // 试打 870 条是 18 批，按这个中招率几乎每趟都要挂死几回。
+    // （抽取那份已从 64000 压到 12000，两边都贴着实际需求给 —— 但整段复制仍要拦：
+    // 抄过去两个数相等，打标就再没有「比抽取更早撞顶」这层保护。）
     //
     // 用关系式不用绝对上限：绝对上限要在代码里再养一个魔数，而那正是搬进 config.toml 的
     // 那个数。关系式弱一些（63999 也过），但它恰好盖住整段复制这一种错法。
@@ -360,8 +375,8 @@ pub fn load_from_dir(dir: &Path) -> (Config, Secrets) {
         "llm.classify.max_tokens（{}）必须小于 llm.extract.max_tokens（{}）—— \
          看起来是把 [llm.extract] 整段抄过去了。打标的输出预算要贴着实际需求给\
          （一批 50 条小对象，6000 已是 3 倍余量），跑飞才会秒撞 Truncated 让 \
-         extract_retry 重发；给成抽取那个数，跑飞就只剩 timeout_secs 喊停，\
-         每趟挂死几回。改 config.toml",
+         extract_retry 重发；给成抽取那个数，打标批次就要陪着抽取段的输出量等，\
+         跑飞也更晚才喊停。改 config.toml",
         config.llm.classify.max_tokens,
         config.llm.extract.max_tokens
     );

@@ -1,5 +1,5 @@
 import { ArrowRightOutlined } from "@ant-design/icons";
-import { Drawer, Segmented, Tag, Tooltip } from "antd";
+import { Drawer, Segmented, Tooltip } from "antd";
 import { useCategories, useSummary } from "@/api/queries";
 import type { CategoryAgg, SummaryRow } from "@/domain/schemas";
 import { ErrorState, PageSkeleton } from "@/components/states";
@@ -33,7 +33,6 @@ export function RoomInsightsDrawer({
       size="min(1120px, 100vw)"
       rootClassName="ri-drawer"
       title={roomId ? `${analytics.roomLabel(roomId)} · 近 7 天指标` : "群聊指标"}
-      extra={analytics.dataset.source === "mock" ? <Tag color="warning">模拟数据</Tag> : null}
     >
       {roomId ? (
         <RoomInsightsContent key={roomId} roomId={roomId} analytics={analytics} api={api} />
@@ -223,7 +222,7 @@ function RoomInsightsReady({
               {model.metrics ? "暂无事件类型数据" : "事件抽取数据不可用"}
             </div>
           )}
-          <p className="od-footnote">仅统计事件主类，副类不重复计数。</p>
+          <p className="od-footnote">一个事件只有一个分类，合计等于事件数。</p>
         </section>
         <section aria-labelledby="ri-response-title">
           <div className="ri-section-head">

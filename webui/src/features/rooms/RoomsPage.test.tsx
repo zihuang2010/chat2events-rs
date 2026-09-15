@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import { buildMockDataset } from "@/api/mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import type { LoadedDataset } from "@/api/source";
 import type { DecoratedEvent } from "@/domain/schemas";
@@ -58,9 +58,8 @@ const dataset: TestDataset = {
   ...raw,
   events: decorate(raw.events, taxIndex),
   taxIndex,
-  source: "mock",
+  source: "api",
   loadedAt: 0,
-  fallbackReason: null,
 };
 
 /**
@@ -126,6 +125,10 @@ it("shows_authoritative_room_name_without_placeholder_badge", async () => {
   );
   await settle(view);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent("真实商家群");
+  expect(view.container.querySelector(".ra-details .c2e-sub")).toBeNull();
+  expect(view.container.querySelector(".ra-details .ant-table-tbody")).not.toHaveTextContent(
+    room.roomid,
+  );
   expect(screen.queryByText("别名 待补")).not.toBeInTheDocument();
 });
 

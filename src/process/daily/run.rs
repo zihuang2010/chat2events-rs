@@ -41,7 +41,18 @@ pub async fn run(
 ) -> Result<()> {
     let run_date = chrono::Local::now().date_naive();
     let w = Window::new(run_date, config.ingest.lookback_days);
-    run_span(config, extract_llm, classify_llm, pool, oss, run_date, w).await
+    // 日常跑批不挑群：空切片 = 本轮索引里的全部群。
+    run_span(
+        config,
+        extract_llm,
+        classify_llm,
+        pool,
+        oss,
+        run_date,
+        w,
+        &[],
+    )
+    .await
 }
 
 /// 跑一轮，窗口由调用方给。
@@ -54,6 +65,12 @@ pub async fn run(
 /// ⚠️ **两个 `Llm` 是两个不同的模型**（`[llm.extract]` / `[llm.classify]`），传反了
 /// 编译过、测试也过 —— 唯一能第一秒看见的地方是 `main` 那两行启动日志和
 /// `Classifier::new` 里那句「大模型分类策略就绪」打出来的 `model`。
+///
+/// `only` 非空 = 只跑这几个群（`officialRoomId`），人工重跑单群用；空 = 全部。
+/// 它一路透传给 [`mirror::sync`]，在**索引之后、下载之前**生效 —— 理由见那边。
+// 打包成 struct 换不来任何东西：这 8 个只有两个调用点（[`run`] 和 `bin/backfill.rs`），
+// 且全是「整轮就这一份」的资源与参数，没有一组会一起流到别处去。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_span(
     config: &Config,
     extract_llm: &Llm,
@@ -62,7 +79,11 @@ pub async fn run_span(
     oss: &OssSecrets,
     run_date: NaiveDate,
     w: Window,
+    only: &[String],
 ) -> Result<()> {
+    // 窗口上界先于一切校验：越界写出去之后没有任何东西会清掉它（见 `check_window`）。
+    check_window(run_date, &w)?;
+
     // DDL 漂移要在第一秒暴露。踩过一次：改了 schema.sql 但库没迁移，
     // **抽取跑完 23 分钟才在落库那步炸掉**。跑批是无人值守的。
     store::check_schema(pool).await?;
@@ -112,7 +133,7 @@ pub async fn run_span(
 
     // ① 拉取 —— 把 OSS 上的月文件增量同步到本地 raw 区。
     // 索引表查不到是**整轮**失败（`?` 上抛）；单个群拉不下来只是这个群的事。
-    let synced = mirror::sync(config, pool, oss, &w, deadline).await?;
+    let synced = mirror::sync(config, pool, oss, &w, deadline, only).await?;
     let unsynced = synced.failed;
     let room_months = synced.rooms;
 
@@ -497,6 +518,35 @@ where
     }
     while let Some(j) = set.join_next().await {
         t.record(join(Some(j)))?;
+    }
+    Ok(())
+}
+
+/// 窗口上界不许越过 `T-2` —— **`run_span` 三个入口共用的那道闸**。
+///
+/// 会话存档 T+2 才到齐，`T-1` / `T` 两天要么没文件、要么只有半天。抽这两天写出来的
+/// 是**偏小但看起来正常**的数字，而 `b_merchant_group_metric_daily` 上**没有按窗口的
+/// DELETE** —— event / agent 两张表在 [`store::write_room`] 里按 `BETWEEN` 删重写，
+/// group 表走 `REPLACE`，靠 `uk_group_daily` 冲突覆盖，**覆盖不到的行永远删不掉**。
+/// 于是越界那几行是永久的：日常跑批不会清、不会报，而 webUI 的 `available_range`
+/// 取 `MAX(dt)`，它会把全站默认窗口一直往前拽两天，把真正有完整数据的两天挤出去。
+///
+/// ⚠️ **闸装在这里，不是装在 `bin/backfill.rs`。** 能传窗口的是 `run_span` 的三个
+/// 调用方：`daily::run`（恒 `[T-3, T-2]`，闸对它是恒真）· `backfill`（命令行原样收）·
+/// `retry`（拿 `run_failure.window_since/until` 里的**历史**窗口重放）。只堵 backfill
+/// 的话，一行越界的失败记录就能让 retry 把这件事再犯一遍。
+///
+/// 走 `Result` 不 `panic!`：这里一个字节都还没写，整轮干净退出就够了。
+pub(super) fn check_window(run_date: NaiveDate, w: &Window) -> Result<()> {
+    let latest = run_date - chrono::Duration::days(2);
+    if w.until() > latest {
+        return Err(format!(
+            "窗口上界 {} 越过 T-2（跑批日 {run_date}，最晚只能到 {latest}）：\
+             会话存档 T+2 才到齐，这两天的数据不全，写进 group 表就再也删不掉。\
+             补跑请把 until 改成 {latest} 或更早。",
+            w.until()
+        )
+        .into());
     }
     Ok(())
 }

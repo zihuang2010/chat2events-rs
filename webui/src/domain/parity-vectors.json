@@ -1,5 +1,5 @@
 {
-  "note": "口径金标向量 —— 同一批输入，SQL 那份和 TypeScript 那份必须算出同一组数字。两边各有一条测试读这个文件：Rust 在 src/web/tests.rs（mysql_summary_matches_the_frontend_definitions，跑真 SQL），TypeScript 在 api/mock/parity.test.ts（跑 mockSummary）。expected 是两边跑出来一致之后钉下的，改动口径必须同时改这里，且要说明为什么。",
+  "note": "口径金标向量 —— 同一批输入，SQL 那份和 TypeScript 那份必须算出同一组数字。两边各有一条测试读这个文件：Rust 在 src/web/tests.rs（mysql_summary_matches_the_frontend_definitions，跑真 SQL），TypeScript 在 test/mock/parity.test.ts（跑 mockSummary）。expected 是两边跑出来一致之后钉下的，改动口径必须同时改这里，且要说明为什么。",
   "corpid": "C",
   "window": {
     "from": "2026-08-24",
@@ -96,7 +96,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "add",
-      "event_types": ["add"],
       "taxonomy_version": "v1"
     },
     {
@@ -116,7 +115,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "reschedule",
-      "event_types": ["reschedule"],
       "taxonomy_version": "v1"
     },
     {
@@ -136,7 +134,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "urge",
-      "event_types": ["urge"],
       "taxonomy_version": "v1"
     },
     {
@@ -156,7 +153,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "ask",
-      "event_types": ["ask"],
       "taxonomy_version": "v1"
     },
     {
@@ -176,7 +172,6 @@
       "last_msg_role": "EXTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "cancel",
-      "event_types": ["cancel"],
       "taxonomy_version": "v1"
     },
     {
@@ -196,7 +191,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "notify",
-      "event_types": ["notify"],
       "taxonomy_version": "v1"
     },
     {
@@ -216,7 +210,6 @@
       "last_msg_role": "INTERNAL",
       "followup_wait_max_sec": 0,
       "event_type": "add",
-      "event_types": ["add"],
       "taxonomy_version": "v1"
     }
   ],

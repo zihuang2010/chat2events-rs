@@ -55,14 +55,15 @@
   font-size: inherit;
 }
 .od-room-analysis .ant-table-tbody > tr > td {
-  height: 80px;
+  height: 64px;
   font-size: var(--text-sm);
-  padding-block: var(--space-sm);
-}
-.od-room-analysis .ant-table-wrapper .ant-table-tbody > tr:nth-child(even) > td {
-  background: var(--color-soft);
+  padding-block: var(--space-xs);
+  vertical-align: middle;
 }
 .od-room-analysis .ant-table-wrapper .ant-table-tbody > tr > td.ant-table-cell-row-hover {
+  background: var(--color-soft);
+}
+.od-room-analysis .ant-table-wrapper .ant-table-tbody > tr:focus-within > td {
   background: var(--color-wash);
 }
 .od-room-analysis .ra-metric-emphasis {
@@ -74,7 +75,8 @@
   background: none;
   color: inherit;
   text-align: left;
-  display: inline-block;
+  display: block;
+  min-height: 32px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -82,7 +84,8 @@
   vertical-align: middle;
   font-weight: 600;
 }
-.ra-room-link:hover {
+.od-room-analysis .ra-room-link:hover,
+.od-room-analysis .ra-room-link:active {
   color: var(--color-accent);
 }
 .ri-drawer .ant-drawer-body {
@@ -189,8 +192,8 @@
 .ra-category-tags {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-xs);
-  width: 280px;
+  gap: var(--space-2xs) var(--space-sm);
+  width: 100%;
   max-width: 100%;
 }
 .od-room-analysis .ra-category-link {
@@ -199,7 +202,8 @@
   justify-content: space-between;
   gap: var(--space-xs);
   min-width: 0;
-  padding: var(--space-2xs) var(--space-xs);
+  min-height: 24px;
+  padding: 0 var(--space-2xs);
   border: 1px solid var(--color-rule);
   border-radius: 4px;
   background: var(--color-paper);
@@ -210,7 +214,9 @@
 }
 .ra-category-link > span {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ra-category-link > b {
   flex-shrink: 0;
@@ -225,7 +231,8 @@
   text-align: center;
 }
 .od-room-analysis .ra-category-link:hover,
-.od-room-analysis .ra-category-link:focus-visible {
+.od-room-analysis .ra-category-link:focus-visible,
+.od-room-analysis .ra-category-link:active {
   border-color: var(--color-accent);
   background: var(--color-wash);
   color: var(--color-accent);

@@ -1,10 +1,9 @@
 /**
- * ⚠️ **模拟数据源。独立文件、独立管理，绝不与真接口的返回混在一起。**
- * 只有真接口探活失败时才会用它，且顶栏常驻「模拟数据」标记。
+ * 测试专用样本生成器，只供契约、指标与视图测试使用。
  *
- * 覆盖的场景（真接口接上前，这些是筛选、联动、下钻能被实际操作的前提）：
+ * 覆盖的场景：
  *   跨天事件 · 多客服协作 · 未回复 · 超时 · 平台发起（首响恒 0 秒）·
- *   事件带副类 · 归不上去的 __untyped__ · 抽取失败的群日（事件级 NULL、agent 行整行缺失）
+ *   归不上去的 __untyped__ · 抽取失败的群日（事件级 NULL、agent 行整行缺失）
  *
  * 种子固定，**随机数消耗顺序与引擎无关**（洗牌用 Fisher-Yates，不用随机比较器排序），
  * 所以任何浏览器、任何 Node 版本跑出来的是同一份数据。
@@ -255,12 +254,8 @@ export function buildMockDataset(seed = 20260829): MockDataset {
         const level1 = weighted(L1_WEIGHT);
         const candidates = MOCK_TAXONOMY.filter((t) => t.parent_name === level1);
         const primary = pick(candidates);
-        let types = [primary.type_id];
-        if (rnd() < 0.1) {
-          const extra = pick(MOCK_TAXONOMY);
-          if (extra.type_id !== primary.type_id) types.push(extra.type_id);
-        }
-        if (rnd() < 0.03) types = [UNTYPED];
+        // 一个事件一个类。3% 归不上去 —— `vN` + `__untyped__` 是数据信号，页面要能显示它。
+        const type = rnd() < 0.03 ? UNTYPED : primary.type_id;
 
         let asker: string;
         let askerRole: "EXTERNAL" | "INTERNAL";
@@ -295,7 +290,7 @@ export function buildMockDataset(seed = 20260829): MockDataset {
           ? rint(120, 9000) + (rnd() < 0.12 ? rint(20 * 3600, 40 * 3600) : 0)
           : rint(60, 3600);
         const lastAt = new Date((replyAt ?? t0).getTime() + tailSec * 1000);
-        const l1name = MOCK_TAXONOMY.find((t) => t.type_id === types[0])?.parent_name ?? "未归类";
+        const l1name = MOCK_TAXONOMY.find((t) => t.type_id === type)?.parent_name ?? "未归类";
         const summary = `${pick(SUMMARY[l1name] ?? SUMMARY["无明确诉求"] ?? [""])}。`;
 
         const id = ++eventId;
@@ -371,8 +366,7 @@ export function buildMockDataset(seed = 20260829): MockDataset {
           last_msg_role: msgs[msgs.length - 1]!.sender_role,
           // mock 不复刻工作时段口径，只造出「有/没有后续轮次」两种形状。
           followup_wait_max_sec: followupWaitMaxSec(msgs),
-          event_type: types[0] as string,
-          event_types: types,
+          event_type: type,
           taxonomy_version: TAXONOMY_VERSION,
         };
         messages.set(id, msgs);

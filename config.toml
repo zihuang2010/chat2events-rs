@@ -110,10 +110,16 @@ connect_timeout_secs = 10
 [llm.extract]
 model = "qwen3.8-flash"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# ⚠️ 跟着模型变：qwen3.8-flash 收 64000，qwen-plus 只到 32768（超了直接报 range 错）。
-# 这一队要的就是「模型收得下的最大值」：Truncated / Timeout 正是 extract 对半切的
-# 信号，压小会改掉切分行为。
-max_tokens = 64000
+# ⚠️ **承重数字，不是「模型收得下的最大值」。** 此前是 64000（qwen3.8-flash 的上限），
+# 理由写的是「Truncated / Timeout 正是 extract 对半切的信号，压小会改掉切分行为」——
+# 那句只看对了一半：上限给到 64000，**跑飞就撞不到 Truncated**。按实测输出吞吐
+# 105~116 tok/s，生成满 64000 要约 570s，而 timeout_secs = 300 先到 —— 于是抽取侧的
+# 跑飞一律伪装成 Timeout，白烧五分钟才切一刀，切出的两半各自又 1/3 概率再来一次。
+# 跟 [llm.classify] 同一个道理：贴着实际需求给，跑飞秒撞 Truncated 让重发消化掉。
+# 实测单段（segment_msgs = 400）输出 5.5~6.3k token，12000 是约 2 倍余量；
+# 真超了仍是 Truncated，model.rs 重发两次确认后照样交给自适应二分去切。
+# ⚠️ **这个数跟着 segment_msgs 走** —— 段长翻倍，这里也要重新量。
+max_tokens = 12000
 
 # ⑤ 打标那一队 —— recompute 重打标、taxonomy review 试打也走这一节
 [llm.classify]
@@ -156,6 +162,15 @@ level = "info"
 max_connections = 24
 # 池子满了、等一条空闲连接的上限。超时报错，不无限挂着
 acquire_timeout_secs = 30
+# 空闲连接活多久就主动扔掉。**必须小于服务端 wait_timeout**，以及中间代理 / LB
+# 的空闲超时 —— 取两者更小的那个再打对折。
+# ⚠️ 大于它的话就是服务端先关，池里留一条死连接：下次 acquire 探活读到
+#    `expected to read 4 bytes, got 0 bytes at EOF`，再花一次完整握手重建。
+#    实测重建一次 18.5 秒，而 acquire_timeout_secs 是 30 —— 再慢一点就超时，
+#    报出来是「落库失败」，那个群整轮作废、刚烧完的 token 白花。
+# 240 是保守起点，不是实测值：只知道服务端侧 < 600 秒（sqlx 的默认 600 没救住，
+# 仍读到 EOF）。部署时 `SHOW GLOBAL VARIABLES LIKE 'wait_timeout'` 查准了再调。
+idle_timeout_secs = 240
 
 # 只读后端独立预算。结果超限明确报错，不以残缺明细生成完整报表。
 # 以下为保守起点，部署时结合两个进程的 RSS 和最大查询范围验收。

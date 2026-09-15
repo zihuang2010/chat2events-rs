@@ -188,7 +188,7 @@ async fn mysql_label_batches_share_eight_slots_and_preserve_saved_events_on_fail
                 if listing.contains("FAIL") {
                     (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"合成打标失败","type":"invalid_request_error","code":"invalid_request"}})))
                 } else {
-                    let output = json!({"assignments":(1..=count).map(|index| json!({"index":index,"type_ids":["a"]})).collect::<Vec<_>>()});
+                    let output = json!({"assignments":(1..=count).map(|index| json!({"index":index,"type_id":"a"})).collect::<Vec<_>>()});
                     (StatusCode::OK, Json(testutil::completion(&output.to_string(), "stop")))
                 }
             }
@@ -516,6 +516,26 @@ async fn an_exhausted_budget_starts_no_room_and_is_not_counted_as_failure() {
     // **名单本身是承重的**：`run_span` 靠它给每个群补一行 `run_failure`。
     // 只有计数时，库里对这批群是整行缺失 —— 报表上的洞查不出任何原因。
     assert_eq!(t.skipped, rooms, "没轮到的群必须留下名单，顺序即队列顺序");
+}
+
+/// 窗口上界越过 T-2 的一律拒绝 —— 越界行写进 group 表就再也删不掉（`REPLACE` 覆盖
+/// 不到的行没有任何东西会清）。日常跑批的窗口恰好贴着 T-2，不能被这道闸误伤。
+#[test]
+fn a_window_reaching_past_two_days_ago_is_refused() {
+    let run_date = day(15);
+    // 日常跑批：`[T-3, T-2]`，上界正好等于 T-2，必须放行
+    assert!(check_window(run_date, &Window::new(run_date, 2)).is_ok());
+    // 补跑历史同样放行
+    assert!(check_window(run_date, &Window::span(day(1), day(13))).is_ok());
+    // 昨天和今天都不行 —— 会话存档 T+2 才到齐，这两天的数据不全
+    for until in [day(14), day(15)] {
+        let err = check_window(run_date, &Window::span(day(1), until))
+            .expect_err("窗口越过 T-2 必须拒绝");
+        assert!(
+            err.to_string().contains("越过 T-2"),
+            "错误要说清是窗口上界的问题：{err}"
+        );
+    }
 }
 
 /// 队首每天挪一格：连着 N 天，**每个群都轮到过队首**，被砍的不会总是同一批。

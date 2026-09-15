@@ -34,7 +34,7 @@ export default function App() {
 
   if (query.isPending) {
     return (
-      <AppShell source={undefined} fallbackReason={undefined}>
+      <AppShell>
         <PageSkeleton />
       </AppShell>
     );
@@ -42,7 +42,7 @@ export default function App() {
 
   if (query.isError) {
     return (
-      <AppShell source={undefined} fallbackReason={undefined}>
+      <AppShell>
         <div className="c2e-page">
           <ErrorState error={query.error} onRetry={() => void query.refetch()} />
         </div>
@@ -64,7 +64,7 @@ function Loaded({
 }) {
   const analytics = useAnalytics(dataset, api.filters);
   return (
-    <AppShell source={dataset.source} fallbackReason={dataset.fallbackReason}>
+    <AppShell asOf={dataset.meta.days.at(-1)}>
       <Workbench>
         <Suspense fallback={<PageSkeleton />}>
           <Routes>

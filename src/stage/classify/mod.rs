@@ -1,6 +1,7 @@
-//! ⑤ 分类 classify —— `summary` ＋ 词表 -> [`Labels`]（主类 + 全集）。
+//! ⑤ 分类 classify —— `summary` ＋ 词表 -> [`Label`]（一个类）。
 //!
-//! 一个事件可以同时属于两件事，但**指标只按主类算** —— 理由见 [`Labels`]。
+//! ⚠️ **曾经是多标签**（一个事件最多 3 个类，副类落 `event_types` 那一列）。
+//! 2026-09-14 整套拿掉，理由和「要加回来先想清楚什么」都在 [`Label`] 上。
 //!
 //! **确定性是硬约束**：同样的摘要与分类策略复用已缓存标签。
 //! 事实保存后由独立队列安排打标；标签不属于 `Event` 事实类型。
@@ -34,7 +35,8 @@
 //!
 //! ```text
 //! classify/
-//!   types.rs  TaxonomyType · Labels · Assignment —— 领域类型，不认识 prompt 和缓存
+//!   types.rs  TaxonomyType · Label · Assignment —— 领域类型，不认识 prompt 和缓存
+//!   （`Label` 是单值；多标签 2026-09-14 移除，见它的文档注释）
 //!   check.rs  词表加载守卫：check_version / check_types（库与草稿共用）
 //!   model.rs  Classifier · render_system · validate —— 模型协议，端点知识在 llm
 //!   cache.rs  Cache —— 内容寻址 SQLite，确定性的承重件
@@ -52,7 +54,7 @@ pub(crate) use check::{check_types, check_version};
 pub(crate) use check::DESC_MAX;
 pub(crate) use model::BATCH;
 pub use model::Classifier;
-pub use types::{CURRENT_VERSION, Labels, TaxonomyType, UNTYPED};
+pub use types::{CURRENT_VERSION, Label, TaxonomyType, UNTYPED};
 
 #[cfg(test)]
 mod tests;

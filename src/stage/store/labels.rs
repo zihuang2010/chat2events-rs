@@ -11,7 +11,7 @@ use super::sql::{
     AGENT_COLS, BATCH, FAILURE_COLS, IN_MAX, Shard, T_AGENT, T_EVENT, T_FAILURE, T_GROUP, holes,
     values,
 };
-use crate::{BoxError, stage::classify::Labels, stage::metrics::AgentRow};
+use crate::{BoxError, stage::classify::Label, stage::metrics::AgentRow};
 use chrono::NaiveDate;
 use sqlx::{MySql, MySqlPool, Transaction};
 use std::collections::BTreeMap;
@@ -46,7 +46,7 @@ pub async fn retag_room(
     pool: &MySqlPool,
     shard: Shard<'_>,
     ids: &[u64],
-    types: &[Labels],
+    types: &[Label],
     taxonomy_version: &str,
     agent: &[AgentRow],
 ) -> Result<u64, BoxError> {
@@ -62,7 +62,7 @@ pub async fn update_event_labels(
     pool: &MySqlPool,
     shard: Shard<'_>,
     ids: &[u64],
-    types: &[Labels],
+    types: &[Label],
     taxonomy_version: &str,
 ) -> Result<(), BoxError> {
     let mut tx = pool.begin().await?;
@@ -120,7 +120,7 @@ async fn write_labels(
     tx: &mut Transaction<'_, MySql>,
     shard: Shard<'_>,
     ids: &[u64],
-    types: &[Labels],
+    types: &[Label],
     taxonomy_version: &str,
 ) -> Result<u64, BoxError> {
     let (corp, room, since, until) = shard.parts();
@@ -129,9 +129,8 @@ async fn write_labels(
         types.len(),
         "types 必须与 events 一一对应（构造保证）"
     );
-    // 按**整个 Labels** 分组，不按主类 —— 按主类分组会把「主类相同、副类不同」的
-    // 两批行并成一条 UPDATE，其中一批的 `event_types` 会被写成另一批的。
-    let mut by_type: std::collections::BTreeMap<&Labels, Vec<u64>> =
+    // 同一个类的行并成一条 UPDATE。
+    let mut by_type: std::collections::BTreeMap<&Label, Vec<u64>> =
         std::collections::BTreeMap::new();
     for (id, t) in ids.iter().zip(types) {
         by_type.entry(t).or_default().push(*id);
@@ -145,14 +144,13 @@ async fn write_labels(
         group.dedup();
         for chunk in group.chunks(IN_MAX) {
             let sql = format!(
-                "UPDATE {T_EVENT} SET event_type = ?, event_types = ?, taxonomy_version = ? \
+                "UPDATE {T_EVENT} SET event_type = ?, taxonomy_version = ? \
                  WHERE corpid = ? AND roomid = ? AND occurred_on BETWEEN ? AND ? \
                  AND id IN ({})",
                 holes(chunk.len())
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(t.primary())
-                .bind(serde_json::to_string(t.all())?)
+                .bind(t.type_id())
                 .bind(taxonomy_version)
                 .bind(corp)
                 .bind(room)

@@ -9,7 +9,7 @@
 use super::{
     cache::{Cache, digest, hex},
     check::{check_types, check_version},
-    types::{Assignment, Assignments, Labels, TaxonomyType, UNTYPED},
+    types::{Assignment, Assignments, Label, TaxonomyType, UNTYPED},
 };
 use crate::{
     BoxError,
@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 /// 一次请求塞几条 summary。走常量不走配置，跟 `store::BATCH` 一个规矩 ——
 /// 没有第二个用例，配一个永远只有一个取值的旋钮是空的。
 ///
-/// 50 条 × 每条 ≤100 字，输出是 50 个 `{index, type_ids}` 小对象，对着
+/// 50 条 × 每条 ≤100 字，输出是 50 个 `{index, type_id}` 小对象，对着
 /// `[llm.classify].max_tokens`（6000）有 3 倍余量。**这里不做自适应二分**（那套是
 /// ③ 的）：真撞上截断说明别的地方坏了，该显式失败而不是切了继续跑。
 ///
@@ -36,10 +36,6 @@ pub(crate) const BATCH: usize = 50;
 /// 允许一次「编了个不存在的 type_id / 漏了一行」的自我修正，不多给 —— 跟
 /// `extract::model` 同一个数、同一个理由：逼急了模型会挑一个看起来合法的乱填。
 const MAX_RETRIES: u32 = 1;
-
-/// 一个事件最多挂几个类。**这是个真实的信任边界，不是旋钮**：不封顶的话
-/// 「可以多选」会退化成「全都选上」，主类就没意义了，而主类是指标唯一的口径。
-const MAX_TYPES: usize = 3;
 
 /// 一次运行构造一次。拿住词表、模型与缓存。
 pub struct Classifier {
@@ -74,8 +70,8 @@ impl Classifier {
         // 而这个仓库的规矩是「配置错要在第一秒炸，不许被代码悄悄修正」。
         // 现在唯一的真相是 `[llm.classify].max_tokens`，论证搬进了 config.toml，
         // 而「打标预算必须小于抽取预算」由 `config::load_from_dir` 的断言在启动期守着。
-        // **调用方有义务传 classify 那份 `Llm`** —— 传成抽取那份会带着 64000 出门，
-        // 跑飞时唯一会喊停的就只剩 `timeout_secs`。
+        // **调用方有义务传 classify 那份 `Llm`** —— 传成抽取那份会带着抽取的输出预算
+        // 出门，跑飞要多烧一倍时间才撞顶。
         //
         // **顺序归一在这里，不在调用方。** 指纹取的是渲染好的 prompt，而 `render_system`
         // 是按给定顺序逐行拼的 —— 顺序变一位，指纹就变，缓存就换一个文件。这条不变量
@@ -130,7 +126,7 @@ impl Classifier {
     /// 数据库标签必须与当前策略的持久答案一致，不能把旧模型答案灌进新策略缓存。
     pub(crate) async fn check_saved_answers(
         &self,
-        answers: &[(&str, Labels)],
+        answers: &[(&str, Label)],
     ) -> Result<(), BoxError> {
         if self.types.is_empty() {
             return Ok(());
@@ -162,29 +158,17 @@ impl Classifier {
     /// 恢复只补尚未完成的标签；已发布批次必须保留原答案，不能按新策略悄悄重问。
     pub(crate) fn saved_labels(
         &self,
-        primary: Option<String>,
-        all: Option<String>,
+        type_id: Option<String>,
         version: Option<String>,
-    ) -> Result<Option<Labels>, BoxError> {
-        match (primary, all, version) {
-            (None, None, None) => Ok(None),
-            (Some(primary), Some(all), Some(version)) if version == self.version => {
-                let got = validate(
-                    vec![Assignment {
-                        index: 1,
-                        type_ids: serde_json::from_str(&all)?,
-                    }],
-                    1,
-                    &self.known,
-                )
-                .map_err(|_| "已保存标签不满足当前词表契约，请显式重打标")?
-                .pop()
-                .expect("单个合法标签");
-                if got.primary() != primary {
-                    return Err("已保存主类与标签全集不一致".into());
-                }
-                Ok(Some(got))
-            }
+    ) -> Result<Option<Label>, BoxError> {
+        match (type_id, version) {
+            (None, None) => Ok(None),
+            (Some(type_id), Some(version)) if version == self.version => Ok(Some(
+                validate(vec![Assignment { index: 1, type_id }], 1, &self.known)
+                    .map_err(|_| "已保存标签不满足当前词表契约，请显式重打标")?
+                    .pop()
+                    .expect("单个合法标签"),
+            )),
             _ => Err("标签列不完整或词表版本不一致，请使用词表升版重打标".into()),
         }
     }
@@ -193,14 +177,14 @@ impl Classifier {
     ///
     /// 失败即 `Err`，不生成兜底标签。日常跑批由独立打标队列调度每个批次；
     /// 人工试打和重打标可传入多批摘要，仍复用同一套去重、缓存和校验。
-    pub async fn classify(&self, summaries: &[&str]) -> Result<Vec<Labels>, BoxError> {
+    pub async fn classify(&self, summaries: &[&str]) -> Result<Vec<Label>, BoxError> {
         // v0：还没有词表。不查缓存、不发请求、不写文件。
         if self.types.is_empty() {
-            return Ok(vec![Labels(vec![UNTYPED.to_string()]); summaries.len()]);
+            return Ok(vec![Label(UNTYPED.to_string()); summaries.len()]);
         }
 
         let keys: Vec<[u8; 32]> = summaries.iter().map(|s| digest(s)).collect();
-        let mut answers: HashMap<[u8; 32], Labels> = HashMap::new();
+        let mut answers: HashMap<[u8; 32], Label> = HashMap::new();
         // 缓存没有的，**按内容去重**再问 —— 同一批里重复的 summary 只占一个请求位。
         let mut todo: Vec<([u8; 32], &str)> = Vec::new();
         {
@@ -268,7 +252,7 @@ impl Classifier {
     /// 一批的真实请求 —— 校验不过就回灌报错重问一次，仍不过则该批次失败。
     /// 形状照抄 `extract::model::LiveModel::call`，理由也一样：报错文案是给**模型**
     /// 读的，它要照着自我修正。
-    async fn ask(&self, batch: &[&str]) -> Result<Vec<Labels>, BoxError> {
+    async fn ask(&self, batch: &[&str]) -> Result<Vec<Label>, BoxError> {
         let listing: String = batch
             .iter()
             .enumerate()
@@ -341,20 +325,16 @@ fn render_system(types: &[TaxonomyType]) -> String {
     s.push_str(&format!(
         "\n- {UNTYPED} | 未归类：以上类型都不合适时用它\n\n\
          用户会给你若干行事件摘要，每行形如 `#N 摘要正文`，N 从 1 开始连续编号。\n\
-         为**每一行**输出一个 type_ids 列表，以 index=N 输出。\n\n\
+         为**每一行**输出一个 type_id，以 index=N 输出。\n\n\
          规则：\n\
          1. type_id 必须逐字来自上面的列表，不要改写、不要翻译、不要发明新的。\n\
             **`##` 开头的是一级分类，只用来分组，本身不是可选答案** —— 先看摘要属于\n\
             哪个一级，再在它下面挑一个二级 type_id。\n\
-         2. **type_ids 按贴切程度排序，第一个是主类。** 一条摘要如果确实同时讲了\n\
-            两件不同的事（比如既要求换人、又在争议费用），就把两个都列出来；\n\
-            只是同一件事的不同侧面，只给一个。多数事件只有一个类。\n\
-         3. 最多 {MAX_TYPES} 个，不许重复。**拿不准就只给主类** —— 多列一个不相干的类\n\
-            比少列一个的代价大得多。\n\
-         4. 归不上去就用 {UNTYPED}，且它只能**单独**出现，不许和别的类混在一起 ——\n\
-            硬塞进一个不合适的类，比承认归不上去更糟。\n\
-         5. 每一行都必须有结果，不许漏行、不许合并、不许多给行。\n\
-         6. 只看摘要本身描述的**事情是什么**，不要因为句式相近就归成一类。\n"
+         2. **每行只有一个 type_id。** 一条摘要如果讲了不止一件事，只给最主要的\n\
+            那一件 —— 挑「这个事件本质上是什么」，不是「提到过什么」。\n\
+         3. 归不上去就用 {UNTYPED} —— 硬塞进一个不合适的类，比承认归不上去更糟。\n\
+         4. 每一行都必须有结果，不许漏行、不许合并、不许多给行。\n\
+         5. 只看摘要本身描述的**事情是什么**，不要因为句式相近就归成一类。\n"
     ));
     s
 }
@@ -368,58 +348,34 @@ fn render_system(types: &[TaxonomyType]) -> String {
 ///   * **漏行** —— 「没算出来」绝不许表现成一个正常取值（承重不变量 4）。
 ///   * **未知 type_id** —— 编造不是「归不上去」。映射成 `__untyped__` 会污染
 ///     「`vN` + `__untyped__` 占比」这个信号，而升版决策正是看它。
-///   * **空列表 / 超过 `MAX_TYPES` / 行内重复 / `__untyped__` 混着别的类** ——
-///     多标签这件事只在这四条守住时才有意义：空列表会让 [`Labels::primary`] 越界，
-///     不封顶会让「可以多选」退化成「全都选上」（主类随之失去意义，而它是指标唯一的
-///     口径），而 `__untyped__` 混着真实类是自相矛盾 —— 归不上去就是归不上去。
+///
+/// ⚠️ 这里曾经还有四条多标签守卫（空列表 / 超过上限 / 行内重复 / `__untyped__`
+/// 混着别的类）。多标签拿掉之后 [`Assignment::type_id`] 是单值，四种情形在结构化
+/// 输出里**表达不出来** —— 它们不是被放行了，是不存在了。
 pub(super) fn validate(
     assignments: Vec<Assignment>,
     n: usize,
     known: &BTreeSet<String>,
-) -> Result<Vec<Labels>, Rejection> {
+) -> Result<Vec<Label>, Rejection> {
     let mut errs: Vec<(&'static str, String)> = Vec::new();
-    let mut got: HashMap<usize, Labels> = HashMap::new();
+    let mut got: HashMap<usize, Label> = HashMap::new();
     for a in assignments {
         let i = a.index as usize;
         if !(1..=n).contains(&i) {
             errs.push(("序号越界", format!("index {i} 超出本批范围 1-{n}")));
             continue;
         }
-        if let Some(bad) = a.type_ids.iter().find(|t| !known.contains(*t)) {
+        if !known.contains(&a.type_id) {
             errs.push((
                 "未知 type_id",
                 format!(
-                    "#{i} 的 type_id「{bad}」不在词表里；只能用列出的那些，归不上去请填 {UNTYPED}"
+                    "#{i} 的 type_id「{}」不在词表里；只能用列出的那些，归不上去请填 {UNTYPED}",
+                    a.type_id
                 ),
             ));
             continue;
         }
-        if a.type_ids.is_empty() {
-            errs.push(("标签为空", format!("#{i} 的 type_ids 是空的，至少要给一个")));
-            continue;
-        }
-        if a.type_ids.len() > MAX_TYPES {
-            errs.push((
-                "标签过多",
-                format!(
-                    "#{i} 给了 {} 个类，最多 {MAX_TYPES} 个；拿不准就只给主类",
-                    a.type_ids.len()
-                ),
-            ));
-            continue;
-        }
-        if a.type_ids.iter().collect::<BTreeSet<_>>().len() != a.type_ids.len() {
-            errs.push(("标签重复", format!("#{i} 的 type_ids 里有重复")));
-            continue;
-        }
-        if a.type_ids.len() > 1 && a.type_ids.iter().any(|t| t == UNTYPED) {
-            errs.push((
-                "未分类标签混用",
-                format!("#{i} 把 {UNTYPED} 和别的类混在一起了 —— 归不上去时它只能单独出现"),
-            ));
-            continue;
-        }
-        if got.insert(i, Labels(a.type_ids)).is_some() {
+        if got.insert(i, Label(a.type_id)).is_some() {
             errs.push(("序号重复", format!("#{i} 给了不止一行结果，每行只要一行")));
         }
     }
@@ -482,57 +438,32 @@ mod tests {
     fn fabrication_gaps_and_duplicates_all_fail_validation() {
         let k = known();
         assert_eq!(
-            flat(validate(asg(&[(1, &["a"]), (2, &[UNTYPED])]), 2, &k)),
-            [vec!["a"], vec![UNTYPED]]
+            flat(validate(asg(&[(1, "a"), (2, UNTYPED)]), 2, &k)),
+            ["a", UNTYPED]
         );
         assert!(
-            validate(asg(&[(1, &["a"]), (2, &["zzz"])]), 2, &k)
+            validate(asg(&[(1, "a"), (2, "zzz")]), 2, &k)
                 .unwrap_err()
                 .verbatim()
                 .contains("不在词表里")
         );
         assert!(
-            validate(asg(&[(1, &["a"])]), 2, &k)
+            validate(asg(&[(1, "a")]), 2, &k)
                 .unwrap_err()
                 .verbatim()
                 .contains("漏了 1 行：#2")
         );
         assert!(
-            validate(asg(&[(1, &["a"]), (3, &["b"])]), 2, &k)
+            validate(asg(&[(1, "a"), (3, "b")]), 2, &k)
                 .unwrap_err()
                 .verbatim()
                 .contains("超出本批范围 1-2")
         );
         assert!(
-            validate(asg(&[(1, &["a"]), (1, &["b"]), (2, &["a"])]), 2, &k)
+            validate(asg(&[(1, "a"), (1, "b"), (2, "a")]), 2, &k)
                 .unwrap_err()
                 .verbatim()
                 .contains("不止一行结果")
-        );
-    }
-
-    /// 多标签的四条守卫。**这四条守不住，多标签就是数据损坏而不是特性**：
-    /// 空列表让 `primary()` 越界；不封顶让「可以多选」退化成「全都选上」，
-    /// 主类随之失去意义（而它是指标唯一的口径）；`__untyped__` 混着真实类自相矛盾。
-    #[test]
-    fn multi_label_guards_reject_empty_overlong_duplicate_and_mixed_untyped() {
-        let k = known();
-        assert_eq!(
-            flat(validate(asg(&[(1, &["a", "b"])]), 1, &k)),
-            [vec!["a", "b"]],
-            "主类在前，副类在后"
-        );
-        let err = |p: &[(u32, &[&str])]| validate(asg(p), 1, &k).unwrap_err().verbatim().to_owned();
-        assert!(err(&[(1, &[])]).contains("空的"));
-        assert!(err(&[(1, &["a", "b", "a"])]).contains("重复"));
-        assert!(err(&[(1, &[UNTYPED, "a"])]).contains("单独出现"));
-        // MAX_TYPES = 3，给 4 个
-        let k4: BTreeSet<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        assert!(
-            validate(asg(&[(1, &["a", "b", "c", "d"])]), 1, &k4)
-                .unwrap_err()
-                .verbatim()
-                .contains(&format!("最多 {MAX_TYPES} 个"))
         );
     }
 
@@ -541,11 +472,11 @@ mod tests {
     fn results_are_ordered_by_index_not_by_reply_order() {
         assert_eq!(
             flat(validate(
-                asg(&[(3, &["b"]), (1, &["a"]), (2, &[UNTYPED])]),
+                asg(&[(3, "b"), (1, "a"), (2, UNTYPED)]),
                 3,
                 &known()
             )),
-            [vec!["a"], vec![UNTYPED], vec!["b"]]
+            ["a", UNTYPED, "b"]
         );
     }
 
@@ -556,8 +487,13 @@ mod tests {
         let s = render_system(&[ty("cancel")]);
         assert!(s.contains("cancel | cancel：描述"));
         assert!(s.contains(UNTYPED));
-        // 多标签规则也必须在 prompt 里，否则模型永远只给一个
-        assert!(s.contains("第一个是主类"), "{s}");
-        assert!(s.contains("只能**单独**出现"), "{s}");
+        // **单标签也必须在 prompt 里写明**。JsonSchema 那边已经是单值，模型给不出
+        // 第二个类，但不明说的话它会把两件事**揉进一个 type_id 的选择里犹豫** ——
+        // 规则要的是「挑最主要的那件」，那是个取舍指令，schema 表达不了。
+        assert!(s.contains("每行只有一个 type_id"), "{s}");
+        assert!(
+            !s.contains("主类"),
+            "多标签的措辞不该再出现在 prompt 里：{s}"
+        );
     }
 }

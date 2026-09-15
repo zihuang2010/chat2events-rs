@@ -1,7 +1,7 @@
 //! ⑤ 的领域类型 —— 词表的一个类、一条打标结果、模型这一批的输出外壳。
 //!
 //! 三样都不认识 prompt、缓存和 MySQL：`TaxonomyType` 是 `b_merchant_group_taxonomy`
-//! 的四列，`Labels` 是「主类 + 全集」，`Assignment` 是模型答复里的一行。
+//! 的四列，`Label` 是一条打标结果，`Assignment` 是模型答复里的一行。
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -39,28 +39,25 @@ pub struct TaxonomyType {
     pub description: String,
 }
 
-/// 一条 summary 的打标结果 —— **主类 + 全集**。
+/// 一条 summary 的打标结果 —— **一个类**，落 `event_type` 那一列。
 ///
-/// 一个事件确实可能同时属于两件事（「要求换人，顺带争议空跑费」），但
-/// **指标只按主类算**：`uk_agent_daily` 的语义键里 `event_type` 是一列，
-/// 一个事件计进 N 行就会让 `SUM(event_count) > 事件数` —— 客服主管拿它当处理量
-/// 会得到一个虚高但看起来正常的数字，跟承重不变量 5 要防的那种错同一个形状。
-/// 副类只落 `event_types` 这一列，给 webUI 下钻用，不进任何指标。
+/// ⚠️ **曾经是多标签**（主类 + 全集，一个事件最多挂 3 个类，副类落 `event_types`
+/// JSON 列）。2026-09-14 整套拿掉：副类不进任何指标、不进任何筛选、不进任何索引，
+/// 只在事件抽屉里显示一行，却牵着 prompt 的两条规则、`validate` 的四条守卫、
+/// 缓存的数组格式和 `write_labels` 的分组理由。**要重新加回来，先想清楚
+/// `uk_agent_daily` 那一列**：一个事件计进 N 行就会让 `SUM(event_count) > 事件数`，
+/// 客服主管拿它当处理量会得到一个虚高但看起来正常的数字 —— 跟承重不变量 5
+/// 要防的那种错同一个形状。副类当年不进指标正是因为这个。
 ///
-/// 构造保证**非空**，所以 [`Labels::primary`] 不会 panic。
-/// `Ord` 是给 `store::retag_room` 分组用的：重打标要按**整个 Labels** 分组，
-/// 按主类分组会把「主类相同、副类不同」的两批 summary 并进一条 UPDATE。
+/// 构造保证 `type_id` 属于「词表 ∪ `{__untyped__}`」—— [`super::model::validate`]
+/// 是唯一入口，下游拿到 `Label` 不必再校验一遍。
+/// `Ord` 是给 `store::retag_room` 分组用的：同一个类的行并成一条 UPDATE。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Labels(pub(super) Vec<String>);
+pub struct Label(pub(super) String);
 
-impl Labels {
-    /// 主类。进 `event_type`、进语义键、进全部指标。
-    pub fn primary(&self) -> &str {
-        &self.0[0]
-    }
-
-    /// 全集，第一个就是主类。落 `event_types` JSON 列。
-    pub fn all(&self) -> &[String] {
+impl Label {
+    /// 进 `event_type`、进语义键、进全部指标。
+    pub fn type_id(&self) -> &str {
         &self.0
     }
 }
@@ -75,6 +72,7 @@ pub(super) struct Assignments {
 pub(super) struct Assignment {
     /// 段内 1-based 行号，跟 ③ 给模型的 `#N` 同一套 —— 模型全程不接触任何 ID。
     pub(super) index: u32,
-    /// 按贴切程度排序，**第一个是主类**。多数事件只有一个。
-    pub(super) type_ids: Vec<String>,
+    /// 这一行归哪个类。**单值**：它进 JsonSchema，所以「一行给了两个类」在结构化
+    /// 输出里根本表达不出来 —— 那四条多标签守卫因此不是删掉了，是不可表达了。
+    pub(super) type_id: String,
 }

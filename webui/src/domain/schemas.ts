@@ -54,10 +54,11 @@ export const eventSchema = z
      * 与首响时效同一口径，区别是它在抽取时算死、首响查询期现算。0 = 确实没有后续轮次；**null = 没算过**（历史行），两者不混
      */
     followup_wait_max_sec: z.number().int().nonnegative().nullable(),
-    /** 二级 type_id，**主类**。指标只按它统计 */
+    /**
+     * 二级 type_id。**一个事件一个类** —— 曾经还有一列 `event_types` 存标签全集，
+     * 副类只供下钻、不进任何指标，2026-09-14 连同整套多标签机制移除。
+     */
     event_type: z.string().nullable(),
-    /** 全集，第一个恒等于 event_type。副类只供下钻，不进任何指标 */
-    event_types: z.array(z.string()).min(1).nullable(),
     taxonomy_version: z.string().nullable(),
   })
   .superRefine((event, ctx) => {
@@ -80,12 +81,13 @@ export const eventSchema = z
         message: "事件时间顺序不一致",
       });
     }
-    if (
-      event.event_type === null
-        ? event.event_types !== null || event.taxonomy_version !== null
-        : event.event_types?.[0] !== event.event_type || event.taxonomy_version === null
-    ) {
-      ctx.addIssue({ code: "custom", path: ["event_types"], message: "首个分类必须等于主分类" });
+    // 标签两列同生同死：打标未完成时一起是 null，完成后一起有值（承重不变量 4）。
+    if ((event.event_type === null) !== (event.taxonomy_version === null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxonomy_version"],
+        message: "分类与词表版本必须同时有值或同时为空",
+      });
     }
     if (
       (event.first_agent_reply_time === null) !== (event.first_responder === null) ||

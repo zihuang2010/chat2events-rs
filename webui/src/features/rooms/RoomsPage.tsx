@@ -11,7 +11,7 @@ import { useRoomAggs } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { DataGap, DurationOrNull, NumberOrNull, PercentOrNull } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
-import { formatInt, shortId } from "@/lib/format";
+import { formatInt } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
 import { RoomFilters } from "./RoomFilters";
@@ -63,7 +63,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "label",
       key: "label",
       fixed: "left",
-      width: 190,
+      width: 240,
       sorter: (a, b) => a.label.localeCompare(b.label, "zh"),
       render: (_, r) => (
         <>
@@ -85,7 +85,6 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
               <DataGap label="别名 待补" detail="尚未获取到该群的权威名称。" />
             </>
           )}
-          <span className="c2e-sub">{shortId(r.key)}</span>
         </>
       ),
     },
@@ -113,7 +112,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
     {
       title: "主要事件类型",
       key: "top",
-      width: 300,
+      width: 280,
       responsive: ["xl"],
       render: (_, r) =>
         r.topLevel1.length === 0 ? (

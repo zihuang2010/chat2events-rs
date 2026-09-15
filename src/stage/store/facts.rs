@@ -4,7 +4,7 @@
 //! 而「首条来源消息是哪条」由模型判断 —— 同一个 event 会在 `T-3` / `T-2` 两个分片
 //! 之间移动。分两个事务提交，中间失败就会造成它**一个分片都不在**，或者**两个分片都在**。
 //!
-//! 标注列（`event_type` / `event_types` / `taxonomy_version`）不在这里写，
+//! 标注列（`event_type` / `taxonomy_version`）不在这里写，
 //! 它们是 `labels` 的事：初始 NULL，等打标阶段独立提交。
 
 use super::sql::{

@@ -8,7 +8,7 @@
 use super::{
     prompt::SYSTEM,
     redact::{ORDER_NO, PLACEHOLDER, first_phone},
-    types::{EventDraft, SUMMARY_MAX, WireDraft},
+    types::{EventDraft, SUMMARY_COLUMN, SUMMARY_MAX, WireDraft},
 };
 use crate::{
     BoxError,
@@ -24,8 +24,26 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// 允许一次「序号越界」的自我修正，不多给 —— 逼急了模型会编一个合法序号。
+/// 允许一次自我修正，不多给 —— 逼急了模型会编一个合法序号。
+///
+/// 硬规则和软规则共用这个预算，但用尽之后的去向相反：硬的该批次失败，
+/// 软的放行（见 [`validate`] 的三层）。
 const MAX_RETRIES: u32 = 1;
+
+/// 撞输出上限后**原样重发**几次，全中才认定「这一段太大」。
+///
+/// 跑飞（strict JSON schema 下随机陷入重复生成，实测中招率约三分之一）和「这一段真的
+/// 太大」在 `finish_reason = length` 上**长得一模一样**，端点不给第二个信号可分。
+/// 唯一能分开它们的是重发：跑飞是随机的、与输入规模无关，重发就过；段真太大是确定的，
+/// 重发照样撞顶。
+///
+/// 2 次 ⇒ 误切概率从 1/3 降到约 3.7%，代价是真太大的段每层二分多烧 2 次调用。
+/// 这笔账在 `[llm.extract].max_tokens` 压到 12000 之后才划算：撞顶只要约 110s，
+/// 不再是吃满 `timeout_secs` 的五分钟。**两处是一起改的，动一个要回头看另一个。**
+///
+/// ⚠️ 这跟 `llm.rs` 的 `extract_retry` 不是一回事、也不能改用它：那边重发到底就把
+/// `Truncated` 吞成成功或失败，而这里**必须把「重发到底仍撞顶」如实翻译成切分信号**。
+pub(super) const RUNAWAY_RETRIES: u32 = 2;
 
 /// 模型这一段返回的 JSON 外壳。空列表合法 —— 这一段确实没有业务事件。
 #[derive(JsonSchema, Deserialize, Debug)]
@@ -36,9 +54,13 @@ struct SegmentExtraction {
 /// 一次段调用的失败。**两类的处置完全不同**，所以在类型上分开。
 #[derive(Debug)]
 pub enum SegError {
-    /// 这一段模型吃不下 —— **切**。
+    /// 这一段模型**处理不好** —— **切**。两个来源：
     ///
-    /// 「什么信号算太大」是端点知识、归适配器；「太大就切」跟谁家端点无关、归 `super::run`。
+    ///   * **吃不下**（截断 / 超时）—— 端点知识，由 [`LiveModel`] 翻译。
+    ///   * **长到数不清行号**（[`Invalid::Oversized`]）—— **领域知识**，由 [`validate`]
+    ///     分档。序号越界和 ref 错在长段上才高发，切小真能解决。
+    ///
+    /// 「什么信号算处理不好」归适配器与校验；「处理不好就切」跟谁家端点无关、归 `super::run`。
     TooBig(String),
     /// 其余全部 —— 不切，该群本日失败。**连接类错误在这里**：网络断了切成两半也
     /// 一样断，把它当「太大」会让一次故障放大成一整棵调用树。
@@ -72,29 +94,91 @@ pub trait SegmentModel {
     ) -> impl Future<Output = Result<Vec<EventDraft>, SegError>> + Send;
 }
 
-/// 校验模型这一段的输出。**不通过 = 该批次失败**，不做字段级兜底修补。
+/// 校验通过的一段 —— 事件，外加**不值得整群作废**的那些抱怨。
+///
+/// `Debug` 是 `unwrap_err()` 要的。它打的是 `EventDraft`（本来就要落库）和
+/// [`Rejection`] 的运维版 —— 逐字证据仍然只走 [`Rejection::verbatim`]。
+#[derive(Debug)]
+pub(super) struct Checked {
+    pub(super) events: Vec<EventDraft>,
+    /// 只有软规则不过时的重问文案。`None` = 全过。
+    pub(super) soft: Option<Rejection>,
+}
+
+/// 校验不通过的两类。**处置完全相反，所以在类型上分开**（跟 [`SegError`] 一个规矩）。
+///
+/// ⚠️ **判据是「缩小问题能不能解决它」，不是「错得多严重」。**
+#[derive(Debug)]
+pub(super) enum Invalid {
+    /// 模型在长段上数不清行号 —— **切小再来**，走 `super::run` 那套自适应二分。
+    ///
+    /// [`prompt`](super::prompt) 的模块注释记着实测案例：**391 行的一段**里模型把行号
+    /// 当 ref 填，给出 E360 / E258 / E240，而便签最大编号是 102。段越长越容易犯，
+    /// 所以缩小问题真的能解决它。
+    Oversized(Rejection),
+    /// 切了也一样犯 —— 该批次失败。
+    ///
+    /// PII（手机号 / 订单号）和「整句只有占位符」跟段长无关，切到底只是白烧上千次调用。
+    Fatal(Rejection),
+}
+
+impl Invalid {
+    /// 回灌给模型的那份 —— **两类都先重问一次**，用尽之后才分道扬镳。
+    pub(super) fn rejection(&self) -> &Rejection {
+        match self {
+            Self::Oversized(r) | Self::Fatal(r) => r,
+        }
+    }
+}
+
+impl fmt::Display for Invalid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // 两个变体都只给运维版（规则名 + 条数）。逐字证据只走 `Rejection::verbatim`。
+        fmt::Display::fmt(self.rejection(), f)
+    }
+}
+
+/// 校验模型这一段的输出。**硬规则不通过 = 该批次失败**，不做字段级兜底修补。
 ///
 /// 报错文案**不是给人看的**，是回灌进下一轮 prompt 给模型
 /// 读的，模型要照着它自我修正。改文案等于改 prompt。
 /// 给人看的那份是 [`Rejection`] 的规则名，两者不是一个东西。
 ///
-/// 三条规则各自的理由：
-///   * **序号越界** —— 承重不变量 6 的守卫。模型看不到 `msg_id`，只看到段内序号，
-///     越界即编造。顺带 `sorted(set(v))`：**去重 + 排序是契约不是顺手**。
-///   * **ref** —— 便签上没有的 ref 接不上任何 draft，放行就会凭空造一个。
-///     线上是字符串 `"E2"`，这里解析成 `2`：**「行号当 ref」这个失败模式由类型挡掉，
-///     不由这条校验挡掉**（见 [`WireDraft`] 的注释）。这里只剩两种真错误：
-///     格式不对、以及编号不在便签上。
-///   * **summary 四条** —— 它归事实列，冻结区不可写，且 `sha256(summary)` 是 ⑤ 的
-///     缓存键。**PII 一旦进去就是永久的，缓存还会把它焊死**，所以挡在这里，
-///     不做落库前 scrub（那会改内容、让缓存键漂掉）。
+/// ⚠️ **规则分三档，处置各不相同 —— 此前它们挤在同一个全或无闸门后面。**
+///   * **规模相关**（序号越界 / ref / `msg_indexes` 空 / summary 超列宽）——
+///     [`Invalid::Oversized`]，
+///     重问一次仍不过就**切小再试**。承重不变量 6：模型看不到 `msg_id`，只看到段内
+///     序号，越界即编造 —— 而它数不清，多半是因为这一段太长。summary 写过
+///     [`SUMMARY_COLUMN`] 同理：段太长才会揉出一条 589 字的 summary。
+///     顺带 `sorted(set(v))`：**去重 + 排序是契约不是顺手**。
+///     ref 那两种错误的分别见 [`parse_ref`]。
+///   * **规模无关 · PII**（summary 含手机号 / 订单号 / 只有占位符）——
+///     [`Invalid::Fatal`]，该批次失败。它归事实列、冻结区不可写，且 `sha256(summary)`
+///     是 ⑤ 的缓存键，**一旦进去就是永久的，缓存还会把它焊死**。切了也一样犯。
+///   * **规模无关 · 可读性**（占位符 / 超长）—— **根本不失败**。这一档此前也按 PII
+///     处罚，实测一轮打挂 11 个群，每个只因 ×1 条 summary 就整日 0 事件落库。
+///     占位符是脱敏抹掉 PII 之后**留下的洞**，三个记号本身不含任何 PII；
+///     超长 101 字而列宽 `VARCHAR(200)` 装得下。两者都不是数据问题。
+///     **只有 100~[`SUMMARY_COLUMN`] 之间才走这档** —— 过了列宽是上一档。
+///
+/// 占位符**就地抹掉**（这是唯一一处字段级修补，范围限定在 `redact` 那三个常量上）。
+/// `validate` 的注释此前反对 scrub，理由是「改内容会让缓存键漂掉」——
+/// 那说的是**落库前** scrub；在这里抹，`summary` 从一开始就是清理后的值，
+/// 缓存键就是它的 sha256，没有任何东西可漂。
+/// 走抹除不走重问，是因为这条**修过一轮了**：prompt 的 summary 规则里已有明令和
+/// 改写范例（`the_prompt_and_the_masks_agree` 钉着），模型照犯 —— 事件本身就是
+/// 「改地址」「换电话」时，唯一的锚点已经被抹成 `<略>`，它只能照抄。
 pub(super) fn validate(
     events: Vec<WireDraft>,
     segment_size: usize,
     open_refs: &BTreeSet<u32>,
-) -> Result<Vec<EventDraft>, Rejection> {
+) -> Result<Checked, Invalid> {
     // 第一元是规则名，**会出进程**；第二元是逐字证据，不出 `extract`。见 [`Rejection`]。
-    let mut errs: Vec<(&'static str, String)> = Vec::new();
+    // 分三档收，判据是「缩小问题能不能解决它」—— 收尾处按档论处。
+    let mut oversized: Vec<(&'static str, String)> = Vec::new();
+    let mut fatal: Vec<(&'static str, String)> = Vec::new();
+    // 软的那档：值得回灌重问一次，但重问用尽后放行，不赔上整群。
+    let mut soft: Vec<(&'static str, String)> = Vec::new();
     let mut out: Vec<EventDraft> = Vec::with_capacity(events.len());
     for mut e in events {
         let bad: Vec<usize> = e
@@ -108,7 +192,7 @@ pub(super) fn validate(
             e.msg_indexes.sort_unstable();
             e.msg_indexes.dedup();
             if e.msg_indexes.is_empty() {
-                errs.push(("msg_indexes 为空", "msg_indexes 不能为空".into()));
+                oversized.push(("msg_indexes 为空", "msg_indexes 不能为空".into()));
             }
         } else {
             let list = bad
@@ -116,39 +200,57 @@ pub(super) fn validate(
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            errs.push((
+            oversized.push((
                 "序号越界",
                 format!("序号 [{list}] 超出本段范围 1-{segment_size}"),
             ));
         }
 
-        let r#ref = parse_ref(e.r#ref.as_deref(), open_refs, &mut errs);
+        // `parse_ref` 的两条错误都是规模相关的，所以收进 `oversized`。
+        let r#ref = parse_ref(e.r#ref.as_deref(), open_refs, &mut oversized);
 
+        // **先抹占位符再量长度** —— 抹完可能就不超了。
+        if PLACEHOLDER.is_match(&e.summary) {
+            // 抹掉留下的空洞顺手收拾：`@某人 催一下` 抹完是 ` 催一下`。
+            // 中文 summary 里的空格本就偶发，把空白归一没有副作用。
+            e.summary = PLACEHOLDER
+                .replace_all(&e.summary, "")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            // 抹完什么都不剩 = 模型整句只写了记号，那是真的没写 summary。
+            // 这是抹除**引入的**新失败模式，所以它是硬的。
+            if e.summary.is_empty() {
+                fatal.push((
+                    "summary 只有占位符",
+                    "summary 不能只由脱敏占位符构成，要写清楚发生了什么".into(),
+                ));
+            }
+        }
         let n = e.summary.chars().count();
-        if n > SUMMARY_MAX {
-            errs.push((
+        // ⚠️ 超过列宽不能跟「101 字」同档放行 —— 放行只是把失败推迟到 `assemble`
+        // 的硬闸，而那时全群已经抽完，照样整日 0 事件，还白烧了一整群的调用。
+        // 归规模相关是因为判据对得上：589 字的 summary 多半是模型把一长段揉成了
+        // 一个事件，段切小之后它没那么多东西可写。
+        if n > SUMMARY_COLUMN {
+            oversized.push((
+                "summary 超出列宽",
+                format!("summary 长度 {n} 超过 {SUMMARY_MAX} 字，请压缩"),
+            ));
+        } else if n > SUMMARY_MAX {
+            soft.push((
                 "summary 超长",
                 format!("summary 长度 {n} 超过 {SUMMARY_MAX} 字，请压缩"),
             ));
         }
         if let Some(m) = ORDER_NO.find(&e.summary) {
-            errs.push((
+            fatal.push((
                 "summary 含订单号",
                 format!("summary 不得含订单号「{}」，只描述发生了什么", m.as_str()),
             ));
         }
         if let Some(p) = first_phone(&e.summary) {
-            errs.push(("summary 含手机号", format!("summary 不得含手机号「{p}」")));
-        }
-        if let Some(m) = PLACEHOLDER.find(&e.summary) {
-            errs.push((
-                "summary 含占位符",
-                format!(
-                    "summary 不得含占位符「{}」—— 它是脱敏留下的记号，不是内容。\
-                     改成「客户」「师傅」这样的角色词",
-                    m.as_str()
-                ),
-            ));
+            fatal.push(("summary 含手机号", format!("summary 不得含手机号「{p}」")));
         }
         out.push(EventDraft {
             r#ref,
@@ -157,11 +259,21 @@ pub(super) fn validate(
             still_open: e.still_open,
         });
     }
-    if errs.is_empty() {
-        Ok(out)
-    } else {
-        Err(Rejection::new(errs))
+    // **`Fatal` 优先**：PII 挡在那儿，切小再试也救不回来，切到底只是白烧。
+    // 挡下整批时另两档一并回灌，让模型一次改完，别赚一次重问只修一半。
+    if !fatal.is_empty() {
+        fatal.extend(oversized);
+        fatal.extend(soft);
+        return Err(Invalid::Fatal(Rejection::new(fatal)));
     }
+    if !oversized.is_empty() {
+        oversized.extend(soft);
+        return Err(Invalid::Oversized(Rejection::new(oversized)));
+    }
+    Ok(Checked {
+        events: out,
+        soft: (!soft.is_empty()).then(|| Rejection::new(soft)),
+    })
 }
 
 /// `"E2"` -> `2`。报错文案是**回灌给模型读的**，改它等于改 prompt。
@@ -211,14 +323,26 @@ fn parse_ref(
     }
 }
 
+/// 把模型上一轮的原始输出和校验报错放回对话 —— 只发一条 `User`，模型看不见自己错在哪。
+///
+/// **[`Rejection::verbatim`] 的生产调用点只有这一处**（逐字那份带证据，可能含 PII，
+/// 只许进下一轮 prompt）。
+fn reissue(turns: &mut Vec<Turn>, raw: String, r: &Rejection) {
+    turns.push(Turn::Assistant(raw));
+    turns.push(Turn::User(format!(
+        "上一轮的输出没通过校验：\n{}\n\n请按上面的报错修正，重新输出全部事件。",
+        r.verbatim()
+    )));
+}
+
 /// 真实调用。**端点知识全都住在这里** —— 换端点要改的就是这个类型。
 ///
 /// 顺带记本轮的模型用量（[`Self::usage`]）。生产上整轮只造一个（`daily::run` 里
 /// `Arc::new`，全部群共享），所以这两个计数天然就是**整轮口径**。
 pub struct LiveModel {
     llm: Llm,
-    /// 段调用次数。**含二分切出来的和校验重问的** —— 它数的是「真的发出去几个请求」，
-    /// 不是「分了几段」，因为要拿它当产能的分母。
+    /// 段调用次数。**含二分切出来的、校验重问的和跑飞重发的** —— 它数的是
+    /// 「真的发出去几个请求」，不是「分了几段」，因为要拿它当产能的分母。
     calls: AtomicU64,
     /// 累计模型耗时（毫秒）。**墙钟不等于它除以并发**：群与群之间有读取、落库和
     /// 排队的空档。当外推的分子用，不当进度条。
@@ -262,6 +386,7 @@ impl SegmentModel for LiveModel {
     ) -> Result<Vec<EventDraft>, SegError> {
         let mut turns = vec![Turn::User(text.to_string())];
         let mut attempt = 0u32;
+        let mut runaways = 0u32;
         loop {
             // 计时包住调用本身，**失败的那次也算** —— 超时和跑飞照样烧了墙钟，
             // 只数成功的会让产能外推系统性偏乐观。
@@ -272,11 +397,26 @@ impl SegmentModel for LiveModel {
                 .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             let got: crate::llm::Extracted<SegmentExtraction> = match result {
                 Ok(v) => v,
-                // **端点知识 -> 切分信号的翻译就这两行。** 只认这两个：
+                // **端点知识 -> 切分信号的翻译就这几行。** 只认这两个：
                 // 截断（输出预算耗尽）和超时（连上了但这一段没算完）。
                 // `Other` 里含连接类错误，**绝不当成「太大」**。
+                //
+                // 截断先原样重发（[`RUNAWAY_RETRIES`]）：随机跑飞和「段真太大」在
+                // `finish_reason = length` 上无从区分，只有重发能分。静默重发等于不知道
+                // 模型在跑飞，所以每次都喊一声。
+                Err(LlmError::Truncated) if runaways < RUNAWAY_RETRIES => {
+                    runaways += 1;
+                    tracing::warn!(
+                        segment_size,
+                        attempt = runaways,
+                        "模型撞输出上限，原样重发（分不清跑飞还是这段太大）"
+                    );
+                    continue;
+                }
                 Err(LlmError::Truncated) => {
-                    return Err(SegError::TooBig("输出预算耗尽".into()));
+                    return Err(SegError::TooBig(format!(
+                        "重发 {RUNAWAY_RETRIES} 次仍撞输出上限"
+                    )));
                 }
                 Err(LlmError::Timeout) => {
                     return Err(SegError::TooBig("请求超时".into()));
@@ -284,22 +424,46 @@ impl SegmentModel for LiveModel {
                 Err(e) => return Err(SegError::Failed(Box::new(e))),
             };
 
+            // ⚠️ 下面是 `verbatim()` 仅有的生产调用点（都在 [`reissue`] 里）。逐字那份
+            //    进 prompt，日志和 `SegError` 只拿 `Display`（规则名 + 条数）——
+            //    见 [`Rejection`]。
             match validate(got.data.events, segment_size, open_refs) {
-                Ok(events) => return Ok(events),
-                // ⚠️ 这两个分支是 `verbatim()` 仅有的两个生产调用点。逐字那份进 prompt，
-                //    日志和 `SegError` 只拿 `Display`（规则名 + 条数）—— 见 [`Rejection`]。
-                Err(r) if attempt < MAX_RETRIES => {
+                Ok(Checked { events, soft: None }) => return Ok(events),
+                // 软规则（可读性）：值得重问一次，**但重问用尽就放行**。
+                // 让它整群作废是把可读性问题按 PII 处罚 —— 实测一轮打挂 11 个群。
+                Ok(Checked {
+                    events,
+                    soft: Some(r),
+                }) => {
+                    if attempt < MAX_RETRIES {
+                        tracing::warn!(segment_size, attempt, "软校验没过，回灌报错重问：{r}");
+                        reissue(&mut turns, got.raw, &r);
+                        attempt += 1;
+                    } else {
+                        // 放行也必须喊一声，否则没人知道库里在积累难看的 summary
+                        tracing::warn!(
+                            segment_size,
+                            "软校验重问 {MAX_RETRIES} 次后仍不通过，放行（不赔上整群）：{r}"
+                        );
+                        return Ok(events);
+                    }
+                }
+                // 两类都先重问一次 —— 同一段重问便宜，切小再跑贵。**顺序不能反。**
+                Err(e) if attempt < MAX_RETRIES => {
                     // 静默重试等于不知道模型在编序号。这条 warn 是唯一的信号。
-                    tracing::warn!(segment_size, attempt, "模型输出没过校验，回灌报错重问：{r}");
-                    turns.push(Turn::Assistant(got.raw));
-                    turns.push(Turn::User(format!(
-                        "上一轮的输出没通过校验：\n{}\n\n请按上面的报错修正，重新输出全部事件。",
-                        r.verbatim()
-                    )));
+                    tracing::warn!(segment_size, attempt, "模型输出没过校验，回灌报错重问：{e}");
+                    reissue(&mut turns, got.raw, e.rejection());
                     attempt += 1;
                 }
-                // 次数用完 -> 该批次失败，不做字段级兜底修补、不落库半个事件。
-                Err(r) => {
+                // 重问用尽，去向相反。**规模相关的交给二分**：段越长模型越数不清行号，
+                // 切小是真能解决它的 —— `super::run` 一行不动就接住了这个信号。
+                Err(Invalid::Oversized(r)) => {
+                    return Err(SegError::TooBig(format!(
+                        "校验重问 {MAX_RETRIES} 次后仍不通过：{r}"
+                    )));
+                }
+                // 切了也一样犯 -> 该批次失败，不做字段级兜底修补、不落库半个事件。
+                Err(Invalid::Fatal(r)) => {
                     return Err(SegError::Failed(
                         format!("校验重试 {MAX_RETRIES} 次后仍不通过：{r}").into(),
                     ));
@@ -314,9 +478,76 @@ impl SegmentModel for LiveModel {
 mod tests {
     use super::*;
 
+    /// **跑飞和「这段真的太大」在 `finish_reason = length` 上无从区分**，
+    /// 只有重发能分开：随机跑飞重发就过，段真太大重发照样撞顶。
+    ///
+    /// 两个方向都钉住 —— 只钉「重发到底要切」，把 [`RUNAWAY_RETRIES`] 改成 0
+    /// 照样绿（那就退回了改动之前的行为，每次跑飞白切一刀）。
+    #[tokio::test]
+    async fn hitting_the_output_cap_is_reissued_before_it_counts_as_too_big() {
+        use crate::testutil::{completion, http_model, test_llm};
+        let runaway = || (200u16, completion(r#"{"events":[{"ref":nul"#, "length"));
+        let good = || (200u16, completion(r#"{"events":[]}"#, "stop"));
+        let call = |base: String| async move {
+            LiveModel::new(test_llm(&base, "test"))
+                .call("段", 10, &BTreeSet::new())
+                .await
+        };
+
+        // 预算之内恢复 —— 重发把跑飞消化掉，不切
+        let mut replies: Vec<_> = (0..RUNAWAY_RETRIES).map(|_| runaway()).collect();
+        replies.push(good());
+        let (base, server) = http_model(replies, false);
+        assert!(
+            call(base).await.is_ok(),
+            "重发范围内恢复的跑飞不该失败，更不该切"
+        );
+        assert_eq!(server.join().unwrap().len(), RUNAWAY_RETRIES as usize + 1);
+
+        // 重发到底仍撞顶 —— 这才是「太大」，如实翻译成切分信号交给 super::run
+        let (base, server) = http_model((0..=RUNAWAY_RETRIES).map(|_| runaway()).collect(), false);
+        assert!(
+            matches!(call(base).await, Err(SegError::TooBig(_))),
+            "重发到底仍撞顶必须变成切分信号，不能吞成失败"
+        );
+        assert_eq!(server.join().unwrap().len(), RUNAWAY_RETRIES as usize + 1);
+    }
+
+    /// **软规则重问一次就放行，硬规则重问一次就失败** —— 同一个 `MAX_RETRIES`
+    /// 预算，用尽之后去向相反。这条钉的是那个去向。
+    ///
+    /// 没有它，「超长降级」是半个改动：`validate` 分了档，而 `call` 照样把整群打掉。
+    #[tokio::test]
+    async fn a_soft_rejection_is_reissued_once_and_then_let_through() {
+        use crate::testutil::{completion, http_model, test_llm};
+        let overlong = || {
+            let ev = serde_json::json!({"events":[{
+                "ref": null, "msg_indexes": [1],
+                "summary": "啊".repeat(SUMMARY_MAX + 1), "still_open": true}]});
+            (200u16, completion(&ev.to_string(), "stop"))
+        };
+        // 两次都超长：重问一次（MAX_RETRIES = 1）之后放行，事件留下
+        let (base, server) = http_model(vec![overlong(), overlong()], false);
+        let events = LiveModel::new(test_llm(&base, "test"))
+            .call("段", 10, &BTreeSet::new())
+            .await
+            .expect("软规则重问用尽必须放行，不能赔上整群");
+        assert_eq!(events.len(), 1, "放行时事件不能丢");
+        assert_eq!(
+            server.join().unwrap().len(),
+            MAX_RETRIES as usize + 1,
+            "该重问一次再放行"
+        );
+    }
+
+    /// summary 的三层处置各钉一遍：**PII 硬失败 · 占位符抹掉 · 超长只是软抱怨**。
+    ///
+    /// ⚠️ 此前三层是同一层（全部硬失败），实测一轮打挂 11 个群，其中 9 个只因
+    /// ×1 条 summary 带了个脱敏记号。占位符是抹掉 PII 之后**留下的洞**，
+    /// 三个记号本身不含 PII；超长 101 字而列宽 `VARCHAR(200)` 装得下。
     #[test]
-    fn summary_validation_blocks_ids_phones_placeholders_and_overlength() {
-        let bad = |s: &str| {
+    fn summary_rules_split_into_hard_pii_scrubbed_placeholders_and_soft_length() {
+        let check = |s: &str| {
             validate(
                 vec![WireDraft {
                     r#ref: None,
@@ -327,38 +558,70 @@ mod tests {
                 super::super::tests::SEG,
                 &BTreeSet::new(),
             )
-            .err()
         };
+        let pass = |s: &str| check(s).expect("这条不该失败");
+        // **PII 这档必须是 `Fatal`，不能是 `Oversized`** —— 切小再试救不回手机号，
+        // 判成 Oversized 就会一路切到底白烧上千次调用，最后照样失败。
+        let fatal = |s: &str| match check(s).err() {
+            Some(Invalid::Fatal(r)) => r,
+            other => panic!("「{s}」该判 Fatal，实际是 {other:?}"),
+        };
+
         assert!(
-            bad("商家要求加单，平台已受理").is_none(),
+            check("商家要求加单，平台已受理").is_ok(),
             "正常 summary 被误拒"
         );
+
+        // ── PII：硬失败，整批作废。`sha256(summary)` 是 ⑤ 的缓存键，进去就焊死了
         assert!(
-            bad("5127366458053009229 要求加单")
-                .unwrap()
+            fatal("5127366458053009229 要求加单")
                 .verbatim()
                 .contains("订单号")
         );
         assert!(
-            bad("客户18472625055要求改期")
-                .unwrap()
+            fatal("客户18472625055要求改期")
                 .verbatim()
                 .contains("手机号")
         );
-        for ph in ["商家发来<手机号>", "客户信息<略>", "回复@某人"] {
-            assert!(
-                bad(ph).unwrap().verbatim().contains("占位符"),
-                "占位符没挡住: {ph}"
-            );
+
+        // ── 占位符：不失败，就地抹掉并收拾空洞
+        for (input, want) in [
+            ("商家发来<手机号>", "商家发来"),
+            ("客户信息<略>需确认", "客户信息需确认"),
+            ("@某人 催一下进度", "催一下进度"),
+        ] {
+            let got = pass(input);
+            assert_eq!(got.events[0].summary, want, "占位符没抹干净：{input}");
+            assert!(got.soft.is_none(), "抹掉就完事了，不该再留一条软抱怨");
         }
+        // 抹完什么都不剩 = 模型整句只写了记号，那是真的没写 summary
+        assert!(fatal("<略>").verbatim().contains("不能只由脱敏占位符构成"));
+
+        // ── 超长：软的。事件照样拿得到，只附一条重问文案
         // 长度按 Unicode 码点，不是字节 —— 101 个汉字是 303 字节
+        let long = pass(&"啊".repeat(SUMMARY_MAX + 1));
+        assert_eq!(long.events.len(), 1, "超长不该丢掉事件");
         assert!(
-            bad(&"啊".repeat(101))
-                .unwrap()
+            long.soft
+                .expect("超长该留下软抱怨，否则模型没机会自己压缩")
                 .verbatim()
-                .contains("超过 100 字")
+                .contains(&format!("超过 {SUMMARY_MAX} 字"))
         );
-        assert!(bad(&"啊".repeat(100)).is_none(), "刚好 100 字该放行");
+        assert!(
+            pass(&"啊".repeat(SUMMARY_MAX)).soft.is_none(),
+            "刚好 {SUMMARY_MAX} 字该干净通过"
+        );
+        assert!(
+            pass(&"啊".repeat(SUMMARY_COLUMN)).soft.is_some(),
+            "刚好 {SUMMARY_COLUMN} 字还装得进列，仍是软的"
+        );
+
+        // ── 超列宽：**规模相关**，交给二分。放行只会把失败推迟到 `assemble` 的
+        // 硬闸，而那时全群已经抽完 —— 照样整日 0 事件，还白烧了一整群的调用。
+        match check(&"啊".repeat(SUMMARY_COLUMN + 1)).err() {
+            Some(Invalid::Oversized(r)) => assert!(r.verbatim().contains("请压缩")),
+            other => panic!("超列宽该判 Oversized，实际是 {other:?}"),
+        }
     }
 
     /// **这条钉的是那条真实泄漏路径**：校验揪出来的手机号曾经逐字进 `run.log`
@@ -400,11 +663,22 @@ mod tests {
             assert!(ops.contains(rule), "运维版少了规则名「{rule}」：{ops}");
         }
         // 逐字那份反过来：证据必须在，否则模型不知道删哪几个字
-        assert!(r.verbatim().contains(PHONE), "回灌给模型的那份丢了证据");
+        assert!(
+            r.rejection().verbatim().contains(PHONE),
+            "回灌给模型的那份丢了证据"
+        );
+        // ⚠️ 同时撞上 PII 和序号越界时**必须判 Fatal** —— 切小救不回手机号，
+        //    判成 Oversized 就会一路切到底白烧，最后照样失败。
+        assert!(
+            matches!(r, Invalid::Fatal(_)),
+            "PII 在场时必须是 Fatal，实际 {r:?}"
+        );
     }
 
+    /// 这四条规则**必须判成 [`Invalid::Oversized`]** —— 它们是模型在长段上数不清行号
+    /// 的表现，重问不好使就该切小再试，而不是一把打掉整群。
     #[test]
-    fn validation_rejects_out_of_range_indexes_and_unknown_refs() {
+    fn out_of_range_indexes_and_unknown_refs_are_oversized_not_fatal() {
         let ev = |r: Option<&str>, ix: Vec<usize>| {
             vec![WireDraft {
                 r#ref: r.map(str::to_string),
@@ -414,31 +688,38 @@ mod tests {
             }]
         };
         let refs: BTreeSet<u32> = [2u32].into_iter().collect();
+        // 判错档的代价不对称：判成 Fatal 就丢掉了「切小能救回来」这条路
+        let oversized = |events, seg| match validate(events, seg, &refs).err() {
+            Some(Invalid::Oversized(r)) => r,
+            other => panic!("该判 Oversized，实际是 {other:?}"),
+        };
 
         assert!(
-            validate(ev(None, vec![0]), 10, &refs)
-                .unwrap_err()
+            oversized(ev(None, vec![0]), 10)
                 .verbatim()
                 .contains("超出本段范围 1-10")
         );
         assert!(
-            validate(ev(None, vec![11]), 10, &refs)
-                .unwrap_err()
+            oversized(ev(None, vec![11]), 10)
                 .verbatim()
                 .contains("超出本段范围 1-10")
         );
         assert!(
-            validate(ev(Some("E5"), vec![1]), 10, &refs)
-                .unwrap_err()
+            oversized(ev(Some("E5"), vec![1]), 10)
                 .verbatim()
                 .contains("E5 不在")
+        );
+        assert!(
+            oversized(ev(None, vec![]), 10)
+                .verbatim()
+                .contains("msg_indexes 不能为空")
         );
         assert!(
             validate(ev(Some("E2"), vec![1]), 10, &refs).is_ok(),
             "便签上有的 ref 该放行"
         );
         assert_eq!(
-            validate(ev(Some("E2"), vec![1]), 10, &refs).unwrap()[0].r#ref,
+            validate(ev(Some("E2"), vec![1]), 10, &refs).unwrap().events[0].r#ref,
             Some(2),
             "\"E2\" 必须解析成 2 交给 ④"
         );
@@ -447,7 +728,7 @@ mod tests {
         // 给出 E360 / E258 / E240 而便签最大编号是 102。现在裸数字在 ref 位置上
         // 根本不是合法值，报错还直说「行号不是 ref」—— 那句是回灌给模型看的。
         for bad in ["360", "#360", "E", "e2", "E2 那件"] {
-            let r = validate(ev(Some(bad), vec![1]), 400, &refs).unwrap_err();
+            let r = oversized(ev(Some(bad), vec![1]), 400);
             let msg = r.verbatim();
             assert!(
                 msg.contains("不是合法编号") && msg.contains("行号 #N 不是 ref"),
@@ -457,6 +738,6 @@ mod tests {
 
         // 去重 + 排序是契约不是顺手
         let ok = validate(ev(None, vec![3, 1, 3]), 10, &refs).unwrap();
-        assert_eq!(ok[0].msg_indexes, [1, 3]);
+        assert_eq!(ok.events[0].msg_indexes, [1, 3]);
     }
 }

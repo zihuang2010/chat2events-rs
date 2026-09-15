@@ -2,7 +2,7 @@ import { act, cleanup, render, renderHook, screen, within, waitFor } from "@test
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { buildMockDataset } from "@/api/mock/generator";
+import { buildMockDataset } from "@/test/mock/generator";
 import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import type { LoadedDataset } from "@/api/source";
 import { Providers } from "@/app/providers";
@@ -52,7 +52,7 @@ vi.mock("@/api/source", async (importOriginal) => {
   return {
     ...stubbed,
     loadEventsPage: (...args: Parameters<typeof stubbed.loadEventsPage>) => {
-      pageCalls.push(args[2]);
+      pageCalls.push(args[1]);
       return stubbed.loadEventsPage(...args);
     },
   };
@@ -98,9 +98,8 @@ const dataset: TestDataset = {
   groupDaily: raw.groupDaily,
   events: decorate(raw.events, taxIndex),
   taxIndex,
-  source: "mock",
+  source: "api",
   loadedAt: 0,
-  fallbackReason: null,
 };
 /**
  * 渲染前把这份数据接到聚合替身上 —— 页面上的每个数字仍然是**算出来的**，
@@ -342,7 +341,6 @@ it("labels_v0_as_missing_taxonomy_in_the_category_view", async () => {
     ...event,
     taxonomy_version: "v0",
     event_type: "__untyped__",
-    event_types: ["__untyped__"],
   }));
   const taxIndex = buildTaxonomyIndex([], "v0");
   const view = await mount("events", "", {
@@ -539,6 +537,8 @@ it("分类构成包含平台事件，首响样本与无响应率仅用商家事�
   expect(row).toHaveTextContent("100.0%");
   expect(row).toHaveTextContent("50.0%");
   expect(row).toHaveTextContent("1 / 2 起商家事件");
+  expect(screen.getByRole("columnheader", { name: "事件总数" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: "无响应事件数" })).toBeVisible();
   expect(screen.getByRole("columnheader", { name: "已回复样本" })).toBeVisible();
   view.unmount();
   const platform = data.events[2]!;
@@ -569,6 +569,11 @@ it("keeps_trend_gaps_daily_values_and_category_navigation", async () => {
   const view = await mount("events");
   await user.click(screen.getByRole("tab", { name: "每日趋势" }));
   expect(screen.getByText("各分类独立刻度 · 仅比较走势")).toBeVisible();
+  expect(screen.queryByText("分类日走势")).toBeNull();
+  expect(screen.queryByText("悬停查看每日事件量")).toBeNull();
+  expect(view.container.querySelector(".ev-trend-context")).toHaveTextContent(
+    `${dataset.meta.days.length} 天`,
+  );
   const failedDay = dataset.groupDaily.find((day) => day.extraction_status === "failed")!.dt;
   const firstTrend = screen.getAllByRole("img", { name: /每日事件量/ })[0]!;
   expect(firstTrend.getAttribute("aria-label")).toContain(failedDay + " 数据不完整");
@@ -610,8 +615,11 @@ it("客服页按摘要搜索仍保留参与客服，个人筛选不混入协作�
   );
   const person = screen.getByRole("button", { name: label });
   expect(view.container.querySelectorAll(".ia-table-link")).toHaveLength(1);
+  expect(person).toHaveAttribute("title", `${label}\n客服 ID：${agent}`);
+  expect(view.container.querySelector(".ag-identity .c2e-sub")).toBeNull();
   await user.click(person);
   const dialog = await screen.findByRole("dialog");
+  expect(dialog.querySelector(".od-drawer-id")).toHaveTextContent(agent);
   expect(dialog).toHaveTextContent("每日变化");
   expect(dialog).toHaveTextContent("活跃群明细");
   const target = new URL(
@@ -631,7 +639,9 @@ it("客服页默认分组对照，保留样本分母，图表按需切换", asyn
   const view = await mount("agents");
   expect(screen.getByRole("tab", { name: "指标明细" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByRole("columnheader", { name: "参与工作量" })).toBeVisible();
-  expect(screen.getByRole("columnheader", { name: "有效样本" })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: /^参与事件数/ })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: /^首响归属事件数/ })).toBeVisible();
+  expect(screen.getByRole("columnheader", { name: /^首响统计样本数/ })).toBeVisible();
   expect(screen.queryByRole("columnheader", { name: "解决事件数" })).toBeNull();
   expect(screen.queryByRole("columnheader", { name: "回复消息数" })).toBeNull();
   await user.click(screen.getByRole("tab", { name: "工作量与时效" }));
@@ -801,14 +811,28 @@ it("事件抽屉按表格顺序前后切换，原文为空时显式展示空态"
   expect(screen.getByTestId("url")).toHaveTextContent(`drawer=${firstTwo[0]}`);
 });
 
-it("跨筛选事件直达与不存在的事件分别展示明确状态", async () => {
+it("loads_outside_filter_events_and_reports_missing_ids", async () => {
   const event = dataset.events[0]!;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: URL) =>
+      Promise.resolve(
+        url.pathname === `/api/event/${event.id}`
+          ? Response.json(event)
+          : new Response(null, { status: 404 }),
+      ),
+    ),
+  );
   const view = await mount("detail", `?q=不存在的关键词000&drawer=${event.id}`);
-  expect(screen.getByRole("dialog")).toHaveTextContent("这条事件不在当前筛选结果里");
+  await waitFor(() =>
+    expect(screen.getByRole("dialog")).toHaveTextContent("这条事件不在当前筛选结果里"),
+  );
   expect(screen.getByRole("button", { name: "下一条事件" })).toBeDisabled();
   view.unmount();
   await mount("detail", "?drawer=999999999");
-  expect(screen.getByRole("dialog")).toHaveTextContent("找不到事件 #999999999");
+  await waitFor(() =>
+    expect(screen.getByRole("dialog")).toHaveTextContent("找不到事件 #999999999"),
+  );
 });
 
 it("原文加载失败保留真实原因和重试入口", async () => {
@@ -871,4 +895,30 @@ it("加载状态仍可核查统计依据，平台发起不标成客服首响", a
   expect(screen.getByRole("button", { name: "定位首响" })).toBeDisabled();
   expect(screen.queryByText("首次有效回复")).toBeNull();
   expect(screen.getByText("平台推送")).toBeVisible();
+});
+
+/**
+ * ⚠️ **翻页要真的翻得动。** antd 的 `Table.onChange` 对**每一种**表格变化都会触发，
+ * 分页也算（`extra.action === "paginate"`）。明细页那个 handler 只认排序，
+ * 却没拦住其它 action —— 点第 2 页时它跟着跑一遍，把 `page` 复位成 1，
+ * 而排序本身看起来一切正常。群 / 客服两张表早就用 `action === "sort"` 拦过了。
+ */
+it("detail_paginates_and_changes_page_size", async () => {
+  const user = userEvent.setup();
+  const view = await mount("detail");
+  const firstPage = [...view.container.querySelectorAll(".ia-summary-link")].map((row) =>
+    row.getAttribute("aria-label"),
+  );
+  expect(firstPage).toHaveLength(20);
+  await user.click(view.container.querySelector<HTMLElement>(".ant-pagination-item-2")!);
+  expect(screen.getByTestId("url")).toHaveTextContent("page=2");
+  const secondPage = [...view.container.querySelectorAll(".ia-summary-link")].map((row) =>
+    row.getAttribute("aria-label"),
+  );
+  expect(secondPage.length).toBeGreaterThan(0);
+  expect(secondPage.every((label) => !firstPage.includes(label))).toBe(true);
+  // 排序仍要复位页码 —— 拦 action 不能把这件事一起拦掉。
+  await user.click(screen.getByRole("columnheader", { name: "开始时间" }));
+  expect(screen.getByTestId("url")).toHaveTextContent("sort=time");
+  expect(screen.getByTestId("url")).not.toHaveTextContent("page=2");
 });

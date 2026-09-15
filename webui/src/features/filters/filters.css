@@ -88,19 +88,37 @@
   color: var(--color-secondary);
 }
 .ra-filter-panel .ra-more-toggle {
-  width: 120px;
-  flex: 0 0 120px;
+  width: 128px;
+  flex: 0 0 128px;
   justify-content: flex-start;
+  padding-inline: var(--space-xs);
+  color: var(--color-secondary);
+}
+/* 有隐藏条件在生效时按钮要变色，但只加淡底 —— 再叠一圈强调色描边，
+   会和 workbench.css 的 :focus-visible 焦点环撞成同色双环。 */
+.ra-filter-panel .ra-more-toggle[data-active="true"],
+.ra-filter-panel .ra-more-toggle[data-active="true"]:hover {
+  background: var(--color-wash);
+  color: var(--color-accent);
+}
+.ra-more-toggle[data-active="true"] .ra-more-count {
+  background: var(--color-accent);
+  color: var(--color-paper);
 }
 .ra-more-toggle .anticon {
   margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+.ra-more-toggle[data-active="true"] .anticon {
+  color: inherit;
 }
 .ra-more-count {
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   border-radius: 50%;
   background: var(--color-wash);
   color: var(--color-accent);
@@ -117,6 +135,47 @@
 }
 .ra-filter-panel .ra-filter-reset[data-active="true"] {
   color: var(--color-accent);
+}
+.ra-filter-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-rule);
+}
+.ra-filter-chips-label {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+.ra-filter-panel .ra-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  height: 24px;
+  border-radius: 999px;
+  border-color: transparent;
+  background: var(--color-wash);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  padding-inline: var(--space-xs);
+}
+.ra-filter-panel .ra-filter-chip:hover {
+  border-color: var(--color-accent);
+  background: var(--color-wash);
+  color: var(--color-accent);
+}
+.ra-filter-chip .anticon {
+  font-size: 10px;
+  color: var(--color-muted);
+}
+.ra-filter-chip:hover .anticon {
+  color: inherit;
+}
+.ra-chip-key {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
 }
 .ra-filter-more:not([hidden]) {
   display: grid;

@@ -6,7 +6,7 @@
 use super::{facts::*, labels::*, read::*, schema::*, sql::*};
 use crate::{
     BoxError,
-    stage::classify::Labels,
+    stage::classify::Label,
     stage::extract::Event,
     stage::ingest::Role,
     stage::metrics::{AgentRow, GroupRow},
@@ -39,7 +39,7 @@ async fn write_room(
     room: &str,
     days: &Window,
     events: Option<&[Event]>,
-    labels: &[Labels],
+    labels: &[Label],
     version: &str,
     reason: Option<&str>,
     group: &[GroupRow],
@@ -170,7 +170,7 @@ async fn mysql_pipeline_upgrade_matches_the_documented_schema() {
     let pool = crate::testutil::mysql_pool("pipeline_upgrade").await;
     sqlx::raw_sql(
         "ALTER TABLE b_merchant_group_event MODIFY event_type VARCHAR(64) NOT NULL, \
-         MODIFY event_types JSON NOT NULL, MODIFY taxonomy_version VARCHAR(16) NOT NULL; \
+         MODIFY taxonomy_version VARCHAR(16) NOT NULL; \
          ALTER TABLE b_merchant_group_metric_daily DROP COLUMN classification_status, DROP COLUMN agent_accounts; \
          ALTER TABLE b_merchant_group_run_failure DROP COLUMN stage; \
          INSERT INTO b_merchant_group_run_failure (run_date,corpid,roomid,reason) VALUES ('2026-08-28','C','R','历史失败');"
@@ -514,12 +514,14 @@ async fn mysql_room_writes_preserve_failure_atomicity_and_frozen_facts() {
         before_retag,
         "重打标不改事实与行 id"
     );
-    let tagged: (String, String) = sqlx::query_as("SELECT taxonomy_version, CAST(event_types AS CHAR) FROM b_merchant_group_event WHERE occurred_on='2026-08-26'").fetch_one(&pool).await.unwrap();
+    let tagged: (String, String) = sqlx::query_as(
+        "SELECT taxonomy_version, event_type FROM b_merchant_group_event WHERE occurred_on='2026-08-26'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(tagged.0, "v1");
-    assert_eq!(
-        serde_json::from_str::<Vec<String>>(&tagged.1).unwrap(),
-        labels[0].all()
-    );
+    assert_eq!(tagged.1, labels[0].type_id());
     assert_eq!(
         read_events(&pool, Shard::new("C", "R", &Window::span(d(24), d(24))))
             .await
@@ -625,4 +627,63 @@ async fn mysql_agent_msg_daily_survives_extraction_failure_and_relabeling() {
     .await
     .unwrap();
     assert_eq!(read(pool).await, saved, "REPLACE 覆盖写必须幂等");
+}
+
+/// **`retry` 的挑活判据 —— 已经修好的群绝不能再重抽一遍。**
+///
+/// `run_failure` 只增不改，重跑成功不删旧失败行（靠 `fact_completed_time` 晚于
+/// `gmt_created_time` 让它自然失效）。所以「拿整张表重跑」和「按判据重跑」在
+/// 日志上长得一模一样，区别只在烧掉多少 token、以及有没有把冻结区里早已成功的天
+/// 重抽一遍（承重不变量 1）—— 静默得没有任何东西会报错，只能靠这条钉住。
+///
+/// 五种行各造一个群，覆盖的是四条判据线：凭据晚于失败 · 抽取失败没凭据 ·
+/// 连群日行都没有 · 凭据**早于**失败（拉取失败那条路不写群日行，旧的 `ok` 还在）。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_retry_picks_only_rooms_that_are_still_broken() {
+    let pool = crate::testutil::mysql_pool("retry_picks").await;
+    sqlx::raw_sql(
+        "INSERT INTO b_merchant_group_run_failure \
+         (run_date,corpid,roomid,reason,stage,window_since,window_until,gmt_created_time) VALUES \
+         ('2026-08-30','C','R_FIXED','抽取失败','extract','2026-08-27','2026-08-28','2026-08-30 03:00:00.000000'), \
+         ('2026-08-30','C','R_FAILED','抽取失败','extract','2026-08-27','2026-08-28','2026-08-30 03:00:00.000000'), \
+         ('2026-08-30','C','R_NOROW','拉取失败，本轮不参与跑批','extract','2026-08-27','2026-08-28','2026-08-30 03:00:00.000000'), \
+         ('2026-08-30','C','R_STALE','拉取失败，本轮不参与跑批','extract','2026-08-27','2026-08-28','2026-08-30 03:00:00.000000'), \
+         ('2026-08-30','C','R_LEGACY','升级前写的行','extract',NULL,NULL,'2026-08-30 03:00:00.000000'), \
+         ('2026-08-30','C','R_LABEL','打标失败','classify','2026-08-27','2026-08-28','2026-08-30 03:00:00.000000'), \
+         ('2026-08-20','C','R_OLD','跑批日在 since 之前','extract','2026-08-17','2026-08-18','2026-08-20 03:00:00.000000'); \
+         INSERT INTO b_merchant_group_metric_daily \
+         (corpid,roomid,dt,msg_count,sender_count,extraction_status,fact_completed_time) VALUES \
+         ('C','R_FIXED','2026-08-28',10,2,'ok','2026-08-30 04:00:00.000000'), \
+         ('C','R_FAILED','2026-08-28',10,2,'failed',NULL), \
+         ('C','R_STALE','2026-08-28',10,2,'ok','2026-08-29 04:00:00.000000'), \
+         ('C','R_OLD','2026-08-18',10,2,'ok','2026-08-20 04:00:00.000000');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (rows, legacy) = unrepaired_extract_failures(&pool, d(25)).await.unwrap();
+    assert_eq!(
+        rows.iter().map(|(r, ..)| r.as_str()).collect::<Vec<_>>(),
+        ["R_FAILED", "R_NOROW", "R_STALE"],
+        "R_FIXED 的事实凭据晚于失败 = 已经修好，重抽它是白烧 token；\
+         R_LABEL 是打标失败（事实是好的，归 recover）；R_OLD 的跑批日在 since 之前"
+    );
+    // 窗口原样带出来 —— 它是 `run_span` 的**删重写范围**，放宽一天就是多抽一天。
+    assert!(rows.iter().all(|(_, s, u)| (*s, *u) == (d(27), d(28))));
+    assert_eq!(legacy, 1, "没有窗口的历史行要数出来报警，不能静默吞掉");
+
+    // 打标那支只要并集端点，具体哪些群日由 recover 的 unfinished_days 定。
+    assert_eq!(
+        classify_failure_span(&pool, d(25)).await.unwrap(),
+        Some((d(27), d(28)))
+    );
+    assert_eq!(
+        classify_failure_span(&pool, d(31)).await.unwrap(),
+        None,
+        "这段跑批日里没有打标失败时是 None，不是一对空日期"
+    );
+
+    crate::testutil::drop_mysql_database(pool).await;
 }

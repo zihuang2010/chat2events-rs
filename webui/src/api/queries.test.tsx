@@ -8,8 +8,8 @@ import { useDataset, useEventMessages } from "./queries";
 import { loadDataset, loadMessages, type SourceKind } from "./source";
 
 vi.mock("./source", () => ({
-  loadDataset: vi.fn((source: string) => Promise.resolve({ source })),
-  loadMessages: vi.fn((source: string) => Promise.resolve([{ msg_id: source }])),
+  loadDataset: vi.fn(() => Promise.resolve({ source: "api" })),
+  loadMessages: vi.fn((eventId: number) => Promise.resolve([{ msg_id: String(eventId) }])),
 }));
 
 afterEach(() => {
@@ -28,46 +28,45 @@ function Wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-it("相同事件 ID 切换数据源后重新取消息，不复用另一数据源原文", async () => {
+it("loads_messages_only_after_dataset_is_ready", async () => {
+  const initialProps: { source: SourceKind | undefined } = { source: undefined };
   const { result, rerender } = renderHook(
-    ({ source }: { source: SourceKind }) => useEventMessages(source, 1),
-    {
-      initialProps: { source: "mock" },
-      wrapper: Wrapper,
-    },
+    ({ source }: { source: SourceKind | undefined }) => useEventMessages(source, 1),
+    { initialProps, wrapper: Wrapper },
   );
-  await waitFor(() => expect(result.current.data?.[0]?.msg_id).toBe("mock"));
+  expect(loadMessages).not.toHaveBeenCalled();
   rerender({ source: "api" });
-  await waitFor(() => expect(result.current.data?.[0]?.msg_id).toBe("api"));
-  expect(loadMessages).toHaveBeenCalledWith("api", 1);
+  await waitFor(() => expect(result.current.data?.[0]?.msg_id).toBe("1"));
+  expect(loadMessages).toHaveBeenCalledWith(1);
 });
 
-it("URL 数据源改变后重新装载数据集", async () => {
+it("ignores_legacy_source_selection", async () => {
   const { result } = renderHook(() => ({ query: useDataset(), navigate: useNavigate() }), {
     wrapper: Wrapper,
   });
-  await waitFor(() => expect(result.current.query.data?.source).toBe("mock"));
+  await waitFor(() => expect(result.current.query.data?.source).toBe("api"));
+  expect(loadDataset).toHaveBeenCalledWith({ from: null, to: null });
+  vi.mocked(loadDataset).mockClear();
   await act(async () => {
     await result.current.navigate("/detail?source=api");
   });
-  await waitFor(() => expect(result.current.query.data?.source).toBe("api"));
-  expect(loadDataset).toHaveBeenCalledWith("api", { from: null, to: null });
+  expect(loadDataset).not.toHaveBeenCalled();
 });
 
-it("URL 日期改变后按新范围重新读取，抽屉参数不重读数据集", async () => {
+it("reloads_for_date_changes_but_not_drawer_changes", async () => {
   const { result } = renderHook(() => ({ query: useDataset(), navigate: useNavigate() }), {
     wrapper: Wrapper,
   });
-  await waitFor(() => expect(result.current.query.data?.source).toBe("mock"));
+  await waitFor(() => expect(result.current.query.data?.source).toBe("api"));
   await act(async () => {
-    await result.current.navigate("/detail?source=api&from=2026-08-25&to=2026-08-26");
+    await result.current.navigate("/detail?from=2026-08-25&to=2026-08-26");
   });
   await waitFor(() =>
-    expect(loadDataset).toHaveBeenCalledWith("api", { from: "2026-08-25", to: "2026-08-26" }),
+    expect(loadDataset).toHaveBeenCalledWith({ from: "2026-08-25", to: "2026-08-26" }),
   );
   vi.mocked(loadDataset).mockClear();
   await act(async () => {
-    await result.current.navigate("/detail?source=api&from=2026-08-25&to=2026-08-26&drawer=1");
+    await result.current.navigate("/detail?from=2026-08-25&to=2026-08-26&drawer=1");
   });
   expect(loadDataset).not.toHaveBeenCalled();
 });

@@ -97,11 +97,6 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             </span>
           </button>
           <div className="ia-trace-meta">
-            {e.event_types && e.event_types.length > 1 ? (
-              <Tooltip title="副类只落在 event_types 列供下钻，不进任何指标">
-                <Tag>+{e.event_types.length - 1} 副类</Tag>
-              </Tooltip>
-            ) : null}
             {e.crossDay ? (
               <Tooltip title="末条消息与归属日不同天，但事件只按开始日计一次">
                 <Tag>跨天</Tag>
@@ -339,7 +334,11 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             tableLayout="fixed"
             rowKey="id"
             columns={columns.map((column) => ({ ...column, ellipsis: true }))}
-            onChange={(_, __, sorter) => {
+            onChange={(_, __, sorter, extra) => {
+              // ⚠️ `Table.onChange` 对**每一种**表格变化都触发，翻页也算。
+              // 不拦住就会在点第 2 页时把 `page` 复位成 1 —— 分页彻底点不动，
+              // 而排序看起来一切正常。群 / 客服两张表同样这么拦。
+              if (extra.action !== "sort") return;
               const picked = Array.isArray(sorter) ? sorter[0] : sorter;
               const key = String(picked?.columnKey ?? "");
               const column = (Object.keys(EVENT_SORTS) as EventSort[]).find(

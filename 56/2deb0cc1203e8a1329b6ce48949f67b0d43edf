@@ -1,0 +1,44 @@
+webui/src/features/filters/useAnalytics.ts
+  s_25a30393b2c831::t_08b13f709f44d6 45-46,107-115,172
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_25a30393b2c831::t_8ca5d2361986b1 100-119,121-125,131,133-138,140-142,147-148
+  s_25a30393b2c831::t_ba22306d35f6f8 120,126-130,132,139,143-146
+webui/src/features/rooms/RoomsPage.tsx
+  s_25a30393b2c831::t_0000be1819deb7 23-24,89-97
+  s_25a30393b2c831::t_086a8703769e1e 98
+src/web/query.rs
+  s_25a30393b2c831::t_c89313a46c9298 146-148,150-152,158-163,170,227
+webui/src/domain/schemas.ts
+  s_25a30393b2c831::t_08b13f709f44d6 203-205
+src/web/tests.rs
+  s_25a30393b2c831::t_3e704657361d83 84-90,126-127,953-992
+  s_25a30393b2c831::t_35ebcbb6d256f0 645,648-650
+  s_25a30393b2c831::t_b176093995bfc8 993-994
+webui/src/features/rooms/rooms.css
+  s_25a30393b2c831::t_0000be1819deb7 240-245,247-250
+  s_25a30393b2c831::t_8ca5d2361986b1 246
+src/web/serve.rs
+  s_25a30393b2c831::t_f00d5722cd0389 112,116-123,125-128,136-160
+  s_25a30393b2c831::t_81c6ca8ea6a368 161-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "562deb0cc1203e8a1329b6ce48949f67b0d43edf",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_25a30393b2c831": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed460149-ecaf-439a-a891-5e23f4b28db8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

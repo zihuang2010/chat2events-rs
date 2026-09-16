@@ -100,6 +100,19 @@ username = "nacos"
 password = "改成真的"
 ```
 
+**服务端没开鉴权**（`nacos.core.auth.enabled=false`，或这套 Nacos 压根不要登录）时，
+两个键**仍然必须存在**，写成空串：
+
+```toml
+[roster]
+username = ""
+password = ""
+```
+
+`username` 为空 ⇒ 不发登录请求、实例查询也不带 `accessToken`。
+键直接不写是**启动崩**（`解析失败 …/secrets.toml`），这是有意的：
+「忘了写」和「确实不需要」必须长得不一样。
+
 ⚠️ 但这份 `secrets.toml` 是和跑批共用的同一个文件，里面还有 OSS 与模型密钥。
 真要把权限切干净，就给工作台单独一个配置目录（只放它要的四节 + 只读账号 + Nacos 凭据），
 启动时指过去。
@@ -291,7 +304,8 @@ tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 | 一直弹口令框，输对了也进不去 | base64 是用 `echo` 算的（多了换行），重新用 `printf` 算 |
 | 外网不弹口令直接进 | `auth_basic` 写进了某个 location 而不是 server 级 |
 | 409「该企业尚无已落库的群日或事件」 | `<corpid>` 填错 |
-| 起不来，日志 `Nacos 登录被拒（HTTP 403）` 或 `Nacos 登录请求失败` | 前者是 `secrets.toml` 的 `[roster]` 账号密码错、或服务端压根没开鉴权；后者是 `roster.nacos` 地址不可达。先 `curl -d 'username=…&password=…' <nacos>/nacos/v1/auth/login` 手验一遍 |
+| 起不来，日志 `Nacos 登录被拒（HTTP 403）` 或 `Nacos 登录请求失败` | 前者是 `secrets.toml` 的 `[roster]` 账号密码错、或服务端压根没开鉴权（后一种把 `username` / `password` 都写成空串）；后者是 `roster.nacos` 地址不可达。先 `curl -d 'username=…&password=…' <nacos>/nacos/v1/auth/login` 手验一遍 |
+| 起不来，日志 `解析失败 …/secrets.toml：详情已省略` | 那个文件的 TOML 语法或**缺键**。按提示的行号看：多半是 `[roster]` 节缺了 `username` / `password`，或值没加引号。不需要鉴权也要写空串，不能省 |
 | 起不来，日志 `Nacos 查不到服务 \`X\` 的健康实例` 且 X 是配的服务名 | 服务名或 `roster.namespace` 写错。在 Nacos 控制台按**命名空间**筛一遍服务列表，注意默认命名空间的 ID 是空串不是 `public` |
 | 起不来，同上但服务名确认无误 | 上游根本没注册上来，或 `roster.group_name` 写错（分组不对时 Nacos 返回的是空列表，不是报错）。控制台上看那个服务的实例数与所属分组 |
 | 跑着跑着日志出现 `Nacos 刷新失败，沿用上一次的实例列表` | Nacos 侧抖动。**进程不会退，页面照常**（手上那份实例列表继续用，每 10 秒重试）。持续刷就去查 Nacos 自己 |

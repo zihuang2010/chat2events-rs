@@ -624,6 +624,12 @@ impl Nacos {
     }
 
     async fn ensure_token(&mut self) -> crate::Result<()> {
+        // 服务端没开鉴权时 `secrets.toml` 的 `[roster].username` 留空 ⇒ 不登录，
+        // 实例查询也不带 `accessToken`。空账号照样去 POST `auth/login` 换回来的只是
+        // 一个 403（Nacos 对空用户名一律 `user not found`），那会让工作台起不来。
+        if self.username.is_empty() {
+            return Ok(());
+        }
         if Instant::now() < self.relogin_at {
             return Ok(());
         }
@@ -670,9 +676,13 @@ impl Nacos {
             .append_pair("serviceName", service)
             .append_pair("groupName", &self.group)
             .append_pair("namespaceId", &self.namespace)
-            .append_pair("healthyOnly", "true")
-            // v1 的鉴权就长这样：令牌**作为查询参数**带上，没有请求头形式。
-            .append_pair("accessToken", &self.token);
+            .append_pair("healthyOnly", "true");
+        // v1 的鉴权就长这样：令牌**作为查询参数**带上，没有请求头形式。
+        // 未开鉴权时没有令牌，这个参数整个不出现。
+        if !self.token.is_empty() {
+            url.query_pairs_mut()
+                .append_pair("accessToken", &self.token);
+        }
         let response = self.http.get(url).send().await.map_err(|e| {
             // ⚠️ **必须剥掉 URL**：`accessToken` 就在查询串里，而 reqwest 的错误
             // `Display` 无条件在末尾拼一句 `for url (...)` —— 不剥的话 Nacos 抖一下，
@@ -1262,6 +1272,27 @@ mod tests {
         }
         assert!(requests[1].0.contains(&format!("serviceName={MERCHANT}")));
         assert!(requests[2].0.contains(&format!("serviceName={EMPLOYEE}")));
+    }
+
+    /// 协议：服务端没开鉴权时 `[roster].username` 留空 ⇒ **一次登录都不发**，
+    /// 实例查询里也没有 `accessToken` 参数。脚本里没有 `LOGIN` 这一条，
+    /// 真发了登录请求假 Nacos 会当场 panic。
+    #[tokio::test]
+    async fn an_unauthenticated_nacos_skips_login_and_the_token_parameter() {
+        let healthy = json!([{"ip": "10.0.0.1", "port": 8080, "healthy": true}]);
+        let (base, server) = scripted(vec![hosts(healthy.clone()), hosts(healthy)]);
+        let anonymous = RosterSecrets {
+            username: String::new(),
+            password: String::new(),
+        };
+        Discovery::start(&config(&base), &anonymous).await.unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2, "只该有两次实例查询：{requests:?}");
+        for (line, _) in &requests {
+            assert!(line.starts_with(&format!("GET {LIST}?")), "{line}");
+            assert!(!line.contains("accessToken"), "{line}");
+        }
     }
 
     /// 协议：令牌按 `tokenTtl` 算的提前量到了才重新登录，新令牌立刻用上。

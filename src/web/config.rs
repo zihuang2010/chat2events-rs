@@ -63,6 +63,10 @@ pub struct WebSecrets {
 }
 
 /// Nacos 的账号密码。跟数据库只读账号同一个 `secrets.toml`，同一份 0600 检查。
+///
+/// 两个键**必填但可以是空串**：`username = ""` 表示服务端没开鉴权，此时
+/// [`crate::web::roster`] 既不登录也不带 `accessToken`。必填是有意的 ——
+/// 「忘了写」和「确实不需要」得长得不一样，前者必须启动即崩。
 #[derive(Deserialize)]
 pub struct RosterSecrets {
     pub username: String,

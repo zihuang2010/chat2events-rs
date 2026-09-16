@@ -210,7 +210,7 @@ query_timeout_secs = 10
 # ⚠️ 全部必填，代码里没有默认值 —— 跟本文件其余部分同一个规矩。
 [roster]
 # Nacos 服务端地址。只要 scheme://host:port，**不带 /nacos 路径**（代码自己拼 v1 端点）。
-# 账号密码在 secrets.toml 的 [roster] 节。
+# 账号密码在 secrets.toml 的 [roster] 节；服务端没开鉴权就把那两个键写成空串。
 nacos = "https://mse-650a0714-p.nacos-ans.mse.aliyuncs.com:8848"
 
 # 命名空间 ID 与分组名。**即使用的就是 Nacos 的默认值也要显式写出来** ——

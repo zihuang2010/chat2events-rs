@@ -42,6 +42,8 @@ export interface Analytics {
   q: QueryFilters;
   roomLabel: (roomId: string) => string;
   roomAliasIsAuthoritative: (roomId: string) => boolean;
+  /** 群背后的商家：名称 → 商家 ID → `null`（没关联商家，整块不渲染） */
+  roomMerchant: (roomId: string) => string | null;
   agentLabel: (agentId: string) => string;
   agentAliasIsAuthoritative: (agentId: string) => boolean;
   typeLabel: (typeId: string) => string;
@@ -102,6 +104,15 @@ export function useAnalytics(
       const room = rooms.get(id);
       return Boolean(room?.alias && (room.alias_is_authoritative ?? false));
     };
+    // 商家那一支的回落链：**商家名 → 商家 ID → 不显示**。
+    // 返回 null 表示这个群压根没关联商家，调用方整块不渲染 —— 不能回落成空串，
+    // 那会在表格里留一行看不出是「没有」还是「没加载出来」的空白。
+    // ⚠️ 不读 `merchant_name_is_authoritative`：回落值是一串裸 BIGINT，
+    // 肉眼一看就不是名字，不像客服的 `zhang.san` 会被误当成姓名。
+    const roomMerchant = (id: string) => {
+      const room = rooms.get(id);
+      return room?.merchant_name ?? room?.merchant_id ?? null;
+    };
     const agentLabel = (id: string) => agents.get(id)?.alias ?? id;
     // 与 roomAliasIsAuthoritative 同形：per-项优先、回落全局。
     // ⚠️ 别名回落成平台账号时这里必须是 false —— `zhang.san` 是账号不是姓名。
@@ -158,6 +169,7 @@ export function useAnalytics(
       q,
       roomLabel,
       roomAliasIsAuthoritative,
+      roomMerchant,
       agentLabel,
       agentAliasIsAuthoritative,
       typeLabel,

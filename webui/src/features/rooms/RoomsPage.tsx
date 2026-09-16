@@ -20,7 +20,8 @@ import "./rooms.css";
 
 export function RoomsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const { days, roomLabel, dayset, query, roomAliasIsAuthoritative, parents } = analytics;
+  const { days, roomLabel, dayset, query, roomAliasIsAuthoritative, roomMerchant, parents } =
+    analytics;
   const { filters, patch, hrefWith, reset } = api;
   const groups = useMemo(() => parents.map((parent) => parent.types), [parents]);
   const aggs = useRoomAggs(analytics.dataset.source, analytics.q, groups);
@@ -84,6 +85,16 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
               {" "}
               <DataGap label="别名 待补" detail="尚未获取到该群的权威名称。" />
             </>
+          )}
+          {/* 商家名另起一行挂在群名下面 —— 这一列固定 240px，塞进同一行会把两个名字
+              都挤成省略号。没关联商家时 `roomMerchant` 回 null，整块不渲染
+              （不是渲染一个空串：表格里那会变成看不出是「没有」还是「没加载出来」的空白）。
+              名册查不到店名时它回落成商家 ID，那是一串裸 BIGINT —— 一看就不是名字，
+              所以不另挂标记。 */}
+          {roomMerchant(r.key) && (
+            <div className="ra-room-merchant" title={roomMerchant(r.key)!}>
+              {roomMerchant(r.key)}
+            </div>
           )}
         </>
       ),

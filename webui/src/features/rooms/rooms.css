@@ -237,3 +237,14 @@
   background: var(--color-wash);
   color: var(--color-accent);
 }
+
+/* 群名下面那行商家名 —— 这一列固定 240px，超出截断不换行，窄屏也不会把行撑高。 */
+.od-room-analysis .ra-room-merchant {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--color-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

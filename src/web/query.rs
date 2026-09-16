@@ -143,22 +143,31 @@ pub(super) async fn read_meta(
 /// 的子集 —— 多查一路只是把最大的那张表再扫一遍。实测：只在 event 里、不在
 /// `metric_daily` 里的群 **0 个**。
 ///
-/// ⚠️ **客服那一支只产出「待解析的 ID」，不产出最终别名。** 返回的是
-/// `(easyUserId, officialUserId?)` —— 账号到姓名那一跳是 HTTP（外部名册），而
+/// ⚠️ **两支都只产出「待解析的 ID」，不产出最终别名。** 客服是
+/// `(easyUserId, officialUserId?)`，群是 `(roomid, 群名?, merchantId?)` ——
+/// 账号到姓名、商家 ID 到店铺名那两跳都是 HTTP（外部名册），而
 /// 「只读 SQL 全在这一个文件」的前提是**这个文件里零 HTTP**。回填在 handler 层做，
-/// 见 `serve::filters`。链条是：`easyUserId →(这里的 SQL)→ officialUserId →(HTTP)→ 姓名`。
+/// 见 `serve::filters`。链条是：
+/// `easyUserId →(这里的 SQL)→ officialUserId →(HTTP)→ 姓名`，
+/// `roomid →(这里的 SQL)→ merchantId →(HTTP)→ 店铺名`。
 ///
 /// ⚠️ **客服名单只能从 `event.agents` 展开，不能改查 `b_merchant_group_agent_metric_daily`。**
 /// 那张表按 `metrics::Attribution::FirstResponder` 只记首响人，而 `agents` 是**全部
 /// 参与者** —— 实测同一批数据 22 人 vs 20 人。换过去会让「参与过但从没首响过」的人
 /// 从筛选器里静默消失。JSON 列进不了索引，这条只能靠窗口把行数压住。
+/// 一个群的筛选器选项在**取数这一侧**的形状：群号 · 群名 · 关联的商家 ID。
+///
+/// ⚠️ **商家 ID 是字符串**（SQL 里 `CAST(... AS CHAR)`）—— `merchant_id` 是
+/// `BIGINT UNSIGNED`，前端拿 JSON number 会丢精度。名册那一跳也原样用字符串。
+pub(super) type Room = (String, Option<String>, Option<String>);
+
 pub(super) async fn read_filters(
     connection: &mut MySqlConnection,
     corp: &str,
     since: NaiveDate,
     until: NaiveDate,
     limits: &WebLimits,
-) -> Result<(Vec<Value>, Vec<(String, Option<String>)>), WebError> {
+) -> Result<(Vec<Room>, Vec<(String, Option<String>)>), WebError> {
     // 历史群仍读取已删除配置；商家 ID 转字符串，避免前端丢失 BIGINT 精度。
     //
     // ⚠️ **失败那一支按 `window_since/window_until` 收敛，不是 `run_date`。**
@@ -215,13 +224,7 @@ pub(super) async fn read_filters(
     }
     let accounts = read_agent_accounts(&mut *connection, corp, since, until, limits).await?;
     Ok((
-        rooms
-            .into_iter()
-            .map(|(roomid, alias, merchant_id)| {
-                json!({"roomid": roomid, "alias_is_authoritative": alias.is_some(),
-                       "alias": alias, "merchant_id": merchant_id})
-            })
-            .collect(),
+        rooms,
         agents
             .into_iter()
             .map(|(agent,)| {

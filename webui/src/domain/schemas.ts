@@ -200,6 +200,9 @@ export const metaSchema = z.object({
       alias: z.string().nullable(),
       merchant_id: z.string().nullable().optional(),
       alias_is_authoritative: z.boolean().optional(),
+      /** 商家名称。`merchant_id` 有值而这里为 null = 关联了商家但名册查不到它。 */
+      merchant_name: z.string().nullable().optional(),
+      merchant_name_is_authoritative: z.boolean().optional(),
     }),
   ),
   agents: z.array(

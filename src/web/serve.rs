@@ -109,18 +109,55 @@ async fn filters(
     until: chrono::NaiveDate,
 ) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), WebError> {
     let (rooms, agents) = read_filters(tx, &state.corp, since, until, &state.limits).await?;
-    let wanted = agents
+    let accounts = agents
         .iter()
         .flat_map(|(_, account)| account.clone())
         .collect();
-    let names = state.roster.employees(&state.corp, &wanted).await;
+    let merchant_ids = rooms
+        .iter()
+        .flat_map(|(_, _, merchant)| merchant.clone())
+        .collect();
+    // 两个域各补一次。**不并发**：两次都是名册命中时零往返、未命中时各一次内网调用，
+    // 而它们共用同一把填充锁（见 `roster`），并发起来也要排队。
+    let names = state.roster.employees(&state.corp, &accounts).await;
+    let merchants = state.roster.merchants(&merchant_ids).await;
     Ok((
-        rooms,
+        rooms
+            .into_iter()
+            .map(|(roomid, alias, merchant)| room_option(roomid, alias, merchant, &merchants))
+            .collect(),
         agents
             .into_iter()
             .map(|(agent, account)| agent_option(agent, account, &names))
             .collect(),
     ))
+}
+
+/// 一个群选项。群名那一支照旧（来自 `b_wecom_merchant_group`），**新增的是商家那一支**。
+///
+/// **「没关联商家」和「关联了但查不到名字」是两种情况，响应里可区分**：
+/// 前者 `merchant_id` 为 `null`，后者 `merchant_id` 有值而 `merchant_name` 为 `null`。
+/// 混成一种就没法回答「这个群到底有没有归属商家」。
+///
+/// `merchant_name_is_authoritative` 由构造保证等价于 `merchant_name != null`
+/// （名册只会给出真名，回落是**不给**）—— 前端因此不读它：商家那一支的回落是
+/// 一串裸 BIGINT，肉眼一看就不是名字，不像客服的 `zhang.san` 会被误当成姓名。
+/// 留着它是为了和客服那一支同形，以及让接口的消费者不必自己推。
+pub(super) fn room_option(
+    roomid: String,
+    alias: Option<String>,
+    merchant: Option<String>,
+    merchants: &std::collections::HashMap<String, String>,
+) -> serde_json::Value {
+    let name = merchant.as_deref().and_then(|id| merchants.get(id));
+    serde_json::json!({
+        "roomid": roomid,
+        "alias": alias,
+        "alias_is_authoritative": alias.is_some(),
+        "merchant_id": merchant,
+        "merchant_name": name,
+        "merchant_name_is_authoritative": name.is_some(),
+    })
 }
 
 /// 一个客服选项 —— **三跳回落**：姓名 →（查不到）账号 →（也没有）16 位 `easyUserId`。

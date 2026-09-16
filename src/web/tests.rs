@@ -81,7 +81,13 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
         cache: std::sync::Arc::new(super::cache::Cache::new(1 << 20)),
         // 预填充名册：上游认识 `zhang.san`，于是 16 位 ID 在页面上变成「张三」。
         // **不碰网络** —— 这一组测的是接口契约，不是 Nacos 协议。
-        roster: super::roster::Roster::canned(&[("zhang.san", "张三")], Duration::from_secs(300)),
+        roster: super::roster::Roster::canned_both(
+            &[("zhang.san", "张三")],
+            // 夹具里那个群关联的商家就是 18446744073709551615（BIGINT UNSIGNED 的上界，
+            // 顺带钉住「商家 ID 全程是字符串」——换成整数中转这里就对不上了）。
+            &[("18446744073709551615", "极限商家")],
+            Duration::from_secs(300),
+        ),
     });
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -117,7 +123,8 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
         data["meta"]["rooms"],
         json!([{
             "roomid": "R", "alias": "商家服务群", "merchant_id": "18446744073709551615",
-            "alias_is_authoritative": true
+            "alias_is_authoritative": true,
+            "merchant_name": "极限商家", "merchant_name_is_authoritative": true
         }])
     );
     let meta: Value = http
@@ -635,10 +642,12 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .iter()
             .find(|r| r["roomid"] == roomid)
             .unwrap();
+        // 没群名、也没关联商家 —— 两支都是 null，两个权威位都是 false，且不报错。
         assert_eq!(
             room,
-            &json!({"roomid": roomid, "alias": null,
-            "merchant_id": null, "alias_is_authoritative": false})
+            &json!({"roomid": roomid, "alias": null, "alias_is_authoritative": false,
+            "merchant_id": null, "merchant_name": null,
+            "merchant_name_is_authoritative": false})
         );
     }
     // **失败只进它自己那个数据窗口的名单。** 冻结区那次失败（08-01~08-02）不该出现在
@@ -938,6 +947,48 @@ fn an_agent_option_falls_back_from_name_to_account_to_the_raw_id() {
     assert_eq!(
         option("agent00000000003", None),
         json!({"agent": "agent00000000003", "alias": null, "alias_is_authoritative": false})
+    );
+}
+
+/// 群选项里商家那一支的**三种情况**，纯离线。
+///
+/// ⚠️ 中间那条是承重的：**「没关联商家」和「关联了但查不到名字」不能混成一种** ——
+/// 混了就回答不了「这个群到底有没有归属商家」，而那两件事的处置完全不同
+/// （前者是数据本来就没有，后者是名册没查到，运维能查）。
+#[test]
+fn a_room_option_separates_no_merchant_from_an_unresolvable_one() {
+    use serde_json::json;
+    let merchants = std::collections::HashMap::from([("42".to_owned(), "甲商家".to_owned())]);
+    let option = |room: &str, alias: Option<&str>, merchant: Option<&str>| {
+        super::serve::room_option(
+            room.into(),
+            alias.map(Into::into),
+            merchant.map(Into::into),
+            &merchants,
+        )
+    };
+
+    // ① 关联了商家且名册认识它 —— 出店铺名，权威。
+    assert_eq!(
+        option("R1", Some("商家服务群"), Some("42")),
+        json!({"roomid": "R1", "alias": "商家服务群", "alias_is_authoritative": true,
+               "merchant_id": "42", "merchant_name": "甲商家",
+               "merchant_name_is_authoritative": true})
+    );
+    // ② **关联了但名册查无此商家** —— `merchant_id` 在、`merchant_name` 为 null，
+    //    前端据此回落显示商家 ID。
+    assert_eq!(
+        option("R2", Some("另一个群"), Some("99")),
+        json!({"roomid": "R2", "alias": "另一个群", "alias_is_authoritative": true,
+               "merchant_id": "99", "merchant_name": null,
+               "merchant_name_is_authoritative": false})
+    );
+    // ③ **压根没关联商家** —— `merchant_id` 就是 null，前端什么都不显示。不报错。
+    assert_eq!(
+        option("R3", None, None),
+        json!({"roomid": "R3", "alias": null, "alias_is_authoritative": false,
+               "merchant_id": null, "merchant_name": null,
+               "merchant_name_is_authoritative": false})
     );
 }
 

@@ -97,6 +97,55 @@ function Harness({ data = dataset }: { data?: TestDataset }) {
   );
 }
 
+it("shows_merchant_name_and_falls_back_to_merchant_id", async () => {
+  const room = dataset.meta.rooms[0]!;
+  const withMerchant = (extra: Partial<(typeof dataset.meta.rooms)[number]>) => ({
+    ...dataset,
+    meta: {
+      ...dataset.meta,
+      rooms: [{ ...room, alias: "真实商家群", alias_is_authoritative: true, ...extra }],
+      alias_is_authoritative: false,
+    },
+  });
+  const show = async (data: TestDataset) => {
+    const view = render(
+      <MemoryRouter initialEntries={[`/rooms?room=${room.roomid}`]}>
+        <Providers>
+          <Workbench>
+            <Harness data={data} />
+          </Workbench>
+        </Providers>
+      </MemoryRouter>,
+    );
+    await settle(view);
+    return view;
+  };
+
+  // ① 名册给出了店铺名 —— 群名下面挂商家名。
+  const resolved = await show(
+    withMerchant({
+      merchant_id: "42",
+      merchant_name: "甲商家",
+      merchant_name_is_authoritative: true,
+    }),
+  );
+  expect(resolved.container.querySelector(".ra-room-merchant")).toHaveTextContent("甲商家");
+  resolved.unmount();
+
+  // ② 关联了商家但名册查不到 —— 回落显示商家 ID，**不是空白**。
+  const unresolved = await show(
+    withMerchant({ merchant_id: "42", merchant_name: null, merchant_name_is_authoritative: false }),
+  );
+  expect(unresolved.container.querySelector(".ra-room-merchant")).toHaveTextContent("42");
+  unresolved.unmount();
+
+  // ③ 压根没关联商家 —— 那一块整个不渲染，不出现空白或 undefined。
+  const none = await show(withMerchant({ merchant_id: null, merchant_name: null }));
+  expect(none.container.querySelector(".ra-room-merchant")).toBeNull();
+  expect(none.container).not.toHaveTextContent("undefined");
+  none.unmount();
+});
+
 it("shows_authoritative_room_name_without_placeholder_badge", async () => {
   const room = dataset.meta.rooms[0]!;
   const data: TestDataset = {

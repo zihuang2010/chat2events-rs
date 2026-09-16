@@ -1,0 +1,31 @@
+config.toml
+  s_04bf1954e0bb9e::t_08faebe8f45bec 213
+src/web/roster.rs
+  s_04bf1954e0bb9e::t_292bc041197f32 1277-1297
+  s_04bf1954e0bb9e::t_776abfbe4f54a7 627-632,679-685
+docs/deploy-webui.md
+  s_04bf1954e0bb9e::t_08faebe8f45bec 103-115,307-308
+src/web/config.rs
+  s_04bf1954e0bb9e::t_08faebe8f45bec 66-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "50d0b034d78964ace86796089cb0a3045d58dcbf",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_04bf1954e0bb9e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "35842c7f-6d01-43fc-9568-64babb3a7257",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

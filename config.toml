@@ -202,3 +202,32 @@ max_rows = 20000
 # 而它还占着一个 concurrency 名额。此前是 30 秒，那基本等于没有超时。
 # 真正的体检在 budget.rs 的 SLOW_REQUEST（800ms 打 warn），两者分工不同。
 query_timeout_secs = 10
+
+# 外部名册（只读工作台专用；跑批不读这一节）—— 商家名称与客服姓名的来源。
+# 这两份信息不在本项目库里，属于其他业务域，服务地址由 Nacos 管理、不是固定域名。
+# ⚠️ **名字是展示，不是事实，也不是维度**：不进指标、不进聚合键、不落库，
+#    取不到就回落显示 ID。理由内联在 src/web/roster.rs 的模块注释里。
+# ⚠️ 全部必填，代码里没有默认值 —— 跟本文件其余部分同一个规矩。
+[roster]
+# Nacos 服务端地址。只要 scheme://host:port，**不带 /nacos 路径**（代码自己拼 v1 端点）。
+# 账号密码在 secrets.toml 的 [roster] 节。
+nacos = "http://127.0.0.1:8848"
+
+# 命名空间 ID 与分组名。**即使用的就是 Nacos 的默认值也要显式写出来** ——
+# 写进代码当默认值的话，配错了不会在启动时喊，只会表现成「解析不到实例」。
+# 默认命名空间的 ID 是空串，默认分组名是 DEFAULT_GROUP。
+namespace = "public"
+group_name = "DEFAULT_GROUP"
+
+# 商家域与员工域的服务名。写错即**启动失败**，错误信息带上服务名。
+merchant_service = "merchant-service"
+employee_service = "employee-service"
+
+# 名册（ID → 名字）的整体存活时间。到期整张表清空重查，不做逐条过期 ——
+# 名册规模很小（客服二十余人、商家数百），逐条过期要多存 N 个时间戳换不来东西。
+# 300 秒 = 商家改名后最坏 5 分钟在页面上看到。
+ttl_secs = 300
+
+# Nacos 与两个业务服务共用的 HTTP 超时。这是**内网调用**，秒级即可 ——
+# 给大了只会让上游卡住时把 web.query_timeout_secs 的预算一起耗掉。
+timeout_secs = 3

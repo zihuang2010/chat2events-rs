@@ -2,7 +2,12 @@
 //!
 //! ⚠️ 这里曾经写着「与 ingest 原文读取」—— `web/` **零 `use crate::stage::ingest`**。
 //! 原文下钻改读 `b_merchant_group_event.source_messages` 之后（`ingest` 的
-//! `read_by_ids` 随之删掉），只读工作台只依赖 MySQL 一个东西。
+//! `read_by_ids` 随之删掉），只读工作台不碰文件系统。
+//!
+//! ⚠️ 「只从 MySQL 取数」自 `roster.rs` 起**收紧为**：**事实与指标**只从 MySQL 取数；
+//! **展示别名**（客服姓名 / 商家名称）可以取外部名册，**且必须能回落显示 ID**。
+//! 那条约束当初防的是「工作台绕过 MySQL 自己算指标」，而别名不进任何指标、
+//! 不进任何聚合键、不落库 —— 完整理由在 `roster.rs` 的模块注释里。
 //!
 //! 跑批不知道它存在 —— 它只从 MySQL 和 ① 的端口取数，独立进程启动（`src/bin/webui.rs`）。
 //!
@@ -18,6 +23,7 @@
 //!   cache.rs   白天的响应缓存：库里的「数据戳」一变整个作废，戳太新（跑批在写）不存
 //!   scope.rs   SQL 片段与绑定值成对产出 —— 「第 n 个 `?` 配第 n 个绑定」由构造保证
 //!   query.rs   一致快照 · meta · 日期区间 · event 的 SELECT —— 只读 SQL 全在这里
+//!   roster.rs  外部名册：Nacos 服务发现 —— 唯一一处出站 HTTP，**只取展示别名**
 //! ```
 
 mod budget;
@@ -25,6 +31,7 @@ mod cache;
 pub mod config;
 mod params;
 mod query;
+pub mod roster;
 mod scope;
 mod serve;
 mod state;

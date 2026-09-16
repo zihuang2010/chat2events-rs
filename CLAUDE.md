@@ -3,8 +3,10 @@
 从企业微信会话存档的群聊日志中抽取**结构化业务事件**，产出群 / 客服维度指标，落库 MySQL。
 
 不是聊天机器人，不是问答系统。**T+2 跑批，跳过当天和昨天，跑完即退出，没有常驻服务。**
-**webUI 是唯一旁路，且只读** —— **只从 MySQL 取数**（原文下钻读 `source_messages` 展示列，
-不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
+**webUI 是唯一旁路，且只读** —— **事实与指标只从 MySQL 取数**（原文下钻读 `source_messages`
+展示列，不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
+唯一的出站 HTTP 是 `web/roster.rs`：**展示别名**（客服姓名 / 商家名称）走 Nacos 找到的内部
+服务，**取不到必须回落显示 ID** —— 别名不进指标、不进聚合键、不落库，理由在那个文件的顶注。
 
 ## 七个阶段
 
@@ -116,12 +118,12 @@
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（2163 节点 / 10208 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已建索引（2201 节点 / 10292 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。
 **字面量 / 配置 / 非代码**还是 `search_code` 或 Grep —— 图不装这些。
 
 - **图里没有 ≠ 代码里没有。** 下「没有任何地方调用它」这种结论之前先 `check_index_coverage(scopes=["."])`。
-  ⚠️ `schema.sql` 是 `parse_partial`（DDL 里的中文注释噎住了解析器），**建表相关的事直接读文件**，别信图。
+  ⚠️ `schema.sql` 与 `webui/src/test/mock/aggregate.ts` 是 `parse_partial`（前者是 DDL 里的中文注释噎住了解析器），**建表和这份 mock 相关的事直接读文件**，别信图。
 - 搬模块 / 改文件名之后跑一次 `index_repository(mode="full")`；日常小改由 watch 自动刷新。

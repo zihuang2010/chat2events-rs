@@ -407,7 +407,8 @@ ALTER TABLE b_merchant_group_run_failure
 将仓库 `config.toml` 的 `[web]` 节加入只读配置：请求并发、原文扫描并发、结果字节、行数与查询超时均必填。
 超限响应为 413，名额耗尽为 503，查询超时为 504，均不返回残缺统计。原文扫描开始后不因 HTTP 取消而提前释放扫描名额。
 只读连接池同步设置 MySQL `max_execution_time`，数据库端也会终止超时 SELECT；业务时区仍固定为 +08:00。
-只读配置只需 `[mysql]`、`[log]`、`[web]`；只读 `secrets.toml` 只需 `[mysql].url`，无需模型或 OSS 凭据。
+只读配置只需 `[mysql]`、`[log]`、`[web]`、`[roster]`；只读 `secrets.toml` 只需 `[mysql].url` 与 `[roster]` 的 Nacos 账号密码，无需模型或 OSS 凭据。
+`[roster]` 是外部名册（Nacos 服务发现）那一节，逐条含义见 `docs/deploy-webui.md` 的「名册配置」。
 **不需要 `[ingest].raw_root`** —— 原文下钻读 `b_merchant_group_event.source_messages`，只读工作台一个文件都不读。
 
 当前硬上限：每个下载增量 64 MiB；单群会话与单群事件的字段预算各 32 MiB；

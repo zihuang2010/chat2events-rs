@@ -39,7 +39,8 @@
 # 二进制（Release 的 chat2events-rs-linux-x86_64.tar.gz 里）
 install -m 755 webui /opt/chat2events/webui
 
-# 配置。跟跑批共用同一份目录，只读取 [mysql] / [log] / [web] 三节
+# 配置。跟跑批共用同一份目录，只读取 [mysql] / [log] / [web] / [roster] 四节
+# （[roster] 是外部名册：Nacos 服务发现的地址、两个服务名与超时，见下面「名册配置」）
 ls /etc/chat2events/          # config.toml + secrets.toml（0600，不对就直接崩）
 
 # 前端静态站。压缩包根上就是 index.html 和 assets/，不套一层 dist/
@@ -58,13 +59,45 @@ ls /srv/chat2events-webui/    # 期望看到 index.html 和 assets/
 SELECT DISTINCT corpid FROM b_merchant_group_event;
 ```
 
-### 只读账号
+### 名册配置（`config.toml` 的 `[roster]` 节）
+
+工作台要把客服的 ID 显示成姓名、把群背后的 `merchant_id` 显示成商家名称。这两份信息
+不在本项目库里，属于其他业务域，服务地址由 Nacos 管理。
+
+⚠️ **全部必填，代码里没有默认值** —— 少一个键进程起不来（跟跑批那份配置一个规矩）。
+
+| 键 | 含义 | 示例 |
+|---|---|---|
+| `nacos` | Nacos 服务端地址。只要 `scheme://host:port`，**不带 `/nacos` 路径**（v1 端点由代码自己拼），不带凭证、查询串 | `http://10.0.0.9:8848` |
+| `namespace` | 命名空间 ID。**用的就是 Nacos 默认值也要写出来**（默认命名空间的 ID 是空串） | `public` |
+| `group_name` | 分组名。同上，默认值也要显式写 | `DEFAULT_GROUP` |
+| `merchant_service` | 商家域的服务名。写错即**启动失败**，错误信息带上这个名字 | `merchant-service` |
+| `employee_service` | 员工域的服务名。同上 | `employee-service` |
+| `ttl_secs` | 名册（ID → 名字）整体存活多久，到期整张表清空重查。它决定「上游改名后多久在页面上看到」 | `300` |
+| `timeout_secs` | Nacos 与两个业务服务共用的 HTTP 超时。内网调用，秒级即可 —— 给大了只会在上游卡住时把 `web.query_timeout_secs` 的预算一起耗掉 | `3` |
+
+名字**只是展示**：不进任何指标、不进任何聚合键、不落库。上游查不到就回落显示 ID，
+页面照常可用 —— 所以这一节配错了不会算错任何一个数字，但会让进程起不来。
+
+### 只读账号与 Nacos 凭据
 
 生产应给工作台配**独立的 MySQL 只读账号**，写进 `/etc/chat2events/secrets.toml` 的
 `[mysql].url`。它不构造 LLM / OSS 客户端，不写表，不需要 `ingest.raw_root`。
 
+Nacos 的账号密码在**同一个文件**的 `[roster]` 节，走**同一份 `0600` 权限检查**
+（不对就直接崩，跟数据库凭据一个待遇）：
+
+```toml
+[mysql]
+url = "mysql://readonly:密码@host:3306/dbname"
+
+[roster]
+username = "nacos"
+password = "改成真的"
+```
+
 ⚠️ 但这份 `secrets.toml` 是和跑批共用的同一个文件，里面还有 OSS 与模型密钥。
-真要把权限切干净，就给工作台单独一个配置目录（只放它要的三节 + 只读账号），
+真要把权限切干净，就给工作台单独一个配置目录（只放它要的四节 + 只读账号 + Nacos 凭据），
 启动时指过去。
 
 ## 二、启动后端
@@ -89,24 +122,61 @@ WantedBy=multi-user.target
 
 ```bash
 systemctl enable --now chat2events-webui
-journalctl -u chat2events-webui -f     # 期望第一行：只读工作台启动 address=127.0.0.1:8787
+journalctl -u chat2events-webui -f
+# 期望三行（顺序固定）：
+#   Nacos 解析到健康实例 service=merchant-service healthy=2 instances=...
+#   Nacos 解析到健康实例 service=employee-service healthy=3 instances=...
+#   只读工作台启动 address=127.0.0.1:8787
 ```
+
+⚠️ 那两行 `Nacos 解析到健康实例` 是**「名册配对了」的唯一正向信号**，见「五、验证」第 ⓪ 条。
+它们只在实例列表**发生变化**时打印（启动那次必打），之后每十秒一轮的刷新不刷屏。
 
 停止用 SIGINT（`systemctl stop` 默认就是），会等在飞请求结束再退。
 
 ⚠️ 监听地址**保持 `127.0.0.1`**。写成 `0.0.0.0:8787` 就等于把不设防的只读接口
 直接挂到公网上 —— 它没有任何鉴权，谁都能把整个库的事件摘要拉走。
 
-## 三、配 nginx
+## 三、配访问口令
+
+接口没有任何鉴权，端口又在公网上，所以 nginx 这层必须挡一道。
+口令直接内联在 `webui/deploy/nginx.conf` 的 `map` 里，**不用维护 htpasswd 文件**。
+
+```bash
+printf 'board:你的密码' | base64
+# 把算出来的串填进 nginx.conf 的 $auth_by_pass，替换 X19SRVBMQUNFX01FX18=
+```
+
+⚠️ **必须用 `printf`，不能用 `echo`** —— `echo` 多补一个换行，算出来的 base64 对不上，
+现象是口令怎么输都错，而配置看着完全正常。
+
+加第二个人就在同一个 map 里加一行，一人一行。
+
+原理：`auth_basic` 接受变量 —— 口令对上时它变成 `off`，认证整个跳过；对不上就去查
+`/dev/null`（空文件，必然失败），返回 401 带 `WWW-Authenticate`，浏览器正常弹登录框。
+本机（127.0.0.1）免密，方便下面的验证命令和探活。
+
+### ⚠️ 改了口令的那份配置不能提交回 git
+
+`map` 里是 base64，**不是哈希，等于明文**。仓库里那份留的是无效占位符
+（谁都进不来，失败朝安全的方向倒），真口令只改目标机上的
+`/etc/nginx/conf.d/chat2events-webui.conf`，两边故意不同步。
+
+⚠️ 还有一层：HTTP 下 basic auth 的口令**明文过网**。这道闸挡的是
+「扫到端口的人随手打开」，不是能抓包的对手。真要认真防就得上 HTTPS（见文末），
+或者用安全组白名单。
+
+## 四、配 nginx
 
 ```bash
 cp webui/deploy/nginx.conf /etc/nginx/conf.d/chat2events-webui.conf
+# 在目标机上改这两处：root 的实际路径、$auth_by_pass 的口令
+vi /etc/nginx/conf.d/chat2events-webui.conf
 nginx -t && systemctl reload nginx
 ```
 
-那份配置里四条注释都是踩过的坑，别删。最容易中招的是 `proxy_pass` 末尾的斜杠：
-后端路由自带 `/api` 前缀（`/api/meta`、`/api/summary`…），写成
-`proxy_pass http://127.0.0.1:8787/;` 会把前缀剥掉，全部 404。
+`nginx -t` 报 `"map" directive is not allowed here` = map 被塞进 server 块里了，
+它必须在 server 外面（conf.d 文件整个被 http 块 include，写在最外层就对）。
 
 ### SELinux（CentOS / RHEL 系）
 
@@ -115,6 +185,30 @@ nginx -t && systemctl reload nginx
 setsebool -P httpd_can_network_connect 1
 semanage port -a -t http_port_t -p tcp 30001 || semanage port -m -t http_port_t -p tcp 30001
 ```
+
+### 静态目录的路径权限
+
+nginx worker 要能**穿过 root 路径上的每一级目录**（每级都要有 `x`）：
+
+```bash
+namei -om /mnt/rustserver/prod/chat2events/webui/index.html
+```
+
+输出里第一个第三组权限没有 `x` 的那一级（`drwxr-x---` 这种）就是卡点。
+两种修法，挑一个：
+
+```bash
+# A. 把 nginx 用户加进属主组（目录组权限已有 x 时最干净）
+NGINX_USER=$(ps -o user= -C nginx --sort=start_time | tail -1)
+usermod -aG spug-deployer "$NGINX_USER"
+systemctl restart nginx      # ⚠️ 必须 restart，reload 不重读补充组
+
+# B. 逐级补搜索权限（o+x 只给「穿过」，不给列目录内容）
+chmod o+x /mnt /mnt/rustserver /mnt/rustserver/prod /mnt/rustserver/prod/chat2events
+```
+
+⚠️ A 方案那个 `restart` 不能省。worker 的附加组在 fork 时就固定了，`reload` 之后
+会看到**一模一样的 403**，然后以为加组没生效。
 
 ### 防火墙与安全组
 
@@ -125,11 +219,16 @@ firewall-cmd --permanent --add-port=30001/tcp && firewall-cmd --reload
 阿里云还要在**安全组**里放行 30001/tcp 入方向 —— 这一步在控制台做，
 机器上查不出来。8787 **不要**放行。
 
-## 四、验证
+## 五、验证
 
 按顺序，每一步都要过：
 
 ```bash
+# ⓪ 名册配对了：两个服务各解析到几个健康实例（这是唯一的正向信号，curl 查不出来）
+journalctl -u chat2events-webui | grep 'Nacos 解析到健康实例'
+# 期望：两行，service= 分别是 [roster] 里那两个服务名，healthy= 都 ≥ 1
+# 一行都没有 = 进程根本没起来（它启动期解析不到实例就退出），看下面的故障对照表
+
 # ① 后端自己活着（本机直连，绕开 nginx）
 curl -s http://127.0.0.1:8787/api/meta | head -c 200
 # 期望：JSON。409「该企业尚无已落库的群日或事件」= corpid 填错了
@@ -154,16 +253,21 @@ curl -s -H 'Accept-Encoding: gzip' -D- -o /dev/null http://127.0.0.1:30001/api/m
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:30001/api/meta
 # 期望：403
 
-# ⑦ 外网真能打开
+# ⑦ 外网要口令（本机免密，所以必须从外面测这条）
 curl -sI http://39.98.175.5:30001/ | head -1
-# 不通就是安全组没放行
+# 期望：401。返回 200 = auth_basic 没生效；连不上 = 安全组没放行
+
+# ⑧ 带上口令能进
+curl -sI -u board:<密码> http://39.98.175.5:30001/ | head -1
+# 期望：200
 ```
 
-浏览器打开 `http://39.98.175.5:30001/`，页面应直接出数据。
+浏览器打开 `http://39.98.175.5:30001/`，输入口令后应直接出数据。
+前端的 `/api` 请求同源，浏览器会自动带上同一份凭据，不用额外处理。
 **前端只用真实接口，没有 mock 兜底** —— 接口不可用时页面直接报错，
 错误文案会告诉你是哪一类失败（超时 / 网络不可达 / HTTP 状态 / 数据不符合约定）。
 
-## 五、发版更新前端
+## 六、发版更新前端
 
 ```bash
 tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
@@ -180,7 +284,13 @@ tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 | 页面出来了，面板全报「接口返回 404」 | `proxy_pass` 末尾多了斜杠，`/api` 前缀被剥掉 |
 | 报「接口返回的数据不符合约定」，detail 提到检查反向代理 | `/api` 被 `location /` 的 try_files 接走，返回了 index.html |
 | 502 | 后端没起，或 SELinux 拦了 nginx 出站连接 |
+| 一直弹口令框，输对了也进不去 | base64 是用 `echo` 算的（多了换行），重新用 `printf` 算 |
+| 外网不弹口令直接进 | `auth_basic` 写进了某个 location 而不是 server 级 |
 | 409「该企业尚无已落库的群日或事件」 | `<corpid>` 填错 |
+| 起不来，日志 `Nacos 登录被拒（HTTP 403）` 或 `Nacos 登录请求失败` | 前者是 `secrets.toml` 的 `[roster]` 账号密码错、或服务端压根没开鉴权；后者是 `roster.nacos` 地址不可达。先 `curl -d 'username=…&password=…' <nacos>/nacos/v1/auth/login` 手验一遍 |
+| 起不来，日志 `Nacos 查不到服务 \`X\` 的健康实例` 且 X 是配的服务名 | 服务名或 `roster.namespace` 写错。在 Nacos 控制台按**命名空间**筛一遍服务列表，注意默认命名空间的 ID 是空串不是 `public` |
+| 起不来，同上但服务名确认无误 | 上游根本没注册上来，或 `roster.group_name` 写错（分组不对时 Nacos 返回的是空列表，不是报错）。控制台上看那个服务的实例数与所属分组 |
+| 跑着跑着日志出现 `Nacos 刷新失败，沿用上一次的实例列表` | Nacos 侧抖动。**进程不会退，页面照常**（手上那份实例列表继续用，每 10 秒重试）。持续刷就去查 Nacos 自己 |
 | 刷新子页面 404 | `try_files` 没配 |
 | 多人同时用就有面板 503 | `web.concurrency` 不够：一次开页并发 7 个请求，名额要 ≥ 在线人数 × 7 |
 | 首屏慢、`journalctl` 里一堆 SLOW_REQUEST | 见 `docs/deploy.md`「只读工作台响应缓存」的索引升级 |
@@ -200,8 +310,23 @@ nginx 侧同时要改三处：`location /board/`、`try_files` 回落到 `/board
 
 当前用独立端口 30001 就是为了避开这一整套麻烦。
 
+## 想换成 HTTPS
+
+basic auth 只解决「谁能进」，不解决「路上谁能看」。有域名和证书之后：
+`listen 30001 ssl;` ＋ `ssl_certificate` / `ssl_certificate_key` 两行，
+其余配置一个字不用改（前端走同源相对路径，协议换了自己跟着换）。
+
+没有域名只有 IP 的话，公网 CA 签不了 IP 证书，只能自签 —— 浏览器每次红警告。
+那种情况下更实际的选择是**安全组白名单**：把 30001 的入方向限制到办公出口 IP，
+比任何口令都干净，且零维护。两者可以叠加。
+
 ---
 
+⚠️ **真实 Nacos 与真实业务服务的联调是手动步骤。** 仓库里那几条名册测试打的是本地假
+HTTP 服务端，只验协议形状（登录请求、令牌作查询参数、健康实例被选中、令牌过期重登），
+**通过不能代替真实环境验收** —— 服务名对不对、命名空间里有没有那个服务、上游返回体
+长什么样，都只有在目标机上照着上面第 ⓪ 条跑一遍才知道。
+
 ⚠️ 这份文档的步骤**没有在 39.98.175.5 上实际跑过** —— 命令是从
-`src/bin/webui.rs`、`src/web/serve.rs`、`webui/src/api/client.ts` 和
+`src/bin/webui.rs`、`src/web/serve.rs`、`src/web/roster.rs`、`webui/src/api/client.ts` 和
 `webui/deploy/nginx.conf` 读出来的。第一次照着做时把踩到的坑补回来。

@@ -69,15 +69,19 @@ SELECT DISTINCT corpid FROM b_merchant_group_event;
 | 键 | 含义 | 示例 |
 |---|---|---|
 | `nacos` | Nacos 服务端地址。只要 `scheme://host:port`，**不带 `/nacos` 路径**（v1 端点由代码自己拼），不带凭证、查询串 | `http://10.0.0.9:8848` |
-| `namespace` | 命名空间 ID。**用的就是 Nacos 默认值也要写出来**（默认命名空间的 ID 是空串） | `public` |
-| `group_name` | 分组名。同上，默认值也要显式写 | `DEFAULT_GROUP` |
-| `merchant_service` | 商家域的服务名。写错即**启动失败**，错误信息带上这个名字 | `merchant-service` |
-| `employee_service` | 员工域的服务名。同上 | `employee-service` |
+| `namespace` | 命名空间 ID。**用的就是 Nacos 默认值也要写出来**（默认命名空间的 ID 是空串）。⚠️ **按环境走，别把 dev 的照搬到 test/pre/prod** | `integration-dev` |
+| `group_name` | 分组名。同上，默认值也要显式写 | `INTEGRATION_GROUP` |
+| `merchant_service` | 商家域的服务名。写错即**启动失败**，错误信息带上这个名字。⚠️ 仓库里这一行仍是**占位符**，商家名称那张票还没做 | `merchant-service` |
+| `employee_service` | 员工域 = **账号域 `account-app`**（`spring.application.name`）。工作台打它的 `POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds` | `account-app` |
 | `ttl_secs` | 名册（ID → 名字）整体存活多久，到期整张表清空重查。它决定「上游改名后多久在页面上看到」 | `300` |
 | `timeout_secs` | Nacos 与两个业务服务共用的 HTTP 超时。内网调用，秒级即可 —— 给大了只会在上游卡住时把 `web.query_timeout_secs` 的预算一起耗掉 | `3` |
 
 名字**只是展示**：不进任何指标、不进任何聚合键、不落库。上游查不到就回落显示 ID，
 页面照常可用 —— 所以这一节配错了不会算错任何一个数字，但会让进程起不来。
+
+⚠️ **传给账号域的 `corpId` 就是启动参数里那个 `<corpid>`**（企微主体 corpId），
+不是另配一个。查询走 v2 接口正是因为它收 `corpId`；v1 不收、服务端内部兜底成默认主体，
+多主体下会**静默漏数据**，表现成「这些人查无此人」。
 
 ### 只读账号与 Nacos 凭据
 

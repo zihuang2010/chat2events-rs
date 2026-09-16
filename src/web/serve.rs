@@ -113,7 +113,7 @@ async fn filters(
         .iter()
         .flat_map(|(_, account)| account.clone())
         .collect();
-    let names = state.roster.employees(&wanted).await;
+    let names = state.roster.employees(&state.corp, &wanted).await;
     Ok((
         rooms,
         agents

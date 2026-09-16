@@ -162,6 +162,26 @@ struct Names {
     cooldown_until: Instant,
 }
 
+/// 账号域（`account-app`）的「按企业主体批量查企微员工详情」v2。
+///
+/// ⚠️ **必须用 v2，不能用 v1**（`/rpc/v1/.../getWechatEmpInfoMapByUserIds`）：
+/// v1 不收 `corpId`，服务端内部兜底成默认主体 —— 多主体场景下会**静默漏数据**，
+/// 表现成「这些人查无此人」，而那正是会被负缓存记住的那一档。
+const EMPLOYEE_PATH: &str = "/rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds";
+
+/// 一次请求最多几个 `userId` —— 服务端 `@Size(max = 100)`，超了整批被校验拦下，
+/// **分批是调用方的责任**。
+const EMPLOYEE_BATCH: usize = 100;
+
+/// 统一包装 `Result` 的成功码。**是 1，不是 0 也不是 200**（`ResultEnum.SUCCESS`）。
+///
+/// ⚠️ **必须同时要求 `code == 1` 和 `data` 非空**，两道一起才闭环：
+/// 上游「失败时 `data` 是 null 还是 `{}`」没有权威答案（`Result` 来自外部依赖
+/// `com.jdd.integration:jdd-common-resultvo`，源码不在手上）。而空 map 是**合法的成功
+/// 响应**（查不到的 userId 不放进 map），所以万一失败时 `data` 也是 `{}`，只看 `data`
+/// 就会把一批人当成「查无此人」负缓存住 —— 那是失败不该有的待遇。`code` 这一道先拦住它。
+const EMPLOYEE_OK: i64 = 1;
+
 /// 上游调不通之后冷却多久再试。
 ///
 /// ⚠️ **它挡的是连接池，不是上游。** 失败**故意不记进负缓存**（那会把所有人钉住
@@ -175,10 +195,11 @@ struct Names {
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(10);
 
 enum Upstream {
-    /// 生产：Nacos 找到实例，再打员工服务的批量查询。
+    /// 生产：Nacos 找到实例，再打账号域的批量查询。
     Service {
         discovery: Discovery,
         service: String,
+        http: reqwest::Client,
     },
     /// 预填充模式的测试替身 —— **上游的假答案，不是缓存的初始内容**。
     /// 于是「按需填充 → 映射增长」这条路在测试里照样完整走一遍，
@@ -195,6 +216,12 @@ impl Roster {
             Upstream::Service {
                 discovery,
                 service: cfg.employee_service.clone(),
+                // ⚠️ 超时是**每一批**的，不是整次补齐的：100 个一批，
+                // 补 250 个人就是 3 批、最坏 3 × timeout_secs。名册规模本来就小
+                // （实测客服二十余人 = 1 批），真长到要分很多批时得在这里加总预算。
+                http: reqwest::Client::builder()
+                    .timeout(Duration::from_secs(cfg.timeout_secs))
+                    .build()?,
             },
             Duration::from_secs(cfg.ttl_secs),
         )))
@@ -219,7 +246,11 @@ impl Roster {
     /// **返回值里只有解析出姓名的那些** —— 「查无此人」和「调不通」都不在里面，
     /// 调用方一律回落显示账号或 ID。两者的区别只落在日志上（见下面的 `warn`），
     /// 不落在返回值上：页面对它们的处置是同一个。
-    pub async fn employees(&self, wanted: &BTreeSet<String>) -> HashMap<String, String> {
+    pub async fn employees(
+        &self,
+        corp: &str,
+        wanted: &BTreeSet<String>,
+    ) -> HashMap<String, String> {
         let epoch = self.generation();
         let mut names = self.names.lock().await;
         // TTL 到期**整体清空**。判据是「纪元变了」而不是「距上次建表过了多久」——
@@ -236,7 +267,7 @@ impl Roster {
         // 冷却期内直接回落：不发请求、不打日志（那条 warn 刚打过）。见 `FAILURE_COOLDOWN`。
         if !missing.is_empty() && Instant::now() >= names.cooldown_until {
             self.lookups.fetch_add(1, Ordering::Relaxed);
-            match self.upstream.employees(&missing).await {
+            match self.upstream.employees(corp, &missing).await {
                 // 上游答了：找到的记姓名，没答的记 `None` —— 那是**数据常态**，不告警。
                 Ok(answered) => names.employees.extend(answered),
                 // Nacos 不可用 / 服务调不通 —— **可修的运维故障，要 `warn`**，
@@ -294,26 +325,67 @@ impl Roster {
 impl Upstream {
     /// 一次批量查询。返回的每个 ID 都有答案：`Some(姓名)` 或 **`None` = 上游说查无此人**。
     /// 调不通一律走 `Err`，由调用方决定不进负缓存。
-    async fn employees(&self, ids: &[String]) -> crate::Result<HashMap<String, Option<String>>> {
+    async fn employees(
+        &self,
+        corp: &str,
+        ids: &[String],
+    ) -> crate::Result<HashMap<String, Option<String>>> {
         match self {
-            Self::Service { discovery, service } => {
-                let instance = discovery
-                    .pick(service)
-                    .ok_or_else(|| format!("Nacos 尚无服务 `{service}` 的健康实例"))?;
-                // ⚠️ **这一层还没接**：员工服务批量查询的路径、请求体与响应体形状
-                // 未定（上游不在本仓库，猜一份就是白写一遍，连协议测试都测的是我们
-                // 自己的发明）。拿到真实接口之后只补这里，`Roster` 那一整套
-                // 缓存 / 负缓存 / TTL / 代数 / 回落已经可跑可测。
-                //
-                // **返回 `Err` 不是 `todo!()`**：这是要随二进制上生产的代码，
-                // `todo!()` 会在请求处理里 panic；`Err` 走的是既有的「调不通」那一路
-                // —— warn 一条、回落显示账号或 ID，页面和今天一模一样。
-                Err(format!(
-                    "员工服务批量查询尚未接入：{} 个 ID 待解析，实例已解析到 {instance}，\
-                     缺的只是请求与响应体的形状",
-                    ids.len()
-                )
-                .into())
+            Self::Service {
+                discovery,
+                service,
+                http,
+            } => {
+                let mut found = HashMap::new();
+                for batch in ids.chunks(EMPLOYEE_BATCH) {
+                    // 每一批各选一次实例：实例列表按 `cacheMillis` 在后台刷新，
+                    // 用最新那份没坏处，也顺手把负载摊开。
+                    let instance = discovery
+                        .pick(service)
+                        .ok_or_else(|| format!("Nacos 尚无服务 `{service}` 的健康实例"))?;
+                    let request = serde_json::json!({"corpId": corp, "userIdSet": batch});
+                    let response = http
+                        .post(format!("{instance}{EMPLOYEE_PATH}"))
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(serde_json::to_string(&request)?)
+                        .send()
+                        .await
+                        .map_err(|e| format!("员工服务 `{service}` 调用失败：{e}"))?;
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    if !status.is_success() {
+                        return Err(format!(
+                            "员工服务 `{service}` 返回 HTTP {status}（{instance}）"
+                        )
+                        .into());
+                    }
+                    let answer: EmployeeBatch = serde_json::from_str(&body)
+                        .map_err(|e| format!("员工服务 `{service}` 的应答无法解析：{e}"))?;
+                    // ⚠️ **`code != 1` 或 `data` 缺席都当「调不通」**，绝不当成
+                    // 「这一批全部查无此人」—— 后者会把他们负缓存住一整个 TTL，
+                    // 而那是**失败**不该有的待遇。空 map 才是合法的「全都没查到」
+                    // （服务端对查不到的 userId 是不放进 map，不是报错）。判据见 [`EMPLOYEE_OK`]。
+                    let employees = answer
+                        .data
+                        .filter(|_| answer.code == Some(EMPLOYEE_OK))
+                        .ok_or_else(|| {
+                            format!(
+                                "员工服务 `{service}` 应答异常：code={:?}（成功是 {EMPLOYEE_OK}）\
+                                 message={:?}",
+                                answer.code, answer.message
+                            )
+                        })?;
+                    for id in batch {
+                        // map 里缺 key = 员工不存在或已删除。空名字跟没有名字一样没用，
+                        // 一并当查不到，回落显示账号。
+                        let name = employees
+                            .get(id)
+                            .and_then(|employee| employee.name.clone())
+                            .filter(|name| !name.trim().is_empty());
+                        found.insert(id.clone(), name);
+                    }
+                }
+                Ok(found)
             }
             #[cfg(test)]
             Self::Canned(table) => Ok(ids
@@ -322,6 +394,27 @@ impl Upstream {
                 .collect()),
         }
     }
+}
+
+/// `Result<Map<String, WorkWechatEmpCorpInfoRespDTO>>` 的外层包装。
+///
+/// 成功判据是 **`code == 1` 且 `data` 非空**，理由见 [`EMPLOYEE_OK`]。
+#[derive(Deserialize)]
+struct EmployeeBatch {
+    code: Option<i64>,
+    message: Option<String>,
+    /// key = `userId`（本仓库的 `officialUserId`）。**查不到的 userId 根本不出现**。
+    data: Option<HashMap<String, Employee>>,
+}
+
+/// 只取 `name` 一个字段。
+///
+/// 上游那个 DTO 有二十来个字段（`position` / `mainDepartment` / `deptIds` / `city` …），
+/// **端口上每多一个死字段，就是向未来每一个适配器收一次税**（`CONTEXT.md` 的领域契约
+/// 同一条规矩）。部门归属是另一张票的事，而那张票还卡在「分组」的权威定义上。
+#[derive(Deserialize)]
+struct Employee {
+    name: Option<String>,
 }
 
 /// Nacos v1 OpenAPI 客户端 —— 登录拿令牌，按服务名查健康实例。
@@ -522,6 +615,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    const CORP: &str = "ww0123456789abcdef";
     const MERCHANT: &str = "merchant-service";
     const EMPLOYEE: &str = "employee-service";
     const LOGIN: &str = "/nacos/v1/auth/login";
@@ -708,13 +802,13 @@ mod tests {
     #[tokio::test]
     async fn a_name_is_resolved_once_and_a_miss_is_remembered() {
         let roster = Roster::canned(&[("zhang.san", "张三")], LONG);
-        let first = roster.employees(&ids(&["zhang.san", "ghost"])).await;
+        let first = roster.employees(CORP, &ids(&["zhang.san", "ghost"])).await;
         assert_eq!(first.get("zhang.san").unwrap(), "张三");
         assert!(!first.contains_key("ghost"), "查无此人不该出现在结果里");
         assert_eq!(roster.lookups(), 1);
 
         // 第二次：`ghost` 已经在负缓存里，**不许再发起一次查询**。
-        let again = roster.employees(&ids(&["zhang.san", "ghost"])).await;
+        let again = roster.employees(CORP, &ids(&["zhang.san", "ghost"])).await;
         assert_eq!(again.get("zhang.san").unwrap(), "张三");
         assert!(!again.contains_key("ghost"));
         assert_eq!(
@@ -732,10 +826,10 @@ mod tests {
     async fn the_generation_moves_only_when_the_whole_table_expires() {
         let roster = Roster::canned(&[("a", "甲"), ("b", "乙")], LONG);
         assert_eq!(roster.generation(), 0);
-        roster.employees(&ids(&["a"])).await;
+        roster.employees(CORP, &ids(&["a"])).await;
         assert_eq!(roster.generation(), 0);
         // 映射增长（多了 b）—— 代数**不得**变。
-        roster.employees(&ids(&["a", "b"])).await;
+        roster.employees(CORP, &ids(&["a", "b"])).await;
         assert_eq!(roster.generation(), 0, "按需填充让映射增长时代数不得递增");
         assert_eq!(
             roster.lookups(),
@@ -754,7 +848,7 @@ mod tests {
     async fn the_generation_advances_on_its_own_without_any_lookup() {
         let ttl = Duration::from_millis(200);
         let roster = Roster::canned(&[("a", "甲")], ttl);
-        roster.employees(&ids(&["a"])).await;
+        roster.employees(CORP, &ids(&["a"])).await;
         assert_eq!((roster.generation(), roster.lookups()), (0, 1));
 
         // 一次调用都没有，光是时间过去就该翻代数 —— 于是响应缓存的戳跟着变，
@@ -764,7 +858,7 @@ mod tests {
         assert_eq!(roster.lookups(), 1, "代数推进不该自己去查上游");
 
         // 纪元变了 ⇒ 下一次进门整表清空重查。
-        roster.employees(&ids(&["a"])).await;
+        roster.employees(CORP, &ids(&["a"])).await;
         assert_eq!(roster.lookups(), 2);
     }
 
@@ -776,7 +870,12 @@ mod tests {
     async fn a_failing_upstream_cools_down_instead_of_retrying_per_request() {
         let roster = unreachable_roster();
         for _ in 0..5 {
-            assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+            assert!(
+                roster
+                    .employees(CORP, &ids(&["zhang.san"]))
+                    .await
+                    .is_empty()
+            );
         }
         assert_eq!(roster.lookups(), 1, "冷却期内不该再打上游");
     }
@@ -786,26 +885,126 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_upstream_does_not_poison_the_negative_cache() {
         let roster = unreachable_roster();
-        assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+        assert!(
+            roster
+                .employees(CORP, &ids(&["zhang.san"]))
+                .await
+                .is_empty()
+        );
         assert_eq!(roster.lookups(), 1);
         // 冷却过去之后还会再试 —— 这证明它**没有**被记成「查无此人」。
         // （把冷却截止拨回当下，不为这一条真睡十秒。）
         roster.names.lock().await.cooldown_until = Instant::now();
-        assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+        assert!(
+            roster
+                .employees(CORP, &ids(&["zhang.san"]))
+                .await
+                .is_empty()
+        );
         assert_eq!(roster.lookups(), 2, "调不通被当成查无此人记进负缓存了");
+    }
+
+    /// 协议：账号域 v2 批量查询的请求形状、`userId → name` 的回填、
+    /// **map 里缺 key = 查无此人**（进负缓存），以及**分批**（服务端 `@Size(max=100)`）。
+    #[tokio::test]
+    async fn the_employee_batch_query_matches_the_account_app_contract() {
+        // 101 个 ID ⇒ 必须切成 100 + 1 两批，否则服务端整批拒收。
+        let wanted: Vec<String> = (0..101).map(|n| format!("user{n:03}")).collect();
+        let (base, server) = scripted(vec![
+            (
+                EMPLOYEE_PATH,
+                200,
+                json!({"code": 1, "message": "ok", "data": {
+                    "user000": {"name": "张三", "position": "客服"},
+                    // 空名字跟没名字一样没用 —— 当查不到，回落显示账号。
+                    "user001": {"name": "  "},
+                }}),
+            ),
+            (EMPLOYEE_PATH, 200, json!({"code": 1, "data": {}})),
+        ]);
+        let hosts: Arc<Hosts> = Arc::default();
+        hosts
+            .write()
+            .unwrap()
+            .insert("account-app".into(), vec![base]);
+        let roster = Arc::new(Roster::with_upstream(service_upstream(hosts), LONG));
+
+        let names = roster
+            .employees(CORP, &wanted.iter().cloned().collect())
+            .await;
+        assert_eq!(names.get("user000").unwrap(), "张三");
+        assert!(!names.contains_key("user001"), "空名字该当查不到");
+        assert_eq!(names.len(), 1);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2, "101 个 ID 必须切成两批：{requests:?}");
+        assert_eq!(
+            requests[0].0,
+            format!("POST {EMPLOYEE_PATH} HTTP/1.1"),
+            "路径必须是 v2（v1 不收 corpId，会静默兜底成默认主体）"
+        );
+        let first: Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(first["corpId"], CORP);
+        assert_eq!(first["userIdSet"].as_array().unwrap().len(), EMPLOYEE_BATCH);
+        let second: Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert_eq!(second["userIdSet"], json!(["user100"]));
+
+        // 回填过的 ID 一个都不再查 —— 查到的和「查无此人」的都算数。
+        roster
+            .employees(CORP, &wanted.iter().cloned().collect())
+            .await;
+        assert_eq!(roster.lookups(), 1, "第二轮不该再打上游");
+    }
+
+    /// `code != 1` 或 `data` 缺席 = **调不通**，不是「这一批全部查无此人」。
+    ///
+    /// 这两者混淆的代价是不对称的：当成查无此人就会把他们负缓存住一整个 TTL，
+    /// 而那是失败不该有的待遇。空 map **配 `code == 1`** 才是合法的「全都没查到」。
+    ///
+    /// 第二种形态（`code != 1` 却带着 `{}`）单独钉住：上游失败时 `data` 到底是
+    /// `null` 还是 `{}` 没有权威答案（`Result` 来自外部依赖，源码不在手上），
+    /// 所以两道判据缺一不可 —— 只看 `data` 的话，这一条会静默把人记进负缓存。
+    #[tokio::test]
+    async fn a_response_that_is_not_code_one_is_a_failure_not_a_batch_of_misses() {
+        for bad in [
+            json!({"code": 500, "message": "内部错误", "data": null}),
+            json!({"code": 500, "message": "内部错误", "data": {}}),
+        ] {
+            let (base, server) = scripted(vec![(EMPLOYEE_PATH, 200, bad.clone())]);
+            let hosts: Arc<Hosts> = Arc::default();
+            hosts
+                .write()
+                .unwrap()
+                .insert("account-app".into(), vec![base]);
+            let roster = Arc::new(Roster::with_upstream(service_upstream(hosts), LONG));
+
+            assert!(roster.employees(CORP, &ids(&["a"])).await.is_empty());
+            server.join().unwrap();
+            // 没进负缓存：冷却一过就会再试（拨回冷却，不真睡十秒）。
+            roster.names.lock().await.cooldown_until = Instant::now();
+            assert!(roster.employees(CORP, &ids(&["a"])).await.is_empty());
+            assert_eq!(roster.lookups(), 2, "{bad} 被当成查无此人记进负缓存了");
+        }
     }
 
     /// Nacos 一个健康实例都没有的名册 —— 每次查询都走「调不通」那一路。
     fn unreachable_roster() -> Arc<Roster> {
         Arc::new(Roster::with_upstream(
-            Upstream::Service {
-                discovery: Discovery {
-                    hosts: Arc::default(),
-                },
-                service: "employee-service".into(),
-            },
+            service_upstream(Arc::default()),
             LONG,
         ))
+    }
+
+    /// 指向给定实例表的生产形态上游。传 `Arc::default()` 就是「一个健康实例都没有」。
+    fn service_upstream(hosts: Arc<Hosts>) -> Upstream {
+        Upstream::Service {
+            discovery: Discovery { hosts },
+            service: "account-app".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap(),
+        }
     }
 
     /// 协议：登录请求的形状、令牌作为**查询参数**、只有健康实例被选中，

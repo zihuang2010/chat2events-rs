@@ -29,7 +29,16 @@ import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
 import "./agents.css";
 
 export function AgentsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
-  const { days, dayset, roomLabel, agentLabel, slaSec, aliasIsAuthoritative, dataset } = analytics;
+  const {
+    days,
+    dayset,
+    roomLabel,
+    agentLabel,
+    agentAliasIsAuthoritative,
+    slaSec,
+    aliasIsAuthoritative,
+    dataset,
+  } = analytics;
   const { filters, patch, go, hrefWith, reset } = api;
   const unavailable = analytics.cov.known === 0;
   const source = dataset.source;
@@ -171,9 +180,13 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
           >
             {r.label}
           </button>
-          {/* 只在 label 真被别名替换过时才标 —— 没有账号映射的人 label 就是
-              easyUserId 本身，那时挂个「企微账号」标签是在说谎。 */}
-          {aliasIsAuthoritative || r.label === r.key ? null : (
+          {/* 只在 label 真被别名替换过、而那个别名又不是权威姓名时才标 ——
+              没有账号映射的人 label 就是 easyUserId 本身，那时挂个「企微账号」
+              标签是在说谎；名册给出了真姓名时同样不该标。
+              ⚠️ 判据是**这一位**权威不权威，不是整份响应 —— 名册接上之后仍有一部分
+              人只有账号（上游只对 INTERNAL 发言人采集，允许缺失），
+              看全局位就会把他们一并说成权威姓名。 */}
+          {agentAliasIsAuthoritative(r.key) || r.label === r.key ? null : (
             <span className="ag-alias" title="企微账号，非权威姓名">
               企微账号
             </span>
@@ -518,9 +531,11 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             <dt>数据边界</dt>
             <dd>
               客服回复消息数已入库（agent_msg_daily），本页尚未接入。
+              {/* 全局位 = 本窗口内至少有一位客服拿到了权威姓名。逐个人的权威与否
+                  看行内那个「企微账号」标签，这里只说整页的状态。 */}
               {aliasIsAuthoritative
                 ? ""
-                : "客服姓名暂以平台账号 officialUserId 展示，上游没给账号的人回落到 easyUserId；尚未接入权威名册。"}
+                : "客服姓名暂以平台账号 officialUserId 展示，上游没给账号的人回落到 easyUserId；本窗口内没有来自权威名册的姓名。"}
               {METRIC.coverage}
             </dd>
           </div>
@@ -553,7 +568,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
             </div>
             <p className="od-drawer-id">
               {focus.key}
-              {aliasIsAuthoritative
+              {agentAliasIsAuthoritative(focus.key)
                 ? ""
                 : focus.label === focus.key
                   ? " · 上游未提供平台账号，显示 easyUserId"

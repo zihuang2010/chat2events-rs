@@ -58,13 +58,26 @@ pub(super) struct Meta {
     agents: Vec<Value>,
     taxonomy: Vec<TaxonomyType>,
     pub(super) taxonomy_version: &'static str,
+    /// **per-项标志缺席时的回落**，由 [`Meta::with_filters`] 算出。
+    /// `rooms` / `agents` 两支今天都逐项带自己的标志，所以它只剩客服页那句
+    /// 免责说明一个消费者。
     alias_is_authoritative: bool,
 }
 
 impl Meta {
     /// 把跟窗口走的那两项填进来。**两个 handler 各自决定用哪个窗口**：
     /// `/api/dataset` 用用户选的，`/api/meta` 用默认窗口（它没有窗口参数）。
+    ///
+    /// 顺手定下全局的 `alias_is_authoritative` —— 它是 per-项标志缺席时的回落，
+    /// 今天前端只剩一个消费者：客服页那句「尚未接入权威名册」的免责说明。
+    ///
+    /// ⚠️ **算出来，不写死 `true`。** 名册取不到（上游故障、接口还没接上、或者这个
+    /// 窗口里的人一个都没有账号映射）时写死 `true` 就是让页面宣称接上了权威名册，
+    /// 而每一行其实都回落着显示账号 —— 那句免责说明本来就是为这个状态写的。
     pub(super) fn with_filters(mut self, rooms: Vec<Value>, agents: Vec<Value>) -> Self {
+        self.alias_is_authoritative = agents
+            .iter()
+            .any(|agent| agent["alias_is_authoritative"] == true);
         self.rooms = rooms;
         self.agents = agents;
         self
@@ -130,6 +143,11 @@ pub(super) async fn read_meta(
 /// 的子集 —— 多查一路只是把最大的那张表再扫一遍。实测：只在 event 里、不在
 /// `metric_daily` 里的群 **0 个**。
 ///
+/// ⚠️ **客服那一支只产出「待解析的 ID」，不产出最终别名。** 返回的是
+/// `(easyUserId, officialUserId?)` —— 账号到姓名那一跳是 HTTP（外部名册），而
+/// 「只读 SQL 全在这一个文件」的前提是**这个文件里零 HTTP**。回填在 handler 层做，
+/// 见 `serve::filters`。链条是：`easyUserId →(这里的 SQL)→ officialUserId →(HTTP)→ 姓名`。
+///
 /// ⚠️ **客服名单只能从 `event.agents` 展开，不能改查 `b_merchant_group_agent_metric_daily`。**
 /// 那张表按 `metrics::Attribution::FirstResponder` 只记首响人，而 `agents` 是**全部
 /// 参与者** —— 实测同一批数据 22 人 vs 20 人。换过去会让「参与过但从没首响过」的人
@@ -140,7 +158,7 @@ pub(super) async fn read_filters(
     since: NaiveDate,
     until: NaiveDate,
     limits: &WebLimits,
-) -> Result<(Vec<Value>, Vec<Value>), WebError> {
+) -> Result<(Vec<Value>, Vec<(String, Option<String>)>), WebError> {
     // 历史群仍读取已删除配置；商家 ID 转字符串，避免前端丢失 BIGINT 精度。
     //
     // ⚠️ **失败那一支按 `window_since/window_until` 收敛，不是 `run_date`。**
@@ -207,18 +225,20 @@ pub(super) async fn read_filters(
         agents
             .into_iter()
             .map(|(agent,)| {
-                let alias = accounts.get(&agent);
-                json!({"agent": agent, "alias": alias})
+                let account = accounts.get(&agent).cloned();
+                (agent, account)
             })
             .collect(),
     ))
 }
 
-/// `easyUserId` -> `officialUserId`，给客服一个比 16 位定长串好认的展示别名。
+/// `easyUserId` -> `officialUserId`，外部名册那一跳的**入参**。
 ///
-/// ⚠️ **这不是姓名，是账号** —— 所以 `meta.alias_is_authoritative` 仍然是 `false`，
-/// 前端照旧标注「尚未接入权威名册」。接花名册那天换的是这个函数的数据源，
-/// 前端的 `agentLabel` 一个字不用改。
+/// ⚠️ **这不是姓名，是账号。** 它是链条的第一跳，第二跳（账号 → 姓名）由
+/// `web::roster` 走 HTTP 完成。**这个函数保留不动**：外部名册是**串联**在它后面，
+/// 不是替换它 —— 上游对 `INTERNAL` 角色的发言人才采集账号且允许缺失，
+/// 因此一部分客服本就没有 `officialUserId`，他们在第一跳就断了、只能回落到
+/// `easyUserId`。那是既有事实，接名册只是让它显形。
 ///
 /// ⚠️ **数据源是 `b_merchant_group_metric_daily.agent_accounts`，不是
 /// `b_merchant_group_agent_metric_daily.official_user_id`。** 后者按

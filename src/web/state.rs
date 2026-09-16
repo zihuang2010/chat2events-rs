@@ -7,10 +7,13 @@
 //! `state ← {budget, cache, query, serve}`。
 //!
 //! ⚠️ **没有 `raw_root`**：原文下钻改读 `b_merchant_group_event.source_messages`
-//! 之后，只读工作台**只依赖 MySQL 一个东西** —— 不碰文件系统，也就不需要
-//! 「镜像在不在 / 同步没同步 / 相对路径的 cwd 对不对」那一整类失败。
+//! 之后，只读工作台**不碰文件系统** —— 也就不需要「镜像在不在 / 同步没同步 /
+//! 相对路径的 cwd 对不对」那一整类失败。
+//!
+//! ⚠️ **事实与指标只从 MySQL 取数**；`roster` 是唯一的例外，而它只装**展示别名**
+//! （客服姓名 / 商家名称），取不到必须回落显示 ID。理由在 `roster.rs` 的模块注释里。
 
-use super::{cache::Cache, config::WebLimits};
+use super::{cache::Cache, config::WebLimits, roster::Roster};
 use sqlx::MySqlPool;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -24,4 +27,5 @@ pub(super) struct WebState {
     pub limits: WebLimits,
     pub requests: Arc<Semaphore>,
     pub cache: Arc<Cache>,
+    pub roster: Arc<Roster>,
 }

@@ -19,6 +19,7 @@ use super::{
         read_event_page, read_filters, read_group_days, read_meta, read_rooms,
         read_source_messages, read_summary, snapshot,
     },
+    roster::Roster,
     state::WebState,
 };
 use crate::{stage::classify::CURRENT_VERSION, stage::store};
@@ -39,6 +40,7 @@ pub async fn serve(
     corp: String,
     address: SocketAddr,
     limits: WebLimits,
+    roster: Arc<Roster>,
 ) -> crate::Result<()> {
     assert!(!corp.is_empty(), "corpid 不可为空");
     store::check_schema(&pool).await?;
@@ -52,6 +54,7 @@ pub async fn serve(
             requests: Arc::new(Semaphore::new(limits.concurrency)),
             cache: Arc::new(Cache::new(limits.cache_bytes)),
             limits,
+            roster,
         }),
     )
     .with_graceful_shutdown(async {
@@ -87,6 +90,59 @@ pub(super) fn router(state: WebState) -> Router {
         .with_state(state)
 }
 
+/// 筛选器选项 ＋ **外部名册回填 —— 全仓唯一的注入点**。
+///
+/// `read_filters` 只产出「待解析的 ID」（`easyUserId, officialUserId?`），姓名那一跳在
+/// 这里补：只读 SQL 模块因此保持**零 HTTP**，而前端所有位置的人名都来自筛选器元数据
+/// 构建的那两张查找表 —— 按群聚合 / 按客服聚合 / 事件明细 / 事件抽屉一个字都不用改。
+///
+/// ⚠️ **补齐必须在响应生成之前完成。** 先出一份「显示 ID」的半成品，它会被响应缓存
+/// 钉住直到名册 TTL 到期才翻身 —— 那不会自愈。
+///
+/// ⚠️ 补齐时**手上还握着那条只读连接**（`dataset` 后面还要用同一个一致快照）。
+/// 代价是有界的：名册命中时零往返；未命中时一把锁串行化，后到的请求醒来已经不缺了，
+/// 所以最坏是**一次**往返的等待，不是每人一次。
+async fn filters(
+    state: &WebState,
+    tx: &mut sqlx::MySqlConnection,
+    since: chrono::NaiveDate,
+    until: chrono::NaiveDate,
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), WebError> {
+    let (rooms, agents) = read_filters(tx, &state.corp, since, until, &state.limits).await?;
+    let wanted = agents
+        .iter()
+        .flat_map(|(_, account)| account.clone())
+        .collect();
+    let names = state.roster.employees(&wanted).await;
+    Ok((
+        rooms,
+        agents
+            .into_iter()
+            .map(|(agent, account)| agent_option(agent, account, &names))
+            .collect(),
+    ))
+}
+
+/// 一个客服选项 —— **三跳回落**：姓名 →（查不到）账号 →（也没有）16 位 `easyUserId`。
+///
+/// 最后那一跳由前端接：`alias` 为 `null` 时它显示 `agent` 本身。
+///
+/// `alias_is_authoritative` 沿用群那一支的形状（per-项优先、回落全局）：
+/// **只有真姓名才算权威**。回落到账号的这一位必须是 `false` —— 否则页面等于宣称
+/// `zhang.san` 是个姓名，而那正是接名册之前就挂着免责说明的原因。
+pub(super) fn agent_option(
+    agent: String,
+    account: Option<String>,
+    names: &std::collections::HashMap<String, String>,
+) -> serde_json::Value {
+    let name = account.as_deref().and_then(|account| names.get(account));
+    serde_json::json!({
+        "agent": agent,
+        "alias": name.or(account.as_ref()),
+        "alias_is_authoritative": name.is_some(),
+    })
+}
+
 async fn meta(State(state): State<WebState>) -> Result<Response, WebError> {
     let mut connection = state.pool.acquire().await?;
     let mut tx = snapshot(&mut connection).await?;
@@ -95,7 +151,7 @@ async fn meta(State(state): State<WebState>) -> Result<Response, WebError> {
     // 时会拿到按实际窗口算的那一份，两者形状相同。
     // 关键是它**不再扫全历史**：此前群与客服名单是无日期条件的全表扫描。
     let (since, until) = Period::default().bounds(&meta.range)?;
-    let (rooms, agents) = read_filters(&mut tx, &state.corp, since, until, &state.limits).await?;
+    let (rooms, agents) = filters(&state, &mut tx, since, until).await?;
     tx.commit().await?;
     bounded_json(&meta.with_filters(rooms, agents), &state.limits)
 }
@@ -119,7 +175,7 @@ async fn dataset(
     let meta = read_meta(&mut tx, &state.corp, &state.limits).await?;
     let (since, until) = period.bounds(&meta.range)?;
     // 筛选器选项跟着窗口走（见 `read_filters`），不再扫全历史。
-    let (rooms, agents) = read_filters(&mut tx, &state.corp, since, until, &state.limits).await?;
+    let (rooms, agents) = filters(&state, &mut tx, since, until).await?;
     let meta = meta.with_filters(rooms, agents);
     // 混版守卫 —— **一条 `EXISTS` 就够，不用把事件拉下来比对**。
     // 窗口里只要有一条已发布标签的事件用的不是当前词表，整页就不能渲染：

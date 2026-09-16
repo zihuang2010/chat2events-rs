@@ -43,6 +43,7 @@ export interface Analytics {
   roomLabel: (roomId: string) => string;
   roomAliasIsAuthoritative: (roomId: string) => boolean;
   agentLabel: (agentId: string) => string;
+  agentAliasIsAuthoritative: (agentId: string) => boolean;
   typeLabel: (typeId: string) => string;
 }
 
@@ -91,15 +92,25 @@ export function useAnalytics(
     const lastDay = days[days.length - 1] ?? to;
 
     const rooms = new Map(dataset.meta.rooms.map((r) => [r.roomid, r]));
-    const agentAlias = new Map(dataset.meta.agents.map((a) => [a.agent, a.alias]));
+    const agents = new Map(dataset.meta.agents.map((a) => [a.agent, a]));
     const roomLabel = (id: string) => rooms.get(id)?.alias ?? id;
+    // ⚠️ **不回落到 meta 的全局位**：那一位现在的含义是「本窗口内至少有一位客服拿到了
+    // 权威姓名」，拿它当群名的回落就是跨域借真相 —— 客服那边命中一个，群名这边就被
+    // 一起说成权威。后端 `read_filters` 逐个群都带自己的标志，缺席只可能出现在更老的
+    // 响应里，那时朝 false 倒是安全的方向。
     const roomAliasIsAuthoritative = (id: string) => {
       const room = rooms.get(id);
+      return Boolean(room?.alias && (room.alias_is_authoritative ?? false));
+    };
+    const agentLabel = (id: string) => agents.get(id)?.alias ?? id;
+    // 与 roomAliasIsAuthoritative 同形：per-项优先、回落全局。
+    // ⚠️ 别名回落成平台账号时这里必须是 false —— `zhang.san` 是账号不是姓名。
+    const agentAliasIsAuthoritative = (id: string) => {
+      const agent = agents.get(id);
       return Boolean(
-        room?.alias && (room.alias_is_authoritative ?? dataset.meta.alias_is_authoritative),
+        agent?.alias && (agent.alias_is_authoritative ?? dataset.meta.alias_is_authoritative),
       );
     };
-    const agentLabel = (id: string) => agentAlias.get(id) ?? id;
     const typeLabel = (id: string) => dataset.taxIndex.get(id)?.name ?? id;
 
     const parents = parentGroups(dataset);
@@ -148,6 +159,7 @@ export function useAnalytics(
       roomLabel,
       roomAliasIsAuthoritative,
       agentLabel,
+      agentAliasIsAuthoritative,
       typeLabel,
     };
   }, [dataset, filters, windowDays]);

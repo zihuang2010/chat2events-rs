@@ -1,4 +1,9 @@
-//! 外部名册 —— 商家名称与客服姓名的来源，本文件先铺通路的第一段：**Nacos 服务发现**。
+//! 外部名册 —— 商家名称与客服姓名的来源。两件事一个文件：
+//! **Nacos 服务发现**（[`Discovery`]）＋ **按需批量查询的名册缓存**（[`Roster`]）。
+//!
+//! 不拆成「Nacos 客户端」和「名册」两个文件：本仓库的端口判据是
+//! **一个适配器 = 假想接缝，两个 = 真接缝**，拆开就是为一个不存在的第二实现
+//! 付两个文件的钱。
 //!
 //! # 为什么只读工作台可以调外部服务
 //!
@@ -34,12 +39,28 @@
 //! 长轮询是**配置中心**才有的；UDP 推送在 2.x 之后官方不再推荐、OpenAPI 文档里已无
 //! 相关参数。所以只能轮询 `instance/list`，间隔取响应体里的 `cacheMillis` ——
 //! 那是服务端自己声明的缓存时长，照它走就是官方口径，**不硬编码**。
+//!
+//! # 名册：按需批量 + 负缓存 + 整体过期
+//!
+//! **不做启动预热、不拉全量** —— 两个服务都提供批量按 ID 查询，而 ID 集合天然被
+//! 查询窗口收敛（筛选器本来就只列窗口内出现过的群和客服）。请求到达时算出**缺失**的
+//! 那批，一次补齐。
+//!
+//! 值是 `Option<String>`：**`None` = 查过，上游明确说查无此人**。不记住的话，同一批
+//! 不存在的 ID 每个请求都要重查一遍。⚠️ 与「调不通」严格分开 —— 后者不进负缓存，
+//! 否则一次上游抖动会把所有人钉在「显示 ID」上整整一个 TTL。
+//!
+//! TTL 到期**整体清空**，不做逐条过期：名册规模很小（客服实测二十余人、商家数百），
+//! 逐条过期要多存 N 个时间戳再逐个检查，换不来任何东西。
 
 use super::config::{RosterConfig, RosterSecrets};
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
+    collections::{BTreeSet, HashMap},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -109,6 +130,197 @@ impl Discovery {
             .ok()?
             .subsec_nanos() as usize;
         list.get(nanos % list.len()).cloned()
+    }
+}
+
+/// 展示别名的进程内名册 —— **按需批量查询 + 负缓存 + 整体过期 + 代数**。
+///
+/// **只有一个实现，所以是 struct 不是 trait。** 它是本次唯一的接缝，支持两种测试模式：
+/// 预填充（[`Roster::canned`]，完全不碰网络）与协议（指向本地假 HTTP 服务端）。
+///
+/// ⚠️ **名字是展示，不是事实，也不是维度**：不进指标、不进聚合键、不落库。
+/// 取不到一律回落显示 ID —— 那条回落前端早就写好了。
+pub struct Roster {
+    upstream: Upstream,
+    ttl: Duration,
+    /// 进程起来的时刻 —— [`Roster::generation`] 的原点。
+    born: Instant,
+    /// **一把锁串行化填充**：并发请求不为同一批 ID 重复发起调用。锁跨 `await`
+    /// 持有，所以必须是 `tokio` 的那把。成功时后到的请求醒来已经不缺了，
+    /// 于是只等**一次**往返；失败那一路由 [`FAILURE_COOLDOWN`] 兜住。
+    names: tokio::sync::Mutex<Names>,
+    /// 实际向上游发起过几次批量查询。负缓存生效 = 同一批查无此人的 ID 不再 +1。
+    lookups: AtomicUsize,
+}
+
+struct Names {
+    /// `officialUserId` → 姓名。**`None` = 上游明确说查无此人**（负缓存）。
+    employees: HashMap<String, Option<String>>,
+    /// 这张表是在第几个 TTL 纪元里建起来的，与 [`Roster::generation`] 同源。
+    epoch: u64,
+    /// 上游调不通之后的冷却截止时刻 —— 见 [`FAILURE_COOLDOWN`]。
+    cooldown_until: Instant,
+}
+
+/// 上游调不通之后冷却多久再试。
+///
+/// ⚠️ **它挡的是连接池，不是上游。** 失败**故意不记进负缓存**（那会把所有人钉住
+/// 一整个 TTL），于是缺失集合一直非空 —— 没有冷却的话，堵在那把锁后面的每个请求
+/// 醒来都会自己再发一次，串行地一人一个 `timeout_secs`。而 `serve::filters` 是
+/// **握着一条只读连接和一个打开的快照事务**在等，`web.concurrency` 个请求排下来
+/// 足够把 `mysql.max_connections` 耗光，把毫不相干的接口一起拖死。
+///
+/// 冷却期内直接回落（不发请求、不打日志），于是一次上游抖动最多花掉**一个**往返。
+/// 取 10 秒：比 `timeout_secs` 的秒级量纲大一档，又远小于名册 TTL。
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(10);
+
+enum Upstream {
+    /// 生产：Nacos 找到实例，再打员工服务的批量查询。
+    Service {
+        discovery: Discovery,
+        service: String,
+    },
+    /// 预填充模式的测试替身 —— **上游的假答案，不是缓存的初始内容**。
+    /// 于是「按需填充 → 映射增长」这条路在测试里照样完整走一遍，
+    /// 表里没有的 ID 就是「查无此人」，跟真上游一个语义。
+    #[cfg(test)]
+    Canned(HashMap<String, String>),
+}
+
+impl Roster {
+    /// 起 Nacos 发现，再拿它建名册。发现失败即返回 `Err` —— 见 [`Discovery::start`]。
+    pub async fn start(cfg: &RosterConfig, secrets: &RosterSecrets) -> crate::Result<Arc<Self>> {
+        let discovery = Discovery::start(cfg, secrets).await?;
+        Ok(Arc::new(Self::with_upstream(
+            Upstream::Service {
+                discovery,
+                service: cfg.employee_service.clone(),
+            },
+            Duration::from_secs(cfg.ttl_secs),
+        )))
+    }
+
+    fn with_upstream(upstream: Upstream, ttl: Duration) -> Self {
+        Self {
+            upstream,
+            ttl,
+            born: Instant::now(),
+            names: tokio::sync::Mutex::new(Names {
+                employees: HashMap::new(),
+                epoch: 0,
+                cooldown_until: Instant::now(),
+            }),
+            lookups: AtomicUsize::new(0),
+        }
+    }
+
+    /// 把一批 `officialUserId` 解析成姓名。
+    ///
+    /// **返回值里只有解析出姓名的那些** —— 「查无此人」和「调不通」都不在里面，
+    /// 调用方一律回落显示账号或 ID。两者的区别只落在日志上（见下面的 `warn`），
+    /// 不落在返回值上：页面对它们的处置是同一个。
+    pub async fn employees(&self, wanted: &BTreeSet<String>) -> HashMap<String, String> {
+        let epoch = self.generation();
+        let mut names = self.names.lock().await;
+        // TTL 到期**整体清空**。判据是「纪元变了」而不是「距上次建表过了多久」——
+        // 两者在这里必须是同一个数，否则代数和这张表会各走各的。
+        if names.epoch != epoch {
+            names.employees.clear();
+            names.epoch = epoch;
+        }
+        let missing: Vec<String> = wanted
+            .iter()
+            .filter(|id| !names.employees.contains_key(*id))
+            .cloned()
+            .collect();
+        // 冷却期内直接回落：不发请求、不打日志（那条 warn 刚打过）。见 `FAILURE_COOLDOWN`。
+        if !missing.is_empty() && Instant::now() >= names.cooldown_until {
+            self.lookups.fetch_add(1, Ordering::Relaxed);
+            match self.upstream.employees(&missing).await {
+                // 上游答了：找到的记姓名，没答的记 `None` —— 那是**数据常态**，不告警。
+                Ok(answered) => names.employees.extend(answered),
+                // Nacos 不可用 / 服务调不通 —— **可修的运维故障，要 `warn`**，
+                // 且**绝不进负缓存**：一次抖动不该把所有人钉住一整个 TTL。
+                Err(error) => {
+                    names.cooldown_until = Instant::now() + FAILURE_COOLDOWN;
+                    tracing::warn!(
+                        %error,
+                        ids = missing.len(),
+                        "员工名册查询失败，本次回落显示账号或 ID"
+                    );
+                }
+            }
+        }
+        wanted
+            .iter()
+            .filter_map(|id| Some((id.clone(), names.employees.get(id)?.clone()?)))
+            .collect()
+    }
+
+    /// 拼进响应缓存数据戳的那个数 —— 它一变，旧响应全部作废。
+    ///
+    /// **= 进程起来之后走过了几个 TTL，一个纯时间函数。** 这一点是承重的：
+    ///
+    /// ⚠️ 代数曾经是个「在 `employees()` 里 +1」的计数器，那是**循环依赖**。
+    /// 代数进的是响应缓存的数据戳，而缓存**命中时 handler 根本不会跑**
+    /// （`cache::cached` 在 `next.run` 之前就返回了）—— 于是同一组筛选一直命中旧响应
+    /// → `employees()` 永远没机会跑 → 代数永远不动 → 缓存永远不失效。名册于是
+    /// 再也刷新不了，只能等夜里跑批改了库里的戳。「改名后几分钟内页面跟着变」直接落空。
+    ///
+    /// 纯时间函数没有这个问题：谁都不用调用它，时间自己会走。
+    /// 它同时天然满足两条硬要求 —— 只在 TTL 整体过期时递增，
+    /// 映射因按需填充而增长时不动。
+    pub fn generation(&self) -> u64 {
+        (self.born.elapsed().as_millis() / self.ttl.as_millis().max(1)) as u64
+    }
+
+    /// 预填充模式：给一张上游的假答案表，表里没有的 ID 即「查无此人」。
+    #[cfg(test)]
+    pub(super) fn canned(answers: &[(&str, &str)], ttl: Duration) -> Arc<Self> {
+        let table = answers
+            .iter()
+            .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
+            .collect();
+        Arc::new(Self::with_upstream(Upstream::Canned(table), ttl))
+    }
+
+    /// 至今向上游发起过几次批量查询。
+    #[cfg(test)]
+    pub(super) fn lookups(&self) -> usize {
+        self.lookups.load(Ordering::Relaxed)
+    }
+}
+
+impl Upstream {
+    /// 一次批量查询。返回的每个 ID 都有答案：`Some(姓名)` 或 **`None` = 上游说查无此人**。
+    /// 调不通一律走 `Err`，由调用方决定不进负缓存。
+    async fn employees(&self, ids: &[String]) -> crate::Result<HashMap<String, Option<String>>> {
+        match self {
+            Self::Service { discovery, service } => {
+                let instance = discovery
+                    .pick(service)
+                    .ok_or_else(|| format!("Nacos 尚无服务 `{service}` 的健康实例"))?;
+                // ⚠️ **这一层还没接**：员工服务批量查询的路径、请求体与响应体形状
+                // 未定（上游不在本仓库，猜一份就是白写一遍，连协议测试都测的是我们
+                // 自己的发明）。拿到真实接口之后只补这里，`Roster` 那一整套
+                // 缓存 / 负缓存 / TTL / 代数 / 回落已经可跑可测。
+                //
+                // **返回 `Err` 不是 `todo!()`**：这是要随二进制上生产的代码，
+                // `todo!()` 会在请求处理里 panic；`Err` 走的是既有的「调不通」那一路
+                // —— warn 一条、回落显示账号或 ID，页面和今天一模一样。
+                Err(format!(
+                    "员工服务批量查询尚未接入：{} 个 ID 待解析，实例已解析到 {instance}，\
+                     缺的只是请求与响应体的形状",
+                    ids.len()
+                )
+                .into())
+            }
+            #[cfg(test)]
+            Self::Canned(table) => Ok(ids
+                .iter()
+                .map(|id| (id.clone(), table.get(id).cloned()))
+                .collect()),
+        }
     }
 }
 
@@ -483,6 +695,117 @@ mod tests {
         assert_eq!(logins, 2, "403 之后必须重新登录：{requests:?}");
         let last = requests.last().unwrap();
         assert!(last.0.contains("accessToken=tok-new"), "{last:?}");
+    }
+
+    fn ids(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    const LONG: Duration = Duration::from_secs(300);
+
+    /// 预填充：上游认识的人拿到姓名，不认识的记成**负缓存**（`None`），
+    /// 两者都不再重查。
+    #[tokio::test]
+    async fn a_name_is_resolved_once_and_a_miss_is_remembered() {
+        let roster = Roster::canned(&[("zhang.san", "张三")], LONG);
+        let first = roster.employees(&ids(&["zhang.san", "ghost"])).await;
+        assert_eq!(first.get("zhang.san").unwrap(), "张三");
+        assert!(!first.contains_key("ghost"), "查无此人不该出现在结果里");
+        assert_eq!(roster.lookups(), 1);
+
+        // 第二次：`ghost` 已经在负缓存里，**不许再发起一次查询**。
+        let again = roster.employees(&ids(&["zhang.san", "ghost"])).await;
+        assert_eq!(again.get("zhang.san").unwrap(), "张三");
+        assert!(!again.contains_key("ghost"));
+        assert_eq!(
+            roster.lookups(),
+            1,
+            "负缓存没生效，同一批不存在的 ID 又查了一遍"
+        );
+    }
+
+    /// 代数：**只在 TTL 整体过期时递增**；按需填充让映射增长时不动。
+    ///
+    /// 后半条是承重的 —— 映射每个请求都在长，代数跟着长的话，
+    /// 响应缓存的数据戳每个请求都变，缓存永不命中。
+    #[tokio::test]
+    async fn the_generation_moves_only_when_the_whole_table_expires() {
+        let roster = Roster::canned(&[("a", "甲"), ("b", "乙")], LONG);
+        assert_eq!(roster.generation(), 0);
+        roster.employees(&ids(&["a"])).await;
+        assert_eq!(roster.generation(), 0);
+        // 映射增长（多了 b）—— 代数**不得**变。
+        roster.employees(&ids(&["a", "b"])).await;
+        assert_eq!(roster.generation(), 0, "按需填充让映射增长时代数不得递增");
+        assert_eq!(
+            roster.lookups(),
+            2,
+            "第二次确实补了新 ID，否则上一条断言是空的"
+        );
+    }
+
+    /// 代数**不靠谁来调用**，时间到了自己就走 —— 承重，理由见 [`Roster::generation`]
+    /// 的注释（响应缓存命中时 handler 根本不会跑）。
+    ///
+    /// 真睡一小会儿，不引 `tokio` 的 `test-util`：睡眠只会超时不会提前，所以
+    /// 「睡过 TTL 之后代数变了」不会偶发失败；前半段是两次内存查表，微秒级，
+    /// 离 200ms 的 TTL 远得很。
+    #[tokio::test]
+    async fn the_generation_advances_on_its_own_without_any_lookup() {
+        let ttl = Duration::from_millis(200);
+        let roster = Roster::canned(&[("a", "甲")], ttl);
+        roster.employees(&ids(&["a"])).await;
+        assert_eq!((roster.generation(), roster.lookups()), (0, 1));
+
+        // 一次调用都没有，光是时间过去就该翻代数 —— 于是响应缓存的戳跟着变，
+        // handler 才有机会重新跑一遍。
+        tokio::time::sleep(ttl + Duration::from_millis(50)).await;
+        assert_eq!(roster.generation(), 1, "代数不会自己走，名册就再也刷新不了");
+        assert_eq!(roster.lookups(), 1, "代数推进不该自己去查上游");
+
+        // 纪元变了 ⇒ 下一次进门整表清空重查。
+        roster.employees(&ids(&["a"])).await;
+        assert_eq!(roster.lookups(), 2);
+    }
+
+    /// 上游调不通之后进**冷却**：堵在锁后面的那些请求直接回落，不是一人一个超时。
+    ///
+    /// 没有冷却的话，失败不进负缓存 ⇒ 缺失集合一直非空 ⇒ 每个醒来的请求都自己再发
+    /// 一次，而它们**各握着一条只读连接**在排队。
+    #[tokio::test]
+    async fn a_failing_upstream_cools_down_instead_of_retrying_per_request() {
+        let roster = unreachable_roster();
+        for _ in 0..5 {
+            assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+        }
+        assert_eq!(roster.lookups(), 1, "冷却期内不该再打上游");
+    }
+
+    /// 上游调不通（Nacos 没有健康实例）**绝不进负缓存** —— 一次抖动不该把所有人
+    /// 钉在「显示 ID」上整整一个 TTL。
+    #[tokio::test]
+    async fn an_unreachable_upstream_does_not_poison_the_negative_cache() {
+        let roster = unreachable_roster();
+        assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+        assert_eq!(roster.lookups(), 1);
+        // 冷却过去之后还会再试 —— 这证明它**没有**被记成「查无此人」。
+        // （把冷却截止拨回当下，不为这一条真睡十秒。）
+        roster.names.lock().await.cooldown_until = Instant::now();
+        assert!(roster.employees(&ids(&["zhang.san"])).await.is_empty());
+        assert_eq!(roster.lookups(), 2, "调不通被当成查无此人记进负缓存了");
+    }
+
+    /// Nacos 一个健康实例都没有的名册 —— 每次查询都走「调不通」那一路。
+    fn unreachable_roster() -> Arc<Roster> {
+        Arc::new(Roster::with_upstream(
+            Upstream::Service {
+                discovery: Discovery {
+                    hosts: Arc::default(),
+                },
+                service: "employee-service".into(),
+            },
+            LONG,
+        ))
     }
 
     /// 协议：登录请求的形状、令牌作为**查询参数**、只有健康实例被选中，

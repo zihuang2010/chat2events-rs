@@ -366,11 +366,14 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 ## webUI（只读旁路）
 
 形态已定（2026-08-30）：**前后端分离 · 后端只读 JSON API · 全部 `GET` · 无登录版**（内网可达即可看）。
-它与跑批解耦 —— 只从 MySQL 和 ① 的端口取数，**不写任何表、不调模型、不参与跑批**，跑批不知道它存在。
+它与跑批解耦 —— **事实与指标只从 MySQL 取数**，**不写任何表、不调模型、不参与跑批**，跑批不知道它存在。
+唯一的出站 HTTP 是 `web/roster.rs`：**展示别名**（客服姓名 / 商家名称）走 Nacos 找到的内部服务，
+不进任何指标、不进任何聚合键、不落库，**取不到必须回落显示 ID**。理由内联在该文件顶注。
 下钻原文读 `b_merchant_group_event.source_messages` 一列，**它一个文件都不读** ——
-所以没有 `raw_root`、没有扫描名额、没有 `spawn_blocking`，只依赖 MySQL 一个东西。
+所以没有 `raw_root`、没有扫描名额、没有 `spawn_blocking`；除展示别名外只依赖 MySQL。
 
-`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额与响应缓冲 · `scope` SQL 片段与绑定 · `query` 只读 SQL），只依赖 MySQL。
+`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额与响应缓冲 · `scope` SQL 片段与绑定 · `query` 只读 SQL · `roster` 外部展示别名）。
+`query` 只产出**待解析的 ID**，姓名那一跳在 `serve::filters` 补 —— 「只读 SQL 全在 `query`」的前提是那个文件里零 HTTP。
 `GET /api/meta` 提供可用日期、群与客服标识、当前词表 —— ⚠️ **群与客服名单跟着查询窗口走**
 （`read_filters`），此前那两条查询没有日期条件、每次开页面都扫全历史，代价只跟「库里攒了多久」
 有关而与用户选几天无关；`days` 仍是全历史，因为它是日期选择器的可选范围。

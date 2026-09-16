@@ -79,6 +79,9 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .web,
         requests: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
         cache: std::sync::Arc::new(super::cache::Cache::new(1 << 20)),
+        // 预填充名册：上游认识 `zhang.san`，于是 16 位 ID 在页面上变成「张三」。
+        // **不碰网络** —— 这一组测的是接口契约，不是 Nacos 协议。
+        roster: super::roster::Roster::canned(&[("zhang.san", "张三")], Duration::from_secs(300)),
     });
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -98,15 +101,18 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(response.headers()["cache-control"], "no-store");
     let data: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     assert_eq!(data["meta"]["days"], json!(["2026-08-25", "2026-08-26"]));
-    // 客服别名取 `agent_accounts` 里的 officialUserId：**窗口内最新的那一天赢**
-    // （08-26 覆盖 08-25 的 stale.account），且只给真出现在事件里的人 ——
-    // `agent00000000009` 只在账号映射里、没进过任何 `event.agents`，不该冒出来。
+    // 客服别名走两跳：`agent_accounts` 里的 officialUserId（**窗口内最新的那一天赢**，
+    // 08-26 覆盖 08-25 的 stale.account），再经外部名册换成姓名。
+    // 只给真出现在事件里的人 —— `agent00000000009` 只在账号映射里、
+    // 没进过任何 `event.agents`，不该冒出来。
     assert_eq!(
         data["meta"]["agents"],
-        json!([{"agent": "agent00000000001", "alias": "zhang.san"}])
+        json!([{
+            "agent": "agent00000000001", "alias": "张三", "alias_is_authoritative": true
+        }])
     );
-    // ⚠️ 它是账号不是姓名，所以这一位仍然是 false。
-    assert_eq!(data["meta"]["alias_is_authoritative"], false);
+    // 这一窗里真有权威姓名，所以全局位为真 —— 客服页那句免责说明随之消失。
+    assert_eq!(data["meta"]["alias_is_authoritative"], true);
     assert_eq!(
         data["meta"]["rooms"],
         json!([{
@@ -114,7 +120,6 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             "alias_is_authoritative": true
         }])
     );
-    assert_eq!(data["meta"]["alias_is_authoritative"], false);
     let meta: Value = http
         .get(format!("{base}/api/meta"))
         .send()
@@ -905,6 +910,37 @@ async fn mysql_filtered_reads_use_date_and_failure_indexes() {
     testutil::drop_mysql_database(pool).await;
 }
 
+/// 客服选项的**三跳回落**：姓名 → 账号 → 16 位 `easyUserId`，以及每一跳上
+/// 「这个别名权威吗」的取值。三条都是纯离线的，不碰网络也不碰数据库。
+///
+/// ⚠️ 中间那条是承重的：`zhang.san` 是**账号不是姓名**，把它标成权威就等于
+/// 让页面宣称这是个真名 —— 接名册之前那句免责说明防的正是这件事。
+#[test]
+fn an_agent_option_falls_back_from_name_to_account_to_the_raw_id() {
+    use serde_json::json;
+    let names = std::collections::HashMap::from([("zhang.san".to_owned(), "张三".to_owned())]);
+    let option = |agent: &str, account: Option<&str>| {
+        super::serve::agent_option(agent.into(), account.map(Into::into), &names)
+    };
+
+    // ① 名册认识他 —— 显示姓名，权威。
+    assert_eq!(
+        option("agent00000000001", Some("zhang.san")),
+        json!({"agent": "agent00000000001", "alias": "张三", "alias_is_authoritative": true})
+    );
+    // ② 有账号但名册查无此人 —— 回落显示账号，**权威为假**。
+    assert_eq!(
+        option("agent00000000002", Some("li.si")),
+        json!({"agent": "agent00000000002", "alias": "li.si", "alias_is_authoritative": false})
+    );
+    // ③ 连账号映射都没有（上游只对 INTERNAL 发言人采集账号，允许缺失）——
+    //    `alias` 为 null，前端显示 16 位 ID 本身。不报错。
+    assert_eq!(
+        option("agent00000000003", None),
+        json!({"agent": "agent00000000003", "alias": null, "alias_is_authoritative": false})
+    );
+}
+
 #[tokio::test]
 async fn admission_rejects_excess_work_and_releases_timed_out_slots() {
     let state = WebState {
@@ -921,6 +957,7 @@ async fn admission_rejects_excess_work_and_releases_timed_out_slots() {
         },
         requests: Arc::new(Semaphore::new(1)),
         cache: Arc::new(super::cache::Cache::new(0)),
+        roster: super::roster::Roster::canned(&[], Duration::from_secs(300)),
     };
     let entered = Arc::new(tokio::sync::Notify::new());
     let ready = entered.clone();

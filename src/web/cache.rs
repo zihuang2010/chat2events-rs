@@ -53,6 +53,10 @@ pub(super) const STAMP_TTL: Duration = Duration::from_secs(1);
 ///
 /// ⚠️ **`b_wecom_merchant_group`（群名）不在戳里** —— 那是别人的表，没有可用的时间列。
 /// 群改名要重启 `webui` 或等下一次跑批。
+///
+/// ⚠️ **外部名册的代数也拼在戳上**（见 [`Cache::stamp`]）。名册活在进程内存里，
+/// 它整体过期重建时库里一个字节都没变 —— 不拼进来就是「名册刷新了，页面照旧回旧
+/// 响应」，而且那不会自愈。
 type Stamp = String;
 
 async fn read_stamp(pool: &MySqlPool) -> Result<(Stamp, bool), sqlx::Error> {
@@ -120,26 +124,37 @@ impl Cache {
     ///
     /// 取数那一步由调用方传进来 —— 于是「一秒内不重复查」这件事可以**离线断言**，
     /// 不必为了测一个计时器去起一个数据库。
-    async fn stamp_with<F, Fut>(&self, fetch: F) -> Result<(Stamp, bool), sqlx::Error>
+    /// ⚠️ **代数在自缓存之外拼上**：库那一截可以缓一秒，名册代数不行 ——
+    /// 它一变就必须当场作废，拖一秒就是又一次「明明刷新了却还是旧的」。
+    async fn stamp_with<F, Fut>(
+        &self,
+        generation: u64,
+        fetch: F,
+    ) -> Result<(Stamp, bool), sqlx::Error>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(Stamp, bool), sqlx::Error>>,
     {
         // ⚠️ 锁不能跨 `await` —— 先取出再放开，取数在锁外面。
-        if let Some((at, stamp, quiet)) =
-            &*self.recent.lock().unwrap_or_else(PoisonError::into_inner)
-            && at.elapsed() < STAMP_TTL
-        {
-            return Ok((stamp.clone(), *quiet));
+        let (stamp, quiet) = match &*self.recent.lock().unwrap_or_else(PoisonError::into_inner) {
+            Some((at, stamp, quiet)) if at.elapsed() < STAMP_TTL => (stamp.clone(), *quiet),
+            _ => (String::new(), false),
+        };
+        if !stamp.is_empty() {
+            return Ok((format!("{stamp}|r{generation}"), quiet));
         }
         let (stamp, quiet) = fetch().await?;
         *self.recent.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((Instant::now(), stamp.clone(), quiet));
-        Ok((stamp, quiet))
+        Ok((format!("{stamp}|r{generation}"), quiet))
     }
 
-    pub(super) async fn stamp(&self, pool: &MySqlPool) -> Result<(Stamp, bool), sqlx::Error> {
-        self.stamp_with(|| read_stamp(pool)).await
+    pub(super) async fn stamp(
+        &self,
+        pool: &MySqlPool,
+        generation: u64,
+    ) -> Result<(Stamp, bool), sqlx::Error> {
+        self.stamp_with(generation, || read_stamp(pool)).await
     }
 
     fn get(&self, stamp: &str, key: &str) -> Option<Bytes> {
@@ -188,7 +203,11 @@ pub(super) async fn cached(
     next: middleware::Next,
 ) -> Response {
     let key = request.uri().to_string();
-    let (stamp, quiet) = match state.cache.stamp(&state.pool).await {
+    let (stamp, quiet) = match state
+        .cache
+        .stamp(&state.pool, state.roster.generation())
+        .await
+    {
         Ok(v) => v,
         Err(e) => return WebError::from(e).into_response(),
     };
@@ -230,13 +249,50 @@ mod tests {
             std::future::ready(Ok(("s1".to_owned(), true)))
         };
         for _ in 0..5 {
-            assert_eq!(cache.stamp_with(fetch).await.unwrap(), ("s1".into(), true));
+            assert_eq!(
+                cache.stamp_with(0, fetch).await.unwrap(),
+                ("s1|r0".into(), true)
+            );
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         // 过期之后再查一次 —— 戳变了整个缓存照旧作废，失效语义不变。
         *cache.recent.lock().unwrap() = None;
-        assert_eq!(cache.stamp_with(fetch).await.unwrap(), ("s1".into(), true));
+        assert_eq!(
+            cache.stamp_with(0, fetch).await.unwrap(),
+            ("s1|r0".into(), true)
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    /// 名册代数一变，整个响应缓存作废 —— 库里一个字节都没动也要作废，
+    /// 因为名册活在进程内存里。**不必起数据库**：取戳那一步是参数。
+    ///
+    /// 同时钉住代数**在一秒自缓存之外**拼上：库那一截照旧只查一次，
+    /// 而代数变化当场生效，不用等自缓存过期。
+    #[tokio::test]
+    async fn a_new_roster_generation_invalidates_every_cached_response() {
+        let cache = Cache::new(64);
+        let calls = AtomicUsize::new(0);
+        let fetch = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(("db".to_owned(), true)))
+        };
+        let (before, _) = cache.stamp_with(7, fetch).await.unwrap();
+        cache.put(
+            before.clone(),
+            "/api/meta".into(),
+            Bytes::from_static(b"old"),
+        );
+        assert_eq!(
+            cache.get(&before, "/api/meta").as_deref(),
+            Some(&b"old"[..])
+        );
+
+        // 名册整体过期 ⇒ 代数 +1。库没变，取戳也仍然走自缓存（calls 不增）。
+        let (after, _) = cache.stamp_with(8, fetch).await.unwrap();
+        assert_ne!(before, after, "代数没进戳，名册刷新后页面会一直回旧响应");
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "代数不该让库那一截重查");
+        assert_eq!(cache.get(&after, "/api/meta"), None, "旧响应必须整体作废");
     }
 
     #[test]

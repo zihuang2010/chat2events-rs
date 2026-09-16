@@ -202,7 +202,14 @@ export const metaSchema = z.object({
       alias_is_authoritative: z.boolean().optional(),
     }),
   ),
-  agents: z.array(z.object({ agent: EASY_USER_ID, alias: z.string().nullable() })),
+  agents: z.array(
+    z.object({
+      agent: EASY_USER_ID,
+      alias: z.string().nullable(),
+      /** 这个 alias 是权威姓名，还是回落显示的平台账号。缺席时回落到 meta 的全局位。 */
+      alias_is_authoritative: z.boolean().optional(),
+    }),
+  ),
   taxonomy: z.array(taxonomyTypeSchema),
   taxonomy_version: z.string(),
   alias_is_authoritative: z.boolean().default(false),

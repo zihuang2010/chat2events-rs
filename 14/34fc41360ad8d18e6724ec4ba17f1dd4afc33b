@@ -1,0 +1,58 @@
+webui/deploy/nginx.conf
+  s_8e150c20ae0531::t_2a5d853a1ecea4 23
+  s_79ea77cd38b084::t_225109e28d8136 1-2,4-9,11-22,24-32,36-45,55,61,67-69,73-74,80-81
+config.toml
+  s_25a30393b2c831::t_0811a0cb44c793 223-224,230
+  s_25a30393b2c831::t_04443f55cc1b82 225-229
+  h_d985390266d506 214,219-220
+  s_25a30393b2c831::t_24bd6c93fd31ca 235-238
+  s_bea32b81bc40ea::t_71edb0c53960ff 74
+webui/deploy/supervisor.conf
+  s_bea32b81bc40ea::t_6d19f9946d6c84 1-2,6-9,11,21-22,26,32,39-68
+  s_bea32b81bc40ea::t_557eecd0db93dc 3-5,10,12-20,23-25,27-31,33-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1434fc41360ad8d18e6724ec4ba17f1dd4afc33b",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_25a30393b2c831": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed460149-ecaf-439a-a891-5e23f4b28db8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_79ea77cd38b084": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f3be73aa-73b1-404e-aa71-289d6f852b2b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_8e150c20ae0531": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08d67eee-af82-4613-8661-74b13eb931b1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_bea32b81bc40ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c679ab57-b088-4168-9d2c-c16c81a97256",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

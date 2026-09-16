@@ -55,6 +55,7 @@
 
 use super::config::{RosterConfig, RosterSecrets};
 use serde::Deserialize;
+use serde_json::Value;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{
@@ -153,13 +154,46 @@ pub struct Roster {
     lookups: AtomicUsize,
 }
 
+/// 名册的两个域。**不是 trait，是枚举**：两个域的缓存语义完全相同
+/// （按需批量 · 负缓存 · 整体过期 · 冷却），只有「怎么发这次请求、怎么读这个应答」不同。
+///
+/// ⚠️ 共用那套语义是**有意的**，不是顺手抽象：「失败绝不进负缓存」「冷却按域分开」
+/// 这两条都是承重的，抄成两份就有两个地方会漂。真正不同的那点小差异用一个 `match`
+/// 分掉，比给「一个域」发明一个 trait 便宜得多。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Domain {
+    /// 账号域 `account-app`：`officialUserId` → 客服姓名。
+    Employee = 0,
+    /// 商家域 `merchant-app`：`merchant_id` → 店铺名称。
+    Merchant = 1,
+}
+
+impl Domain {
+    /// 一次请求最多几个 ID。**两个域的上限来源完全不同**，见各自的常量。
+    fn batch(self) -> usize {
+        match self {
+            Self::Employee => EMPLOYEE_BATCH,
+            Self::Merchant => MERCHANT_BATCH,
+        }
+    }
+
+    /// 日志与错误文案里的名字。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Employee => "员工名册",
+            Self::Merchant => "商家名册",
+        }
+    }
+}
+
 struct Names {
-    /// `officialUserId` → 姓名。**`None` = 上游明确说查无此人**（负缓存）。
-    employees: HashMap<String, Option<String>>,
-    /// 这张表是在第几个 TTL 纪元里建起来的，与 [`Roster::generation`] 同源。
+    /// 按 [`Domain`] 索引：ID → 名字。**`None` = 上游明确说查无此人 / 此商家**（负缓存）。
+    tables: [HashMap<String, Option<String>>; 2],
+    /// 按 [`Domain`] 索引的冷却截止时刻 —— 见 [`FAILURE_COOLDOWN`]。
+    /// **按域分开**：账号域挂了不该连累商家域，它们是两个服务。
+    cooldown: [Instant; 2],
+    /// 这两张表是在第几个 TTL 纪元里建起来的，与 [`Roster::generation`] 同源。
     epoch: u64,
-    /// 上游调不通之后的冷却截止时刻 —— 见 [`FAILURE_COOLDOWN`]。
-    cooldown_until: Instant,
 }
 
 /// 账号域（`account-app`）的「按企业主体批量查企微员工详情」v2。
@@ -173,14 +207,40 @@ const EMPLOYEE_PATH: &str = "/rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpId
 /// **分批是调用方的责任**。
 const EMPLOYEE_BATCH: usize = 100;
 
+/// 商家域（`merchant-app`）的「按 id 批量查店铺名称」。
+///
+/// ⚠️ **同族还有两个接口，名字相近但语义不同，别换**：
+/// `getMerchantNameAndStatusMap` **不过滤已删除商家**（底层 SQL 只有 `id in (...)`），
+/// `getMerchantBaseInfosMap` 会把四类手机号一起拉回来（为取一个店名新开一条 PII 路径）。
+/// 选这一个正是因为它**最轻**（`Map<Long, String>`）且删除过滤**可控**。
+const MERCHANT_PATH: &str = "/rpc/merchant/getMerchantNameByIds";
+
+/// `isDeleted=0` = 只要未删除的商家。
+///
+/// ⚠️ **这是当前的工作假设，不是业务确认过的定义**：它把「已注销」当成
+/// `is_deleted` 软删除。`is_deleted` 和 `status`（1正常 2拉黑 3冻结 4保护）是**两个维度**，
+/// 而这个接口只回名字、**不带 `status`**。业务若最后说「已注销」指拉黑 / 冻结，
+/// 这里换个值是不够的，要改走 `getMerchantNameAndStatusMap` 读 `status`。
+const MERCHANT_NOT_DELETED: &str = "0";
+
+/// 一次请求最多几个 `merchant_id`。
+///
+/// ⚠️ **这个上限是我们自己定的，服务端没有条数兜底**（不像账号域那边超了会明确报错）——
+/// 超长只表现为网关 414 或**截断**，那是会静默算错的错法。
+/// 换算：商家 id 是**数据库自增**不是雪花（`Merchant.java` 的 `IdType.AUTO`），7-8 位量级，
+/// 逗号分隔每个约 9 字节 ⇒ 500 个 ≈ 4.5 KB，加路径仍在常见 8 KB 网关限制内。
+/// **它防的不是正常量级**（商家 ID 被查询窗口收敛，几百而已），是窗口异常放大的那一天。
+const MERCHANT_BATCH: usize = 500;
+
 /// 统一包装 `Result` 的成功码。**是 1，不是 0 也不是 200**（`ResultEnum.SUCCESS`）。
+/// 两个域同一套包装，所以这一条也共用。
 ///
 /// ⚠️ **必须同时要求 `code == 1` 和 `data` 非空**，两道一起才闭环：
 /// 上游「失败时 `data` 是 null 还是 `{}`」没有权威答案（`Result` 来自外部依赖
 /// `com.jdd.integration:jdd-common-resultvo`，源码不在手上）。而空 map 是**合法的成功
-/// 响应**（查不到的 userId 不放进 map），所以万一失败时 `data` 也是 `{}`，只看 `data`
+/// 响应**（查不到的 ID 不放进 map），所以万一失败时 `data` 也是 `{}`，只看 `data`
 /// 就会把一批人当成「查无此人」负缓存住 —— 那是失败不该有的待遇。`code` 这一道先拦住它。
-const EMPLOYEE_OK: i64 = 1;
+const RESULT_OK: i64 = 1;
 
 /// 上游调不通之后冷却多久再试。
 ///
@@ -195,17 +255,18 @@ const EMPLOYEE_OK: i64 = 1;
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(10);
 
 enum Upstream {
-    /// 生产：Nacos 找到实例，再打账号域的批量查询。
+    /// 生产：Nacos 找到实例，再打那个域的批量查询。
     Service {
         discovery: Discovery,
-        service: String,
+        /// 按 [`Domain`] 索引的服务名。
+        services: [String; 2],
         http: reqwest::Client,
     },
     /// 预填充模式的测试替身 —— **上游的假答案，不是缓存的初始内容**。
     /// 于是「按需填充 → 映射增长」这条路在测试里照样完整走一遍，
     /// 表里没有的 ID 就是「查无此人」，跟真上游一个语义。
     #[cfg(test)]
-    Canned(HashMap<String, String>),
+    Canned([HashMap<String, String>; 2]),
 }
 
 impl Roster {
@@ -215,8 +276,8 @@ impl Roster {
         Ok(Arc::new(Self::with_upstream(
             Upstream::Service {
                 discovery,
-                service: cfg.employee_service.clone(),
-                // ⚠️ 超时是**每一批**的，不是整次补齐的：100 个一批，
+                services: [cfg.employee_service.clone(), cfg.merchant_service.clone()],
+                // ⚠️ 超时是**每一批**的，不是整次补齐的：账号域 100 个一批，
                 // 补 250 个人就是 3 批、最坏 3 × timeout_secs。名册规模本来就小
                 // （实测客服二十余人 = 1 批），真长到要分很多批时得在这里加总预算。
                 http: reqwest::Client::builder()
@@ -233,58 +294,80 @@ impl Roster {
             ttl,
             born: Instant::now(),
             names: tokio::sync::Mutex::new(Names {
-                employees: HashMap::new(),
+                tables: Default::default(),
+                cooldown: [Instant::now(); 2],
                 epoch: 0,
-                cooldown_until: Instant::now(),
             }),
             lookups: AtomicUsize::new(0),
         }
     }
 
-    /// 把一批 `officialUserId` 解析成姓名。
-    ///
-    /// **返回值里只有解析出姓名的那些** —— 「查无此人」和「调不通」都不在里面，
-    /// 调用方一律回落显示账号或 ID。两者的区别只落在日志上（见下面的 `warn`），
-    /// 不落在返回值上：页面对它们的处置是同一个。
+    /// 把一批 `officialUserId` 解析成客服姓名。
     pub async fn employees(
         &self,
         corp: &str,
         wanted: &BTreeSet<String>,
     ) -> HashMap<String, String> {
+        self.resolve(corp, Domain::Employee, wanted).await
+    }
+
+    /// 把一批 `merchant_id` 解析成店铺名称。
+    ///
+    /// ID 是**字符串不是整数**，全程不解析成 `u64` —— `merchant_id` 在本仓库是
+    /// `BIGINT UNSIGNED`，而取数那边本来就 `CAST(... AS CHAR)` 出来（免得前端丢精度）。
+    /// 原样带出去、原样对回来，中间少一次可能溢出的转换。
+    pub async fn merchants(&self, wanted: &BTreeSet<String>) -> HashMap<String, String> {
+        // 商家那个接口不收 corpId（它按 id 直查），传空串即可。
+        self.resolve("", Domain::Merchant, wanted).await
+    }
+
+    /// 两个域共用的那套：整体过期 → 算缺失 → 冷却判断 → 批量补齐 → 取答案。
+    ///
+    /// **返回值里只有解析出名字的那些** —— 「查无此人」和「调不通」都不在里面，
+    /// 调用方一律回落显示 ID。两者的区别只落在日志上（见下面的 `warn`），
+    /// 不落在返回值上：页面对它们的处置是同一个。
+    async fn resolve(
+        &self,
+        corp: &str,
+        domain: Domain,
+        wanted: &BTreeSet<String>,
+    ) -> HashMap<String, String> {
         let epoch = self.generation();
         let mut names = self.names.lock().await;
-        // TTL 到期**整体清空**。判据是「纪元变了」而不是「距上次建表过了多久」——
-        // 两者在这里必须是同一个数，否则代数和这张表会各走各的。
+        // TTL 到期**整体清空**（两张表一起）。判据是「纪元变了」而不是「距上次建表
+        // 过了多久」—— 两者在这里必须是同一个数，否则代数和这两张表会各走各的。
         if names.epoch != epoch {
-            names.employees.clear();
+            names.tables = Default::default();
             names.epoch = epoch;
         }
+        let slot = domain as usize;
         let missing: Vec<String> = wanted
             .iter()
-            .filter(|id| !names.employees.contains_key(*id))
+            .filter(|id| !names.tables[slot].contains_key(*id))
             .cloned()
             .collect();
         // 冷却期内直接回落：不发请求、不打日志（那条 warn 刚打过）。见 `FAILURE_COOLDOWN`。
-        if !missing.is_empty() && Instant::now() >= names.cooldown_until {
+        if !missing.is_empty() && Instant::now() >= names.cooldown[slot] {
             self.lookups.fetch_add(1, Ordering::Relaxed);
-            match self.upstream.employees(corp, &missing).await {
-                // 上游答了：找到的记姓名，没答的记 `None` —— 那是**数据常态**，不告警。
-                Ok(answered) => names.employees.extend(answered),
+            match self.upstream.lookup(corp, domain, &missing).await {
+                // 上游答了：找到的记名字，没答的记 `None` —— 那是**数据常态**，不告警。
+                Ok(answered) => names.tables[slot].extend(answered),
                 // Nacos 不可用 / 服务调不通 —— **可修的运维故障，要 `warn`**，
                 // 且**绝不进负缓存**：一次抖动不该把所有人钉住一整个 TTL。
                 Err(error) => {
-                    names.cooldown_until = Instant::now() + FAILURE_COOLDOWN;
+                    names.cooldown[slot] = Instant::now() + FAILURE_COOLDOWN;
                     tracing::warn!(
                         %error,
                         ids = missing.len(),
-                        "员工名册查询失败，本次回落显示账号或 ID"
+                        "{}查询失败，本次回落显示 ID",
+                        domain.label()
                     );
                 }
             }
         }
         wanted
             .iter()
-            .filter_map(|id| Some((id.clone(), names.employees.get(id)?.clone()?)))
+            .filter_map(|id| Some((id.clone(), names.tables[slot].get(id)?.clone()?)))
             .collect()
     }
 
@@ -292,10 +375,10 @@ impl Roster {
     ///
     /// **= 进程起来之后走过了几个 TTL，一个纯时间函数。** 这一点是承重的：
     ///
-    /// ⚠️ 代数曾经是个「在 `employees()` 里 +1」的计数器，那是**循环依赖**。
+    /// ⚠️ 代数曾经是个「在补齐时 +1」的计数器，那是**循环依赖**。
     /// 代数进的是响应缓存的数据戳，而缓存**命中时 handler 根本不会跑**
     /// （`cache::cached` 在 `next.run` 之前就返回了）—— 于是同一组筛选一直命中旧响应
-    /// → `employees()` 永远没机会跑 → 代数永远不动 → 缓存永远不失效。名册于是
+    /// → 补齐永远没机会跑 → 代数永远不动 → 缓存永远不失效。名册于是
     /// 再也刷新不了，只能等夜里跑批改了库里的戳。「改名后几分钟内页面跟着变」直接落空。
     ///
     /// 纯时间函数没有这个问题：谁都不用调用它，时间自己会走。
@@ -305,14 +388,27 @@ impl Roster {
         (self.born.elapsed().as_millis() / self.ttl.as_millis().max(1)) as u64
     }
 
-    /// 预填充模式：给一张上游的假答案表，表里没有的 ID 即「查无此人」。
+    /// 预填充模式：给两个域各一张上游的假答案表，表里没有的 ID 即「查无此人」。
     #[cfg(test)]
-    pub(super) fn canned(answers: &[(&str, &str)], ttl: Duration) -> Arc<Self> {
-        let table = answers
-            .iter()
-            .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
-            .collect();
-        Arc::new(Self::with_upstream(Upstream::Canned(table), ttl))
+    pub(super) fn canned(employees: &[(&str, &str)], ttl: Duration) -> Arc<Self> {
+        Self::canned_both(employees, &[], ttl)
+    }
+
+    #[cfg(test)]
+    pub(super) fn canned_both(
+        employees: &[(&str, &str)],
+        merchants: &[(&str, &str)],
+        ttl: Duration,
+    ) -> Arc<Self> {
+        let table = |rows: &[(&str, &str)]| {
+            rows.iter()
+                .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
+                .collect()
+        };
+        Arc::new(Self::with_upstream(
+            Upstream::Canned([table(employees), table(merchants)]),
+            ttl,
+        ))
     }
 
     /// 至今向上游发起过几次批量查询。
@@ -323,64 +419,82 @@ impl Roster {
 }
 
 impl Upstream {
-    /// 一次批量查询。返回的每个 ID 都有答案：`Some(姓名)` 或 **`None` = 上游说查无此人**。
+    /// 一次批量查询。返回的每个 ID 都有答案：`Some(名字)` 或 **`None` = 上游说查无此人**。
     /// 调不通一律走 `Err`，由调用方决定不进负缓存。
-    async fn employees(
+    async fn lookup(
         &self,
         corp: &str,
+        domain: Domain,
         ids: &[String],
     ) -> crate::Result<HashMap<String, Option<String>>> {
         match self {
             Self::Service {
                 discovery,
-                service,
+                services,
                 http,
             } => {
+                let service = &services[domain as usize];
+                let label = domain.label();
                 let mut found = HashMap::new();
-                for batch in ids.chunks(EMPLOYEE_BATCH) {
+                for batch in ids.chunks(domain.batch()) {
                     // 每一批各选一次实例：实例列表按 `cacheMillis` 在后台刷新，
                     // 用最新那份没坏处，也顺手把负载摊开。
                     let instance = discovery
                         .pick(service)
                         .ok_or_else(|| format!("Nacos 尚无服务 `{service}` 的健康实例"))?;
-                    let request = serde_json::json!({"corpId": corp, "userIdSet": batch});
-                    let response = http
-                        .post(format!("{instance}{EMPLOYEE_PATH}"))
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .body(serde_json::to_string(&request)?)
-                        .send()
-                        .await
-                        .map_err(|e| format!("员工服务 `{service}` 调用失败：{e}"))?;
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
+                    let request = match domain {
+                        Domain::Employee => http
+                            .post(format!("{instance}{EMPLOYEE_PATH}"))
+                            .header(reqwest::header::CONTENT_TYPE, "application/json")
+                            .body(serde_json::to_string(
+                                &serde_json::json!({"corpId": corp, "userIdSet": batch}),
+                            )?),
+                        Domain::Merchant => {
+                            let mut url =
+                                reqwest::Url::parse(&format!("{instance}{MERCHANT_PATH}"))?;
+                            // 逗号分隔那一种写法（服务端 `@RequestParam List<Long>`
+                            // 两种都收）。**不手拼查询串** —— 编码交给 `Url`。
+                            url.query_pairs_mut()
+                                .append_pair("ids", &batch.join(","))
+                                .append_pair("isDeleted", MERCHANT_NOT_DELETED);
+                            http.get(url)
+                        }
+                    };
+                    let response = response_of(request, label, service).await?;
+                    let (status, body) = response;
                     if !status.is_success() {
                         return Err(format!(
-                            "员工服务 `{service}` 返回 HTTP {status}（{instance}）"
+                            "{label} `{service}` 返回 HTTP {status}（{instance}）"
                         )
                         .into());
                     }
-                    let answer: EmployeeBatch = serde_json::from_str(&body)
-                        .map_err(|e| format!("员工服务 `{service}` 的应答无法解析：{e}"))?;
+                    let answer: Envelope = serde_json::from_str(&body)
+                        .map_err(|e| format!("{label} `{service}` 的应答无法解析：{e}"))?;
                     // ⚠️ **`code != 1` 或 `data` 缺席都当「调不通」**，绝不当成
                     // 「这一批全部查无此人」—— 后者会把他们负缓存住一整个 TTL，
                     // 而那是**失败**不该有的待遇。空 map 才是合法的「全都没查到」
-                    // （服务端对查不到的 userId 是不放进 map，不是报错）。判据见 [`EMPLOYEE_OK`]。
-                    let employees = answer
+                    // （服务端对查不到的 ID 是不放进 map，不是报错）。判据见 [`RESULT_OK`]。
+                    let data = answer
                         .data
-                        .filter(|_| answer.code == Some(EMPLOYEE_OK))
+                        .filter(|_| answer.code == Some(RESULT_OK))
                         .ok_or_else(|| {
                             format!(
-                                "员工服务 `{service}` 应答异常：code={:?}（成功是 {EMPLOYEE_OK}）\
+                                "{label} `{service}` 应答异常：code={:?}（成功是 {RESULT_OK}）\
                                  message={:?}",
                                 answer.code, answer.message
                             )
                         })?;
                     for id in batch {
-                        // map 里缺 key = 员工不存在或已删除。空名字跟没有名字一样没用，
-                        // 一并当查不到，回落显示账号。
-                        let name = employees
+                        // map 里缺 key = 不存在或已删除。空名字跟没有名字一样没用，
+                        // 一并当查不到，回落显示 ID。
+                        let name = data
                             .get(id)
-                            .and_then(|employee| employee.name.clone())
+                            .and_then(|value| match domain {
+                                // 账号域回的是对象，取 `name`；商家域直接就是店名。
+                                Domain::Employee => value.get("name").and_then(Value::as_str),
+                                Domain::Merchant => value.as_str(),
+                            })
+                            .map(str::to_owned)
                             .filter(|name| !name.trim().is_empty());
                         found.insert(id.clone(), name);
                     }
@@ -388,33 +502,44 @@ impl Upstream {
                 Ok(found)
             }
             #[cfg(test)]
-            Self::Canned(table) => Ok(ids
+            Self::Canned(tables) => Ok(ids
                 .iter()
-                .map(|id| (id.clone(), table.get(id).cloned()))
+                .map(|id| (id.clone(), tables[domain as usize].get(id).cloned()))
                 .collect()),
         }
     }
 }
 
-/// `Result<Map<String, WorkWechatEmpCorpInfoRespDTO>>` 的外层包装。
-///
-/// 成功判据是 **`code == 1` 且 `data` 非空**，理由见 [`EMPLOYEE_OK`]。
-#[derive(Deserialize)]
-struct EmployeeBatch {
-    code: Option<i64>,
-    message: Option<String>,
-    /// key = `userId`（本仓库的 `officialUserId`）。**查不到的 userId 根本不出现**。
-    data: Option<HashMap<String, Employee>>,
+/// 发一次请求，回 `(状态码, 正文)`。两个域共用 —— 差异都在请求构造那一步。
+async fn response_of(
+    request: reqwest::RequestBuilder,
+    label: &str,
+    service: &str,
+) -> crate::Result<(reqwest::StatusCode, String)> {
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("{label} `{service}` 调用失败：{e}"))?;
+    let status = response.status();
+    Ok((status, response.text().await.unwrap_or_default()))
 }
 
-/// 只取 `name` 一个字段。
+/// 两个域共用的 `Result<Map<K, V>>` 外层包装。
 ///
-/// 上游那个 DTO 有二十来个字段（`position` / `mainDepartment` / `deptIds` / `city` …），
-/// **端口上每多一个死字段，就是向未来每一个适配器收一次税**（`CONTEXT.md` 的领域契约
-/// 同一条规矩）。部门归属是另一张票的事，而那张票还卡在「分组」的权威定义上。
+/// 成功判据是 **`code == 1` 且 `data` 非空**，理由见 [`RESULT_OK`]。
+/// `data` 的值用 `Value` 装着，因为两个域的 `V` 不同：账号域是
+/// `WorkWechatEmpCorpInfoRespDTO`（对象，取 `name`），商家域直接是店名字符串。
+///
+/// ⚠️ **只取名字那一个字段。** 账号域那个 DTO 有二十来个字段
+/// （`position` / `mainDepartment` / `deptIds` / `city` …），
+/// **端口上每多一个死字段，就是向未来每一个适配器收一次税**
+/// （`CONTEXT.md` 的领域契约同一条规矩）。
 #[derive(Deserialize)]
-struct Employee {
-    name: Option<String>,
+struct Envelope {
+    code: Option<i64>,
+    message: Option<String>,
+    /// key = 那个域的 ID。**查不到的 ID 根本不出现**。
+    data: Option<HashMap<String, Value>>,
 }
 
 /// Nacos v1 OpenAPI 客户端 —— 登录拿令牌，按服务名查健康实例。
@@ -894,7 +1019,7 @@ mod tests {
         assert_eq!(roster.lookups(), 1);
         // 冷却过去之后还会再试 —— 这证明它**没有**被记成「查无此人」。
         // （把冷却截止拨回当下，不为这一条真睡十秒。）
-        roster.names.lock().await.cooldown_until = Instant::now();
+        roster.names.lock().await.cooldown = [Instant::now(); 2];
         assert!(
             roster
                 .employees(CORP, &ids(&["zhang.san"]))
@@ -981,10 +1106,108 @@ mod tests {
             assert!(roster.employees(CORP, &ids(&["a"])).await.is_empty());
             server.join().unwrap();
             // 没进负缓存：冷却一过就会再试（拨回冷却，不真睡十秒）。
-            roster.names.lock().await.cooldown_until = Instant::now();
+            roster.names.lock().await.cooldown = [Instant::now(); 2];
             assert!(roster.employees(CORP, &ids(&["a"])).await.is_empty());
             assert_eq!(roster.lookups(), 2, "{bad} 被当成查无此人记进负缓存了");
         }
+    }
+
+    /// 协议：商家域 `getMerchantNameByIds` 的请求形状（GET + `ids` + `isDeleted=0`）、
+    /// `merchantId → nick_name` 的回填、**缺 key = 查无此商家**（进负缓存），以及分批。
+    ///
+    /// ⚠️ 商家 ID 全程是**字符串**，不解析成整数 —— `merchant_id` 是 `BIGINT UNSIGNED`，
+    /// 取数那边本来就 `CAST(... AS CHAR)` 出来（免得前端丢精度）。这一条用一个
+    /// 超出 `i64` 的值钉住：换成 `u64`/`i64` 中转就会溢出或丢精度。
+    #[tokio::test]
+    async fn the_merchant_name_query_matches_the_merchant_app_contract() {
+        const HUGE: &str = "18446744073709551615";
+        // 501 个 ⇒ 切成 500 + 1 两批（上限是我们自己定的，服务端没有条数兜底）。
+        let mut wanted: Vec<String> = (0..500).map(|n| format!("{}", 10_000_000 + n)).collect();
+        wanted.push(HUGE.into());
+        let (base, server) = scripted(vec![
+            (
+                MERCHANT_PATH,
+                200,
+                json!({"code": 1, "data": {"10000000": "甲商家", "10000001": "   "}}),
+            ),
+            (
+                MERCHANT_PATH,
+                200,
+                json!({"code": 1, "data": {HUGE: "大号商家"}}),
+            ),
+        ]);
+        let hosts: Arc<Hosts> = Arc::default();
+        hosts
+            .write()
+            .unwrap()
+            .insert("merchant-app".into(), vec![base]);
+        let roster = Arc::new(Roster::with_upstream(service_upstream(hosts), LONG));
+
+        let names = roster.merchants(&wanted.iter().cloned().collect()).await;
+        assert_eq!(names.get("10000000").unwrap(), "甲商家");
+        assert!(!names.contains_key("10000001"), "空店名该当查不到");
+        assert_eq!(
+            names.get(HUGE).unwrap(),
+            "大号商家",
+            "超 i64 的 ID 必须原样对回来"
+        );
+        assert_eq!(names.len(), 2);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2, "501 个 ID 必须切成两批：{requests:?}");
+        let (line, body) = &requests[0];
+        assert!(line.starts_with(&format!("GET {MERCHANT_PATH}?")), "{line}");
+        assert!(body.is_empty(), "这是 GET，不该有正文");
+        // 逗号是 `Url` 编码过的（%2C），服务端解码后按逗号切 —— 断言时解回来比较。
+        let query = line
+            .split('?')
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(" HTTP/1.1");
+        let ids = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("ids="))
+            .unwrap()
+            .replace("%2C", ",");
+        assert_eq!(ids.split(',').count(), MERCHANT_BATCH);
+        assert!(ids.starts_with("10000000,10000001,"), "{ids}");
+        // ⚠️ 这一位就是「已注销商家显不显示」那个业务假设的落点。
+        assert!(query.contains("isDeleted=0"), "{query}");
+        assert!(requests[1].0.contains(HUGE), "{:?}", requests[1].0);
+
+        // 回填过的 ID 一个都不再查 —— 查到的和「查无此商家」的都算数。
+        // （`lookups` 数的是「补齐了几轮」，不是几个批次：上面那一轮两批算一次。）
+        assert_eq!(roster.lookups(), 1);
+        roster.merchants(&wanted.iter().cloned().collect()).await;
+        assert_eq!(roster.lookups(), 1, "第二轮不该再打上游");
+    }
+
+    /// 两个域的**冷却互不连累** —— 它们是两个服务，账号域挂了不该让商家名也停摆。
+    #[tokio::test]
+    async fn one_domain_failing_does_not_cool_down_the_other() {
+        // 只注册商家域的实例：账号域 `pick` 必然拿不到，走「调不通」。
+        let (base, server) = scripted(vec![(
+            MERCHANT_PATH,
+            200,
+            json!({"code": 1, "data": {"1": "甲商家"}}),
+        )]);
+        let hosts: Arc<Hosts> = Arc::default();
+        hosts
+            .write()
+            .unwrap()
+            .insert("merchant-app".into(), vec![base]);
+        let roster = Arc::new(Roster::with_upstream(service_upstream(hosts), LONG));
+
+        assert!(
+            roster
+                .employees(CORP, &ids(&["zhang.san"]))
+                .await
+                .is_empty()
+        );
+        // 账号域刚进冷却，商家域必须照常查得到。
+        let names = roster.merchants(&ids(&["1"])).await;
+        assert_eq!(names.get("1").unwrap(), "甲商家");
+        server.join().unwrap();
     }
 
     /// Nacos 一个健康实例都没有的名册 —— 每次查询都走「调不通」那一路。
@@ -999,7 +1222,7 @@ mod tests {
     fn service_upstream(hosts: Arc<Hosts>) -> Upstream {
         Upstream::Service {
             discovery: Discovery { hosts },
-            service: "account-app".into(),
+            services: ["account-app".into(), "merchant-app".into()],
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()

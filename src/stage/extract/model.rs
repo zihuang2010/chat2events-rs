@@ -7,7 +7,7 @@
 
 use super::{
     prompt::SYSTEM,
-    redact::{ORDER_NO, PLACEHOLDER, first_phone},
+    redact::{NOISE, first_phone},
     types::{EventDraft, SUMMARY_COLUMN, SUMMARY_MAX, WireDraft},
 };
 use crate::{
@@ -118,7 +118,7 @@ pub(super) enum Invalid {
     Oversized(Rejection),
     /// 切了也一样犯 —— 该批次失败。
     ///
-    /// PII（手机号 / 订单号）和「整句只有占位符」跟段长无关，切到底只是白烧上千次调用。
+    /// PII（手机号）和「整句只有记号」跟段长无关，切到底只是白烧上千次调用。
     Fatal(Rejection),
 }
 
@@ -152,16 +152,19 @@ impl fmt::Display for Invalid {
 ///     [`SUMMARY_COLUMN`] 同理：段太长才会揉出一条 589 字的 summary。
 ///     顺带 `sorted(set(v))`：**去重 + 排序是契约不是顺手**。
 ///     ref 那两种错误的分别见 [`parse_ref`]。
-///   * **规模无关 · PII**（summary 含手机号 / 订单号 / 只有占位符）——
+///   * **规模无关 · PII**（summary 含手机号 / 抹完什么都不剩）——
 ///     [`Invalid::Fatal`]，该批次失败。它归事实列、冻结区不可写，且 `sha256(summary)`
 ///     是 ⑤ 的缓存键，**一旦进去就是永久的，缓存还会把它焊死**。切了也一样犯。
-///   * **规模无关 · 可读性**（占位符 / 超长）—— **根本不失败**。这一档此前也按 PII
-///     处罚，实测一轮打挂 11 个群，每个只因 ×1 条 summary 就整日 0 事件落库。
+///     **订单号不在这一档** —— 它是业务标识不是个人信息，见 [`NOISE`]。
+///   * **规模无关 · 可读性**（占位符 / 订单号 / 超长）—— **根本不失败**。这一档
+///     此前也按 PII 处罚，实测一轮打挂 11 个群，每个只因 ×1 条 summary 就整日
+///     0 事件落库；订单号是**第二轮**同样的账 —— 一段 149 个事件里 5 条抄了单号，
+///     十天窗口照样归零（理由与实测数字在 [`NOISE`]）。
 ///     占位符是脱敏抹掉 PII 之后**留下的洞**，三个记号本身不含任何 PII；
-///     超长 101 字而列宽 `VARCHAR(200)` 装得下。两者都不是数据问题。
+///     超长 101 字而列宽 `VARCHAR(200)` 装得下。三者都不是数据问题。
 ///     **只有 100~[`SUMMARY_COLUMN`] 之间才走这档** —— 过了列宽是上一档。
 ///
-/// 占位符**就地抹掉**（这是唯一一处字段级修补，范围限定在 `redact` 那三个常量上）。
+/// 占位符和订单号**就地抹掉**（这是唯一一处字段级修补，范围钉死在 [`NOISE`] 上）。
 /// `validate` 的注释此前反对 scrub，理由是「改内容会让缓存键漂掉」——
 /// 那说的是**落库前** scrub；在这里抹，`summary` 从一开始就是清理后的值，
 /// 缓存键就是它的 sha256，没有任何东西可漂。
@@ -209,21 +212,21 @@ pub(super) fn validate(
         // `parse_ref` 的两条错误都是规模相关的，所以收进 `oversized`。
         let r#ref = parse_ref(e.r#ref.as_deref(), open_refs, &mut oversized);
 
-        // **先抹占位符再量长度** —— 抹完可能就不超了。
-        if PLACEHOLDER.is_match(&e.summary) {
+        // **先抹记号再量长度** —— 抹完可能就不超了。
+        if NOISE.is_match(&e.summary) {
             // 抹掉留下的空洞顺手收拾：`@某人 催一下` 抹完是 ` 催一下`。
             // 中文 summary 里的空格本就偶发，把空白归一没有副作用。
-            e.summary = PLACEHOLDER
+            e.summary = NOISE
                 .replace_all(&e.summary, "")
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            // 抹完什么都不剩 = 模型整句只写了记号，那是真的没写 summary。
+            // 抹完什么都不剩 = 模型整句只写了记号和单号，那是真的没写 summary。
             // 这是抹除**引入的**新失败模式，所以它是硬的。
             if e.summary.is_empty() {
                 fatal.push((
-                    "summary 只有占位符",
-                    "summary 不能只由脱敏占位符构成，要写清楚发生了什么".into(),
+                    "summary 只有记号",
+                    "summary 不能只由脱敏占位符和订单号构成，要写清楚发生了什么".into(),
                 ));
             }
         }
@@ -241,12 +244,6 @@ pub(super) fn validate(
             soft.push((
                 "summary 超长",
                 format!("summary 长度 {n} 超过 {SUMMARY_MAX} 字，请压缩"),
-            ));
-        }
-        if let Some(m) = ORDER_NO.find(&e.summary) {
-            fatal.push((
-                "summary 含订单号",
-                format!("summary 不得含订单号「{}」，只描述发生了什么", m.as_str()),
             ));
         }
         if let Some(p) = first_phone(&e.summary) {
@@ -540,11 +537,15 @@ mod tests {
         );
     }
 
-    /// summary 的三层处置各钉一遍：**PII 硬失败 · 占位符抹掉 · 超长只是软抱怨**。
+    /// summary 的三层处置各钉一遍：**手机号硬失败 · 记号抹掉 · 超长只是软抱怨**。
     ///
     /// ⚠️ 此前三层是同一层（全部硬失败），实测一轮打挂 11 个群，其中 9 个只因
     /// ×1 条 summary 带了个脱敏记号。占位符是抹掉 PII 之后**留下的洞**，
     /// 三个记号本身不含 PII；超长 101 字而列宽 `VARCHAR(200)` 装得下。
+    ///
+    /// ⚠️ **订单号是第二轮同样的账**，2026-09-16 一并挪进抹除档：它是业务标识不是
+    /// 个人信息（`redact::NOISE` 记着实测数字），而全或无的闸门让 149 个事件里
+    /// 5 条抄了单号就整十天归零。**手机号留在硬失败那档，这条测试钉的就是这个分野。**
     #[test]
     fn summary_rules_split_into_hard_pii_scrubbed_placeholders_and_soft_length() {
         let check = |s: &str| {
@@ -572,30 +573,46 @@ mod tests {
             "正常 summary 被误拒"
         );
 
-        // ── PII：硬失败，整批作废。`sha256(summary)` 是 ⑤ 的缓存键，进去就焊死了
-        assert!(
-            fatal("5127366458053009229 要求加单")
-                .verbatim()
-                .contains("订单号")
-        );
+        // ── 手机号：硬失败，整批作废。`sha256(summary)` 是 ⑤ 的缓存键，进去就焊死了
         assert!(
             fatal("客户18472625055要求改期")
                 .verbatim()
                 .contains("手机号")
         );
 
-        // ── 占位符：不失败，就地抹掉并收拾空洞
+        // ── 记号：不失败，就地抹掉并收拾空洞
         for (input, want) in [
             ("商家发来<手机号>", "商家发来"),
             ("客户信息<略>需确认", "客户信息需确认"),
             ("@某人 催一下进度", "催一下进度"),
+            // 订单号跟占位符同档 —— 这一条此前是 `Fatal`，一段 149 个事件里
+            // 中 5 条就整十天 0 条落库
+            ("5127366458053009229 要求加单", "要求加单"),
+            ("JDLY202608031734008496改期到周一", "改期到周一"),
+            (
+                "三方5127681781169041222与3316977912130066680并单",
+                "三方与并单",
+            ),
         ] {
             let got = pass(input);
-            assert_eq!(got.events[0].summary, want, "占位符没抹干净：{input}");
+            assert_eq!(got.events[0].summary, want, "记号没抹干净：{input}");
             assert!(got.soft.is_none(), "抹掉就完事了，不该再留一条软抱怨");
         }
+        // 手机号不能被单号的抹除顺带带走 —— 它仍然要硬失败
+        assert!(
+            fatal("5127366458053009229 的客户18472625055要求改期")
+                .verbatim()
+                .contains("手机号"),
+            "抹掉单号之后手机号还得逮得住"
+        );
         // 抹完什么都不剩 = 模型整句只写了记号，那是真的没写 summary
-        assert!(fatal("<略>").verbatim().contains("不能只由脱敏占位符构成"));
+        assert!(fatal("<略>").verbatim().contains("要写清楚发生了什么"));
+        assert!(
+            fatal("5127366458053009229")
+                .verbatim()
+                .contains("要写清楚发生了什么"),
+            "整句只有一个单号也是没写 summary"
+        );
 
         // ── 超长：软的。事件照样拿得到，只附一条重问文案
         // 长度按 Unicode 码点，不是字节 —— 101 个汉字是 303 字节
@@ -654,12 +671,7 @@ mod tests {
         }
         // 但规则名和条数必须在，否则运维看不出发生了什么
         let ops = r.to_string();
-        for rule in [
-            "summary 含手机号",
-            "summary 含订单号",
-            "序号越界",
-            "ref 格式错",
-        ] {
+        for rule in ["summary 含手机号", "序号越界", "ref 格式错"] {
             assert!(ops.contains(rule), "运维版少了规则名「{rule}」：{ops}");
         }
         // 逐字那份反过来：证据必须在，否则模型不知道删哪几个字

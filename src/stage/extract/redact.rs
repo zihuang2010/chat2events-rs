@@ -84,6 +84,22 @@ pub(super) const MASK_AT: &str = "@某人";
 pub(super) static PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!("{MASK_PHONE}|{MASK_FIELD}|{MASK_AT}")).unwrap());
 
+/// `summary` 里要**就地抹掉**的东西：脱敏占位符 ＋ [`ORDER_NO`]。
+///
+/// 两者同档不是顺手合并，判据是同一条：**锚点确定、抹掉即可、抹了不丢语义、且都不是
+/// PII**。占位符是脱敏抹掉 PII 之后留下的洞；订单号按 [`body`] 那句
+/// 「它是业务标识不是个人信息」—— `source_messages` 里原文照存，`summary` 里多一串
+/// 数字只是难看、并让 ⑤ 的 `sha256(summary)` 永不命中，两样都不值一整群。
+///
+/// ⚠️ **订单号此前跟手机号同判 `Fatal`**：实测某派单群一段抽出 149 个事件，
+/// 重问后仍有 5 条 `summary` 抄了单号（改对 96.6%），十天窗口照样 0 条落库。
+/// 全或无的成功率是 `(1-p)^n` —— 正文里订单号是[有意不掩的](body)，模型满屏看着它
+/// 写摘要，n 大的群把小概率乘成了必然，这个群三次重跑三次归零。
+/// **手机号不在此列**，它是真 PII，仍判 `Fatal`。
+pub(super) static NOISE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!("{}|{}", PLACEHOLDER.as_str(), ORDER_NO.as_str())).unwrap()
+});
+
 /// `@名字` -> `@某人 `。**尾随空格是承重的**：`AT` 把 `@` 后的空白也吃进匹配，
 /// 不补回来就会把占位符和下一个字粘住。
 static AT_TO: LazyLock<String> = LazyLock::new(|| format!("{MASK_AT} "));

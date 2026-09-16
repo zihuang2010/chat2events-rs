@@ -1,0 +1,30 @@
+src/stage/extract/model.rs
+  s_b6418d56bad5df::t_49023b381b4a31 540,545-548,576,583,588-591,598,601-607,609-610,614-615,674
+  s_b6418d56bad5df::t_4d2ce10f19c6d9 592-595,611-613
+  s_b6418d56bad5df::t_fc92faa9a3d1a9 10,121,155,158-162,164,167,215-216,219,224,228-229
+CLAUDE.md
+  s_b6418d56bad5df::t_7008ccb02d7bcb 86-89,91,94-97
+src/stage/extract/redact.rs
+  s_b6418d56bad5df::t_6373a30e1d1be7 87-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6d3d9a4cdae539d441531cfb5a5231982338b2b5",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_b6418d56bad5df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa8098ea-1d73-4bbd-a7b2-7882af435f61",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

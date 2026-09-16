@@ -71,7 +71,7 @@ segment_msgs = 400
 
 # ⑤ 分类 —— 独立批次并发与结果缓存
 [classify]
-concurrency = 6                # 全局打标批次并发，独立于抽取群并发（两队端点不同）
+concurrency = 6 # 全局打标批次并发，独立于抽取群并发（两队端点不同）
 # <cache_dir>/<taxonomy_version>-<策略指纹>.sqlite：sha256(summary) -> 标签全集；旧 NDJSON 首次导入并保留。
 # ⚠️ **承重件，不是优化。** 模型打标不保证同输入同输出（temperature=0 也不保证），
 #    而非冻结区每天重写 [T-3, T-2]、同一批 event 会被反复打标 —— 没有这个缓存，
@@ -211,21 +211,31 @@ query_timeout_secs = 10
 [roster]
 # Nacos 服务端地址。只要 scheme://host:port，**不带 /nacos 路径**（代码自己拼 v1 端点）。
 # 账号密码在 secrets.toml 的 [roster] 节。
-nacos = "http://127.0.0.1:8848"
+nacos = "https://mse-650a0714-p.nacos-ans.mse.aliyuncs.com:8848"
 
 # 命名空间 ID 与分组名。**即使用的就是 Nacos 的默认值也要显式写出来** ——
 # 写进代码当默认值的话，配错了不会在启动时喊，只会表现成「解析不到实例」。
 # 默认命名空间的 ID 是空串，默认分组名是 DEFAULT_GROUP。
-namespace = "public"
-group_name = "DEFAULT_GROUP"
+namespace = "integration-dev"
+group_name = "INTEGRATION_GROUP"
 
 # 商家域与员工域的服务名。写错即**启动失败**，错误信息带上服务名。
-merchant_service = "merchant-service"
-employee_service = "employee-service"
+# 员工域 = 账号域 account-app，接口是它的
+# POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds（见 web/roster.rs）。
+# ⚠️ merchant_service 今天**还没有代码消费它**（商家名称那张票没做），但启动期两个服务名
+#    都要解析得到实例，所以它必须是真名。dev 下两个服务同在
+#    integration-dev / INTEGRATION_GROUP。
+#    本地 profile 的服务名带后缀（merchant-app-local / merchant-app-test-local），别照抄。
+merchant_service = "merchant-app"
+employee_service = "account-app"
 
 # 名册（ID → 名字）的整体存活时间。到期整张表清空重查，不做逐条过期 ——
 # 名册规模很小（客服二十余人、商家数百），逐条过期要多存 N 个时间戳换不来东西。
 # 300 秒 = 商家改名后最坏 5 分钟在页面上看到。
+# ⚠️ **它同时是响应缓存的作废周期。** 名册的「代数」拼在 web.cache 的数据戳上
+#    （名册活在进程内存里，它变了库里一个字节都没动），所以每过一个 TTL
+#    整个响应缓存作废一次、各组筛选各重算一遍。
+#    调小 = 名字更新更快、白天重算更频繁；调大反之。两头都别走极端。
 ttl_secs = 300
 
 # Nacos 与两个业务服务共用的 HTTP 超时。这是**内网调用**，秒级即可 ——

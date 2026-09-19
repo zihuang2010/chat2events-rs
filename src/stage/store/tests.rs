@@ -687,3 +687,132 @@ async fn mysql_retry_picks_only_rooms_that_are_still_broken() {
 
     crate::testutil::drop_mysql_database(pool).await;
 }
+
+/// **冻结区被人工重写过，账要留在库里。**
+///
+/// 承重不变量 1 说冻结区的事实列不可写，而 `backfill` / `retry` 可以写穿它 ——
+/// 那是人工授权的重来。问题不在能不能写，在于此前**写完只留一行日志**，
+/// 轮转之后「这几天被动过吗」就查不了了，而冻结区存在的理由正是报表能做同比环比。
+///
+/// 这条钉三件事：窗口与当时的冻结线都记下来（`frozen_before` 随 `lookback_days` 变，
+/// 事后反推不出来）· 挑没挑群分得开（`NULL` vs JSON 数组，两者语义不同）·
+/// **一个字都不写 `run_failure`**。
+///
+/// 最后那条是本票的硬约束：`KNOWN_OK_DAYS`（聚合分母，承重不变量 5）和
+/// `unrepaired_extract_failures`（retry 挑活）都按 `stage='extract'` 过滤那张表。
+/// 往里塞一类「这不是失败」的行，会让刚补跑成功的群日掉出分母 —— 而冻结区不再重抽，
+/// 那个错是永久的。所以这里断言它**空**。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_freeze_rewrites_are_recorded_without_touching_run_failure() {
+    let pool = crate::testutil::mysql_pool("rewrite_log").await;
+    let day = |m: u32, d: u32| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let run_date = day(9, 19);
+    let frozen_before = day(9, 16);
+
+    // ① 没挑群：rooms 存 NULL，不是 []
+    record_rewrite(
+        &pool,
+        run_date,
+        &Window::span(day(6, 1), day(6, 30)),
+        frozen_before,
+        &[],
+    )
+    .await
+    .unwrap();
+    // ② 挑了群：记下是哪几个
+    record_rewrite(
+        &pool,
+        run_date,
+        &Window::span(day(7, 1), day(7, 3)),
+        frozen_before,
+        &["wr1".to_string(), "wr2".to_string()],
+    )
+    .await
+    .unwrap();
+
+    let rows: Vec<(NaiveDate, NaiveDate, NaiveDate, Option<String>)> = sqlx::query_as(
+        // JSON 列取出来要 `CAST(... AS CHAR)` —— 直接按 `Option<String>` 解会报
+        // 「VARCHAR 与 JSON 不兼容」。写入侧同理绑的是字符串（sqlx 没开 json feature）。
+        "SELECT window_since, window_until, frozen_before, CAST(rooms AS CHAR) \
+         FROM b_merchant_group_rewrite_log ORDER BY window_since",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2, "两次重写两行，这张表只增不改");
+    assert_eq!(
+        (rows[0].0, rows[0].1, rows[0].2),
+        (day(6, 1), day(6, 30), frozen_before)
+    );
+    assert_eq!(
+        rows[0].3, None,
+        "没挑群必须是 NULL —— [] 的意思是「一个都没挑中」"
+    );
+    assert_eq!((rows[1].0, rows[1].1), (day(7, 1), day(7, 3)));
+    assert!(
+        rows[1]
+            .3
+            .as_deref()
+            .is_some_and(|r| r.contains("wr1") && r.contains("wr2")),
+        "挑了群要记下是哪几个，实际：{:?}",
+        rows[1].3
+    );
+
+    // ③ 硬约束：一个字都不写 run_failure
+    let (failures,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM b_merchant_group_run_failure")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        failures, 0,
+        "重写记账绝不能碰 run_failure —— 那张表是 KNOWN_OK_DAYS 与 retry 挑活的输入"
+    );
+
+    crate::testutil::drop_mysql_database(pool).await;
+}
+
+/// **漏月要喊得出来，而且检查本身不能扫全历史。**
+///
+/// 镜像区清理下界无限，原文快照只清紧贴边界的那一个月 —— 跑批停摆后两边静默分家，
+/// 留在库里的是未脱敏客户正文，而它的镜像副本已经删了。这条钉两件事：
+/// 断档月份查得出来 · 查询夹在给定区间内（不夹住就是把 `prune_source_messages`
+/// 躲开的那个「每晚白扫整段历史」换个地方加回来）。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_retention_gap_is_visible_without_scanning_all_history() {
+    let pool = crate::testutil::mysql_pool("retention_gap").await;
+    sqlx::raw_sql(
+        "INSERT INTO b_merchant_group_event \
+         (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,occurred_on,asker,asker_role,agents,summary,source_messages) VALUES \
+         ('C','R',JSON_ARRAY('m0'),'2026-03-10 09:00:00','2026-03-10 09:01:00','2026-03-10','merchant00000001','EXTERNAL',JSON_ARRAY(),'远古漏月','[{\"text\":\"远古\"}]'), \
+         ('C','R',JSON_ARRAY('m1'),'2026-05-20 09:00:00','2026-05-20 09:01:00','2026-05-20','merchant00000001','EXTERNAL',JSON_ARRAY(),'紧挨着的漏月','[{\"text\":\"漏了\"}]'), \
+         ('C','R',JSON_ARRAY('m2'),'2026-05-10 09:00:00','2026-05-10 09:01:00','2026-05-10','merchant00000001','EXTERNAL',JSON_ARRAY(),'同月更早一天','[{\"text\":\"更早\"}]'), \
+         ('C','R',JSON_ARRAY('m3'),'2026-07-10 09:00:00','2026-07-10 09:01:00','2026-07-10','merchant00000001','EXTERNAL',JSON_ARRAY(),'保留期内','[{\"text\":\"保留\"}]');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let day = |m: u32, d: u32| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+
+    // 清理窗口是 [6-01, 7-01)，那么紧挨着的那一个月是 [5-01, 6-01)。
+    let oldest = oldest_unpruned_source_messages(&pool, day(5, 1), day(6, 1))
+        .await
+        .unwrap();
+    assert_eq!(oldest, Some(day(5, 10)), "断档月份要报出月内最老的那一天");
+
+    // ⚠️ 区间外的行**不能**被算进来 —— 3 月那条更老，但它不在给定区间里。
+    // 这一条就是「不扫全历史」的可执行形式：查询夹住了，不是靠注释约定。
+    assert!(
+        oldest.is_some_and(|d| d >= day(5, 1)),
+        "查询必须夹在给定区间内，3 月那条不该被看见"
+    );
+
+    // 清干净的区间返回 None，稳态下就是这一条。
+    let clean = oldest_unpruned_source_messages(&pool, day(4, 1), day(5, 1))
+        .await
+        .unwrap();
+    assert_eq!(clean, None, "区间内没有未清的行就该安静");
+
+    crate::testutil::drop_mysql_database(pool).await;
+}

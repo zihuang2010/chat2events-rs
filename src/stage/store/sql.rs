@@ -46,6 +46,9 @@ pub(crate) const T_AGENT: &str = "b_merchant_group_agent_metric_daily";
 pub(crate) const T_AGENT_MSG: &str = "b_merchant_group_agent_msg_daily";
 pub(crate) const T_FAILURE: &str = "b_merchant_group_run_failure";
 pub(crate) const T_TAXONOMY: &str = "b_merchant_group_taxonomy";
+/// 冻结区重写的账。**不进 `web/cache.rs` 的数据戳** —— 没有任何取数读它，
+/// 它变了页面上一个数字都不会变。
+pub(super) const T_REWRITE: &str = "b_merchant_group_rewrite_log";
 
 /// ⚠️ **标注列只有 `event_type` 一列。** 曾经还有一个 `event_types`（JSON 全集，
 /// 副类只给 webUI 下钻），2026-09-14 连同整套多标签机制移除 ——
@@ -91,6 +94,10 @@ pub(super) const IN_MAX: usize = 1000;
 /// 都只有名字和描述，那一列恒 NULL（`schema.sql` 留着「有就多一条路径」）。
 /// `parent_name` 在：词表是两级的，一级要进分类 prompt 的分组标题。
 pub(super) const TAXONOMY_COLS: &str = "type_id, parent_name, name, description";
+
+/// 冻结区重写记录的列。`frozen_before` 一起进自检 —— 它是「当时的冻结线是哪天」，
+/// 随 `lookback_days` 变，事后反推不出来。
+pub(super) const REWRITE_COLS: &str = "run_date, window_since, window_until, frozen_before, rooms";
 
 /// `(?, ?, …)`，个数**从列名串自己数出来** —— 手写一个数字，加列时忘了改就是一次
 /// 运行期的 `Column count doesn't match`。

@@ -46,7 +46,10 @@ mod read;
 mod schema;
 mod sql;
 
-pub use facts::{prune_source_messages, record_failure, write_room};
+pub use facts::{
+    oldest_unpruned_source_messages, prune_source_messages, record_failure, record_rewrite,
+    write_room,
+};
 pub use labels::{fail_classification, finish_classification, retag_room, update_event_labels};
 pub use read::{
     classify_failure_span, read_event_labels, read_event_rooms, read_events, read_summary_counts,

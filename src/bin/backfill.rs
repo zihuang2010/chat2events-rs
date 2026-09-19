@@ -49,17 +49,8 @@ async fn main() -> Result<()> {
     // `run_date` 只进 `run_failure.run_date`（「哪一次跑批出的事」），不参与窗口计算。
     // 用今天：补跑失败的账要记在今天这次人工操作上，不是记在被补的那一天。
     let run_date = chrono::Local::now().date_naive();
-    let daily_w = Window::new(run_date, cfg.ingest.lookback_days);
-    if w.since() < daily_w.since() {
-        tracing::warn!(
-            since = %w.since(),
-            until = %w.until(),
-            frozen_before = %daily_w.since(),
-            "补跑窗口覆盖冻结区：{} 之前的事实列将被整体删重写。\
-             这是人工授权的重来，不是日常跑批 —— 确认这是你要的。",
-            daily_w.since()
-        );
-    }
+    // 冻结区的告警与记账**不在这里**，在 `run_span` 里 —— 和 `check_window` 同一条理由：
+    // 三个调用方都必经那里，只堵这个 bin 的话 retry 重放历史窗口时就漏了。
 
     // 补跑走整条流水线，两队都要。`llms()` 顺带打那行启动日志 ——
     // 此前这里建了同样的两队却一行没打，补跑用的是哪两个模型日志里查不到。

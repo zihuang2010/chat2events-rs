@@ -9,7 +9,7 @@
 
 use super::sql::{
     AGENT_MSG_COLS, BATCH, EVENT_FACT_COLS, FAILURE_COLS, GROUP_COLS, Shard, T_AGENT, T_AGENT_MSG,
-    T_EVENT, T_FAILURE, T_GROUP, values,
+    T_EVENT, T_FAILURE, T_GROUP, T_REWRITE, values,
 };
 use crate::{
     BoxError,
@@ -104,6 +104,67 @@ pub async fn prune_source_messages(
             return Ok(pruned);
         }
     }
+}
+
+/// `[since, before)` 里还有没有没清掉的原文快照 —— 返回最老的那一天。
+///
+/// ⚠️ **区间必须小**。`source_messages IS NOT NULL` 只能回表判，所以这条的代价
+/// 正比于区间内的行数。[`prune_source_messages`] 夹一个月下界就是为了躲开
+/// 「每晚白扫整段历史」，这里不能把那个代价换个地方加回来。
+///
+/// 调用方只拿它看**紧挨着清理窗口的那一个月** —— 跑批停摆后漏掉的月份必然紧贴着
+/// 新的清理窗口下沿，看那一个月就够触发告警；真要找出全部漏月是人工排查的活，
+/// SQL 在 `docs/deploy.md`。
+pub async fn oldest_unpruned_source_messages(
+    pool: &MySqlPool,
+    since: NaiveDate,
+    before: NaiveDate,
+) -> Result<Option<NaiveDate>, BoxError> {
+    let sql = format!(
+        "SELECT MIN(occurred_on) FROM {T_EVENT} \
+         WHERE occurred_on >= ? AND occurred_on < ? AND source_messages IS NOT NULL"
+    );
+    let (oldest,): (Option<NaiveDate>,) = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(since)
+        .bind(before)
+        .fetch_one(pool)
+        .await?;
+    Ok(oldest)
+}
+
+/// 记一笔「这次窗口写穿了冻结区」。**只在 `window_since < frozen_before` 时调用**，
+/// 判断在 `daily::run_span` 里做（那是三个调用方的共同必经之路，理由见 `check_window`）。
+///
+/// `rooms` 为空表示没挑群 —— 存 `NULL` 不存 `[]`，两者语义不同：
+/// 「窗口内全部群」和「一个群都没挑中」在这张表上必须分得开。
+///
+/// **失败不掀翻整轮**由调用方决定（它是审计不是事实）；这里只管写。
+pub async fn record_rewrite(
+    pool: &MySqlPool,
+    run_date: NaiveDate,
+    days: &Window,
+    frozen_before: NaiveDate,
+    rooms: &[String],
+) -> Result<(), BoxError> {
+    let sql = format!(
+        "INSERT INTO {T_REWRITE} (run_date, window_since, window_until, frozen_before, rooms) \
+         VALUES (?, ?, ?, ?, ?)"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(run_date)
+        .bind(days.since())
+        .bind(days.until())
+        .bind(frozen_before)
+        // JSON 列走 `to_string` 绑字符串，和 `source_msg_ids` / `agents` 一个写法
+        // （sqlx 没开 json feature）。`None` 进去就是 SQL NULL。
+        .bind(
+            (!rooms.is_empty())
+                .then(|| serde_json::to_string(rooms))
+                .transpose()?,
+        )
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn record_failure(

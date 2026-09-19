@@ -1,8 +1,8 @@
 //! 启动期自检 —— DDL 漂移在第一秒暴露，不在烧完一轮 token 之后。
 
 use super::sql::{
-    AGENT_COLS, AGENT_MSG_COLS, BATCH, EVENT_COLS, FAILURE_COLS, GROUP_COLS, T_AGENT, T_AGENT_MSG,
-    T_EVENT, T_FAILURE, T_GROUP, T_TAXONOMY, TAXONOMY_COLS,
+    AGENT_COLS, AGENT_MSG_COLS, BATCH, EVENT_COLS, FAILURE_COLS, GROUP_COLS, REWRITE_COLS, T_AGENT,
+    T_AGENT_MSG, T_EVENT, T_FAILURE, T_GROUP, T_REWRITE, T_TAXONOMY, TAXONOMY_COLS,
 };
 use crate::BoxError;
 use sqlx::{MySqlPool, Row};
@@ -24,6 +24,10 @@ pub async fn check_schema(pool: &MySqlPool) -> Result<(), BoxError> {
         (T_AGENT_MSG, AGENT_MSG_COLS),
         (T_FAILURE, FAILURE_COLS),
         (T_TAXONOMY, TAXONOMY_COLS),
+        // 冻结区重写的账。**查表不查行** —— 从没人工补跑过的库里它一行都没有，
+        // 那是正常状态。进这份清单是因为漏建它会让 backfill / retry 在写账那一刻
+        // 才报错，而那时事实列已经开始删重写了。
+        (T_REWRITE, REWRITE_COLS),
     ] {
         let rows = sqlx::query(
             "SELECT column_name, is_nullable, datetime_precision FROM information_schema.columns \

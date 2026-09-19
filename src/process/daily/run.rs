@@ -84,6 +84,27 @@ pub async fn run_span(
     // 窗口上界先于一切校验：越界写出去之后没有任何东西会清掉它（见 `check_window`）。
     check_window(run_date, &w)?;
 
+    // **写穿冻结区要留账**（承重不变量 1）。判断放在这里、不放在两个 bin 里，
+    // 理由和 `check_window` 那条一模一样：三个调用方都必经此处，只在 backfill 里记的话
+    // retry 重放一个历史窗口时这件事就不会被记下来。
+    //
+    // 记的是「哪几天被人工重写过」—— 冻结区存在的理由是报表能做同比环比，而一次补跑
+    // 悄悄改了三个月前的数字时，报表照样显示一个看起来正常的值。此前只有下面这行 warn，
+    // 日志轮转之后就不可考了。
+    //
+    // 写不进去**不掀翻整轮**：它是审计不是事实，而这一刻事实一个字节都还没写。
+    let frozen_before = Window::new(run_date, config.ingest.lookback_days).since();
+    if w.since() < frozen_before {
+        tracing::warn!(
+            since = %w.since(), until = %w.until(), %frozen_before,
+            "本轮窗口覆盖冻结区：{frozen_before} 之前的事实列将被整体删重写。\
+             这是人工授权的重来，不是日常跑批。"
+        );
+        if let Err(e) = store::record_rewrite(pool, run_date, &w, frozen_before, only).await {
+            tracing::error!("冻结区重写记账失败，本轮照跑：{e}");
+        }
+    }
+
     // DDL 漂移要在第一秒暴露。踩过一次：改了 schema.sql 但库没迁移，
     // **抽取跑完 23 分钟才在落库那步炸掉**。跑批是无人值守的。
     store::check_schema(pool).await?;
@@ -179,6 +200,28 @@ pub async fn run_span(
             Ok(n) if n > 0 => tracing::info!(pruned = n, %since, %before, "清理过保留期的原文快照"),
             Ok(_) => {}
             Err(e) => tracing::error!(%since, %before, "原文快照清理失败，下一轮再来：{e}"),
+        }
+        // **跑批停摆会漏掉中间的月份。** 镜像区那边是「删掉一切早于边界的月目录」，
+        // 下界无限；这边只清紧贴边界的那一个月（理由见 `prune_source_messages`）。
+        // 两边的保留期因此会在故障后**静默分家** —— 而留在库里的那份是未脱敏的客户正文，
+        // 镜像副本已经删了，看板上谁都能下钻。
+        //
+        // 这里**只喊一声，不自动放宽下界**：漏月是故障后才走的路，自动分支平时执行不到、
+        // 测不到，最容易烂。追平 SQL 在 `docs/deploy.md`，人工跑一次。
+        //
+        // ⚠️ **只看紧挨着的那一个月**。漏掉的月份必然紧贴新的清理窗口下沿，看那一个月
+        // 就够触发；扫全历史找「最老的漏月」正是 `prune_source_messages` 躲开的那个代价。
+        if let Some(gap_since) = since.checked_sub_months(chrono::Months::new(1)) {
+            match store::oldest_unpruned_source_messages(pool, gap_since, since).await {
+                Ok(Some(oldest)) => tracing::warn!(
+                    %oldest, %gap_since, boundary = %since,
+                    "保留期漏月：{gap_since} 之后还有没清掉的未脱敏原文，最老 {oldest}。\
+                     跑批大概停过一段时间 —— 追平 SQL 见 docs/deploy.md「原文快照的保留期」，\
+                     人工跑一次。"
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::error!(%gap_since, "漏月检查失败，不影响本轮：{e}"),
+            }
         }
     }
 

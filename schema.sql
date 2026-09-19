@@ -47,14 +47,14 @@ CREATE TABLE b_merchant_group_event (
     followup_wait_max_sec  INT UNSIGNED    NULL     COMMENT '后续轮次最长等待秒数（工作时段口径）。首响之后每次EXTERNAL→INTERNAL间隔取最大，扣除08:30-21:00之外的时间；周末与节假日不扣（没有工作日历）。末尾没人接的那一段不计——那是last_msg_role的活。⚠️与首响时效同一个工作时段口径（曾经只有本列这么算）。但两者可改性不同：首响由两个时间列查询期现算、口径随时可改，而后续等待查询期拿不到中间轮次，只能写入时算，口径就此定死。0=确实没有后续轮次（算出来的事实），NULL=没算过（加这一列之前的历史行，冻结区不可回填）——承重不变量4，两者绝不混。算指标前先滤掉asker_role=INTERNAL，与首响同一条WHERE。不进idx_overview：今天只在事件明细逐行显示',
     event_type             VARCHAR(64)     NULL COMMENT '事件类型；NULL=尚未完成打标，__untyped__=模型归不上去或v0未建词表。一个事件一个类——曾经还有一列event_types存标签全集（副类只供下钻、不进任何指标），2026-09-14连同整套多标签机制移除',
     taxonomy_version       VARCHAR(16)     NULL COMMENT '打标所用词表版本；NULL=尚未完成打标',
-    source_messages        MEDIUMTEXT      NULL COMMENT '来源消息渲染快照。JSON数组，与source_msg_ids等长同序，元素就是webUI下钻接口的返回体（msg_id/at/sender_id/sender_role/text）。展示列——既非事实列也非标注列，不参与任何指标、不回读进Event、不参与抽取与打标。非TEXT消息的text已在抽取时换成占位符（[图片]等），媒体URL一律不存（带签名会过期）。NULL=升级前的历史行，不是空数组（承重不变量4的形状）。不用JSON类型：MySQL的JSON是带键偏移索引的二进制格式，比等价文本更大，而这一列只整块读写、从不JSON_EXTRACT',
+    source_messages        MEDIUMTEXT      NULL COMMENT '来源消息渲染快照。JSON数组，与source_msg_ids等长同序，元素就是webUI下钻接口的返回体（msg_id/at/sender_id/sender_role/text）。展示列——既非事实列也非标注列，不参与任何指标、不回读进Event、不参与抽取与打标。非TEXT消息的text已在抽取时换成占位符（[图片]等），媒体URL一律不存（带签名会过期）。NULL**有两个来源**：升级前的历史行 · 过了保留期被prune_source_messages清空（承重不变量1的具名例外1-A，每轮跑批自动执行，与raw镜像同一个保留期）。两者都不是空数组（承重不变量4的形状）；排查时按occurred_on落在保留期边界哪一侧区分。不用JSON类型：MySQL的JSON是带键偏移索引的二进制格式，比等价文本更大，而这一列只整块读写、从不JSON_EXTRACT',
     gmt_created_time       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     KEY idx_shard (corpid, roomid, occurred_on) COMMENT '分片删重写必需。**也是「点进某个群看历史」的最优索引**：群号已知时等值+范围，比idx_overview更贴',
     KEY idx_day (occurred_on) COMMENT 'BI直连：按时间段捞事件明细',
     KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time) 走索引尾读，一次一行。没有它每个请求都全表扫一遍',
-    KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type, first_msg_time, first_agent_reply_time, last_msg_time) COMMENT '只读工作台全局概览的覆盖索引。前两列corpid等值+occurred_on范围负责定位（等值列必须在范围列之前）；后六列只为「别回表」——聚合要用的全在这儿，47万行的窗口聚合不必回表47万次。首响秒差由这两个时间列在索引内算出并过滤（ICP），所以不需要生成列。⚠️agents是JSON进不了索引，按客服筛选那条查询会回表，是已知且有意的例外。⚠️它是idx_corp_day(corpid,occurred_on)的超集，那条已删'
+    KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type, first_msg_time, first_agent_reply_time, last_msg_time) COMMENT '只读工作台全局概览的覆盖索引。前两列corpid等值+occurred_on范围负责定位（等值列必须在范围列之前）；后六列只为「别回表」——聚合要用的全在这儿，窗口聚合不必逐行回表。⚠️此处曾写「47万行」，那个数全仓无推导无测量。2026-09-19实测dev库：17028行/9天/307群，默认七天窗口约1.3万行——比注释假设的11万小8倍。见docs/deploy.md「实测基线」（生产规模仍未测）。首响秒差由这两个时间列在索引内算出并过滤（ICP），所以不需要生成列。⚠️agents是JSON进不了索引，按客服筛选那条查询会回表，是已知且有意的例外。⚠️它是idx_corp_day(corpid,occurred_on)的超集，那条已删'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '抽取出的结构化业务事件';
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +206,42 @@ CREATE TABLE b_merchant_group_taxonomy (
     PRIMARY KEY (id),
     UNIQUE KEY uk_taxonomy (version, type_id) COMMENT '语义键'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '版本化类型词表';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- b_merchant_group_rewrite_log —— 追加。**冻结区被人工重写过的账。**
+--
+-- 承重不变量 1 说冻结区的事实列不可写，而 backfill / retry 两条人工入口**可以**写穿它
+-- （两个顶注都承认了，这是人工授权的重来）。问题不在于能不能写，在于**写完没留痕**：
+-- 此前只有一行 tracing::warn!，日志轮转之后「这几天被重写过吗」就查不了了。
+--
+-- 冻结区存在的理由是「报表能做同比环比」。一次补跑悄悄改了三个月前的数字，
+-- 报表照样显示一个看起来正常的值 —— 这张表就是为了让那件事可查。
+--
+-- ⚠️ **粒度是「一次 run_span 调用」，不是「群 × 日」。** 写入点在 run_span 里、
+--    群名单还没解析出来的时候，per-room 要么把这个写入推到 write_room（那得给一个
+--    已经八参的函数再加一个参数），要么一次补跑写一千行。窗口级一行就能回答
+--    「这几天被动过吗」，挑了群的话 rooms 列记下是哪几个。
+--
+-- ⚠️ **和 b_merchant_group_run_failure 是两张表，不是一个 stage 值。** 那张表是
+--    「失败记录」，而且 KNOWN_OK_DAYS（聚合分母）和 unrepaired_extract_failures
+--    （retry 挑活）都按 stage='extract' 过滤它 —— 往里塞一类「这不是失败」的行，
+--    是在一个承重判据的输入表上加语义。分开建表的代价只是一张表。
+--
+-- ⚠️ **只供人工排查，不上看板。** 没有任何取数代码读它；查法见 docs/deploy.md。
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE b_merchant_group_rewrite_log (
+    id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    run_date          DATE            NOT NULL COMMENT '跑批日=人工触发那天。与run_failure.run_date同义',
+    window_since      DATE            NOT NULL COMMENT '本次重写覆盖的数据窗口起点',
+    window_until      DATE            NOT NULL COMMENT '本次重写覆盖的数据窗口终点',
+    frozen_before     DATE            NOT NULL COMMENT '当时的冻结线=日常窗口起点。window_since<它才写这一行；记下来是因为它随lookback_days变，事后反推不出来',
+    rooms             JSON            NULL     COMMENT '挑了哪几个群（officialRoomId数组）。NULL=没挑，窗口内全部群',
+    gmt_created_time  DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间；与事实完成凭据同精度',
+    gmt_modified_time DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_window (window_since, window_until) COMMENT '「这一天被重写过几次」——按日期定位，这是唯一的查询形态',
+    KEY idx_run (run_date) COMMENT '「那次补跑动了哪些天」'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '冻结区重写记录（人工授权的删重写）';
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- b_merchant_group_run_failure —— 追加。粒度 = 群 × 本次运行。

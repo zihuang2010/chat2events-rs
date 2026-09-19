@@ -127,15 +127,6 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             "merchant_name": "极限商家", "merchant_name_is_authoritative": true
         }])
     );
-    let meta: Value = http
-        .get(format!("{base}/api/meta"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(meta, data["meta"]);
     // ⚠️ **`/api/dataset` 不再带事件明细** —— 它现在只回 meta ＋ 群日记录。
     // 明细一律走 `/api/events` 翻页，指标一律走聚合接口。
     assert!(data.get("events").is_none(), "dataset 不该再带事件明细");
@@ -209,8 +200,6 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(sum["events"], 2);
     assert_eq!(sum["rooms"], 1);
     assert_eq!(sum["agents"], 1);
-    // 来源消息按 (企业, 群, msg_id) 去重：两个事件各 2 条，无重叠 → 4。
-    assert_eq!(sum["sourceMessages"], 4);
     assert_eq!(sum["merchant"], 2, "asker_role=EXTERNAL");
     assert_eq!(sum["replied"], 2);
     assert_eq!(sum["unreplied"], 0);
@@ -1301,4 +1290,57 @@ async fn mysql_summary_matches_the_frontend_definitions() {
     // 整个测试**静默挂死**（MySQL 侧看不到任何活动查询，栈停在 tokio 的 park）。
     drop(connection);
     testutil::drop_mysql_database(pool).await;
+}
+
+/// **分位数 SQL 出口的对拍** —— 三份实现里最后一份。
+///
+/// 另外两份离线就能跑：`quantile::tests` 验 Rust 出口、前端 `parity.test.ts` 验
+/// `quantile()`。这一份必须跑真 MySQL —— `FLOOR` / `LEAST` / `ROW_NUMBER` 的取整与
+/// 边界行为是 MySQL 的，不是我们的，逐字复刻一遍不算证明。
+///
+/// 这里**不造事件**：`secs` 直接喂字面量。那样测的是「挑哪一行」这个口径本身，
+/// 不掺进 `worktime::sql_between` 的工作时段折算（那条另有测试）。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_quantile_sql_exit_matches_the_shared_parity_vectors() {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../webui/src/domain/parity-vectors.json")).unwrap();
+    let cases = vectors["quantileCases"]
+        .as_array()
+        .expect("金标向量缺 quantileCases");
+    assert!(!cases.is_empty(), "向量为空，这条测试会永远绿");
+    let pool = testutil::mysql_pool("quantile").await;
+
+    for case in cases {
+        let secs: Vec<i64> = case["secs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        let note = case["note"].as_str().unwrap_or("");
+        // 空集合没有 FROM 可写，单独断言：外层拿不到行 == Rust 出口的 None。
+        if secs.is_empty() {
+            assert!(case["p50"].is_null() && case["p90"].is_null(), "{note}");
+            continue;
+        }
+        let values = secs
+            .iter()
+            .map(|s| format!("SELECT {s} AS secs"))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+        let sql = format!(
+            "SELECT {p50} AS p50, {p90} AS p90 FROM (\
+               SELECT secs, ROW_NUMBER() OVER (ORDER BY secs) AS rn, COUNT(*) OVER () AS n \
+               FROM ({values}) s) w",
+            p50 = crate::quantile::sql_pick(0.5),
+            p90 = crate::quantile::sql_pick(0.9),
+        );
+        let (p50, p90): (Option<i64>, Option<i64>) = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(p50, case["p50"].as_i64(), "p50 不符：{note} {secs:?}");
+        assert_eq!(p90, case["p90"].as_i64(), "p90 不符：{note} {secs:?}");
+    }
 }

@@ -122,12 +122,12 @@ pub struct AgentMsgRow {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 用分位数不用均值：一条几小时才回的消息会把均值整个带偏。
+///
+/// **定义不在这里** —— 它在 [`crate::quantile`]，和只读取数那份 SQL 是同一个定义的
+/// 两个出口（照 [`crate::worktime`] 那个形状）。此前这里自带一份，而金标向量碰不到它：
+/// 报表直连读的 `first_reply_p*_sec` 就是这个函数写的，却不在任何对拍里。
 fn pct(secs: &[u32], p: f64) -> Option<u32> {
-    if secs.is_empty() {
-        return None;
-    }
-    let i = ((secs.len() as f64 * p) as usize).min(secs.len() - 1);
-    Some(secs[i])
+    crate::quantile::of(secs, p)
 }
 
 /// `metric_group_daily` 的行。**纯函数：不读库不写库。**

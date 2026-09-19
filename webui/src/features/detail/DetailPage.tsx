@@ -267,14 +267,6 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             note: "当前事件涉及的群 · 按群去重",
           },
           {
-            key: "sourceMessages",
-            label: "来源消息数",
-            value: formatInt(agg.sourceMessages),
-            unit: "条",
-            info: METRIC.sourceMessages,
-            note: "当前匹配事件 · 按消息去重",
-          },
-          {
             key: "events",
             label: "事件量",
             value: formatInt(agg.events),

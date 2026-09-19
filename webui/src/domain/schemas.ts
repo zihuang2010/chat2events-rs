@@ -229,7 +229,6 @@ export const summarySchema = z.object({
   rooms: z.number(),
   agents: z.number(),
   /** 当前匹配事件引用的原文条数，按 (企业, 群, msg_id) 去重 —— 不是各事件条数之和 */
-  sourceMessages: z.number(),
   merchant: z.number(),
   replied: z.number(),
   unreplied: z.number(),

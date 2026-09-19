@@ -280,11 +280,11 @@ mod tests {
         let (before, _) = cache.stamp_with(7, fetch).await.unwrap();
         cache.put(
             before.clone(),
-            "/api/meta".into(),
+            "/api/dataset".into(),
             Bytes::from_static(b"old"),
         );
         assert_eq!(
-            cache.get(&before, "/api/meta").as_deref(),
+            cache.get(&before, "/api/dataset").as_deref(),
             Some(&b"old"[..])
         );
 
@@ -292,7 +292,11 @@ mod tests {
         let (after, _) = cache.stamp_with(8, fetch).await.unwrap();
         assert_ne!(before, after, "代数没进戳，名册刷新后页面会一直回旧响应");
         assert_eq!(calls.load(Ordering::Relaxed), 1, "代数不该让库那一截重查");
-        assert_eq!(cache.get(&after, "/api/meta"), None, "旧响应必须整体作废");
+        assert_eq!(
+            cache.get(&after, "/api/dataset"),
+            None,
+            "旧响应必须整体作废"
+        );
     }
 
     #[test]

@@ -59,10 +59,19 @@ export function freshnessNote(
   return { text: `落后预期 ${lag - 2} 天`, stale: true };
 }
 
+/**
+ * URL 上的日期：形如 YYYY-MM-DD **且真实存在**（2 月 30 号不算）才采信，否则按未指定处理。
+ *
+ * 取数路径也用它：那边不再自己算窗口（后端 `Period::bounds` 一直在算），
+ * 但仍要挡住 URL 里的垃圾 —— 原样透传会把「用户手抖改了地址栏」变成一个 400 错误页。
+ */
+export function validDate(value: string | null | undefined): string | null {
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) && addDays(value, 0) === value ? value : null;
+}
+
 /** 默认最近七天；显式日期保留，非法 URL 日期按未指定处理。days 由 meta 保证非空。 */
 export function windowBounds(days: readonly string[], from?: string | null, to?: string | null) {
-  const valid = (value: string | null | undefined) =>
-    value && /^\d{4}-\d{2}-\d{2}$/.test(value) && addDays(value, 0) === value ? value : null;
+  const valid = validDate;
   const end = valid(to) ?? days.at(-1)!;
   const recent = addDays(end, -6);
   const start = valid(from) ?? (recent < days[0]! ? days[0]! : recent);

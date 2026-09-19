@@ -77,6 +77,7 @@ pub mod web;
 pub mod boot;
 pub mod config;
 pub mod llm;
+pub mod quantile;
 mod rejection;
 pub mod window;
 pub mod worktime;

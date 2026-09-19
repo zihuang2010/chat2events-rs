@@ -38,7 +38,7 @@ cargo run --locked --bin webui -- /etc/chat2events <corpid>
 ```bash
 pgrep -alf 'webui|vite'                                            # 进程在不在
 lsof -nP -iTCP:8787 -iTCP:5273 -sTCP:LISTEN                        # 端口有没有人听
-curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:8787/api/meta   # 200 = 后端正常
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:8787/api/dataset # 200 = 后端正常
 curl -s 127.0.0.1:8787/api/dataset | python3 -m json.tool | head    # 数据长什么样
 ```
 
@@ -98,7 +98,6 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 
 | 路径 | 返回 | 对应表 |
 |---|---|---|
-| `GET /api/meta` | 语料窗口、群与客服名册、词表 | — |
 | `GET /api/metric/group?from=&to=` | `GroupDaily[]` | `b_merchant_group_metric_daily` |
 | `GET /api/metric/agent?from=&to=` | `AgentDaily[]` | `b_merchant_group_agent_metric_daily` |
 | `GET /api/failures?from=&to=` | `Failure[]` | `b_merchant_group_run_failure` |
@@ -140,7 +139,7 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 `meta.days` 必须是升序、唯一且有效的日期；时间字符串按 UTC+8 解析，不依赖浏览器时区。
 事件时间顺序、归属日、主分类、首响归属和失败群日的 NULL 约束也在响应边界检查。
 
-`/api/meta` 与 `/api/dataset` 的群元数据按 `(corp_id, official_room_id)` 左连接
+`/api/dataset` 的群元数据按 `(corp_id, official_room_id)` 左连接
 `b_wecom_merchant_group`，历史群仍读取已删除配置。`group_name` 返回为 `rooms[].alias`，
 名称非空时 `rooms[].alias_is_authoritative` 为 `true`；未匹配或名称为空时继续标记待补。
 `rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度，暂不用于商家展示或筛选。

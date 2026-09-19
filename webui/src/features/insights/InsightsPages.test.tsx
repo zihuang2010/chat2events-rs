@@ -233,7 +233,7 @@ it.each(["events", "agents", "detail"] as const)(
       page === "events"
         ? ["活跃群", "消息总量", "事件量"]
         : page === "detail"
-          ? ["活跃群", "来源消息数", "事件量"]
+          ? ["活跃群", "事件量", "商家发起"]
           : ["事件量", "首响中位时长", "事件超时率", "按时回复", "超时回复", "无响应"];
     expect(labels.slice(0, expected.length)).toEqual(expected);
   },
@@ -363,7 +363,8 @@ it.each(["events", "agents", "detail"] as const)(
     };
     const view = await mount(page, "", data);
     const values = Array.from(view.container.querySelectorAll(".ia-metrics .od-metric-value"));
-    expect(values).toHaveLength(6);
+    // 明细页比另外两页少一格 —— 「来源消息数」2026-09-19 删了（见 `query.rs`）。
+    expect(values).toHaveLength(page === "detail" ? 5 : 6);
     if (page === "events") {
       const messageMetric = screen.getByText("消息总量", { exact: true }).parentElement!;
       expect(messageMetric.querySelector(".od-metric-value")).toHaveTextContent(
@@ -402,10 +403,11 @@ it.each(["", "&l1=missing&l2=missing&agent=missing&status=unreplied&overdue=1&q=
   },
 );
 
-it.each(["events", "detail"] as const)("keeps_missing_message_data_unknown_%s", async (page) => {
-  await mount(page, "", { ...dataset, events: [], groupDaily: [] });
-  const label = page === "events" ? "消息总量" : "来源消息数";
-  const metric = screen.getByText(label, { exact: true }).parentElement!;
+// 明细页那一半查的是已删的「来源消息数」；守的东西（没有群日记录 = 暂缺，不是 0）
+// 由消息总量这一格继续钉住。
+it("keeps_missing_message_data_unknown", async () => {
+  await mount("events", "", { ...dataset, events: [], groupDaily: [] });
+  const metric = screen.getByText("消息总量", { exact: true }).parentElement!;
   expect(metric.querySelector(".od-metric-value")).toHaveTextContent("—条");
 });
 
@@ -421,40 +423,17 @@ it("marks_partial_message_total_as_known_only", async () => {
   expect(metric).toHaveTextContent("仅已知量");
 });
 
-it.each(["events", "detail"] as const)("shows_known_zero_messages_%s", async (page) => {
-  await mount(page, "", {
+// 明细页那一半曾经查「来源消息数」，那个 KPI 2026-09-19 删了（见 `query.rs`），
+// 守的东西不变：0 是**算出来的 0**，不是「暂缺」。
+it("shows_known_zero_messages", async () => {
+  await mount("events", "", {
     ...dataset,
     events: [],
     groupDaily: dataset.groupDaily.map((row) => ({ ...row, msg_count: 0 })),
   });
-  const label = page === "events" ? "消息总量" : "来源消息数";
-  const metric = screen.getByText(label, { exact: true }).parentElement!;
+  const metric = screen.getByText("消息总量", { exact: true }).parentElement!;
   expect(metric.querySelector(".od-metric-value")).toHaveTextContent(/^0条$/);
 });
-
-it.each(["all", "page", "room", "empty"] as const)(
-  "deduplicates_source_messages_across_matching_events_%s",
-  async (scope) => {
-    const event = dataset.events[0]!;
-    const other = dataset.events.find((row) => row.roomid !== event.roomid)!;
-    const events = Array.from({ length: 21 }, (_, index) => ({
-      ...event,
-      id: 10000 + index,
-      source_msg_ids: ["shared", `message-${index}`, "shared"],
-    }));
-    events.push({ ...other, id: 10021, source_msg_ids: ["shared"] });
-    const search = {
-      all: "",
-      page: "?page=2&size=20",
-      room: `?room=${event.roomid}`,
-      empty: "?q=no-matching-source-event",
-    }[scope];
-    await mount("detail", search, { ...dataset, events });
-    const metric = screen.getByText("来源消息数", { exact: true }).parentElement!;
-    const expected = scope === "empty" ? 0 : scope === "room" ? 22 : 23;
-    expect(metric.querySelector(".od-metric-value")).toHaveTextContent(`${expected}条`);
-  },
-);
 
 it("二级分类下钻清除冲突的一级条件，保留日期与群范围", async () => {
   const user = userEvent.setup();

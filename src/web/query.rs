@@ -39,9 +39,10 @@ pub(super) async fn snapshot(
 ///
 /// ⚠️ **`rooms` / `agents` 现在跟着查询窗口走**（见 [`read_filters`]），
 /// 由 handler 通过 [`Meta::with_filters`] 填进来。此前它们在这里直接查，
-/// 而且**没有日期条件** —— 每开一次页面都要把这个企业的全部历史扫一遍，
-/// 且 `/api/meta` 与 `/api/dataset` 各调一次，等于扫两遍。那个代价只跟
+/// 而且**没有日期条件** —— 每开一次页面都要把这个企业的全部历史扫一遍。那个代价只跟
 /// 「库里攒了多久」有关，跟用户选了几天毫无关系，是会随时间无声变糟的那一类。
+/// ⚠️ 它此前还要**乘二**：`/api/meta` 与 `/api/dataset` 各调一次，而前者的产物被丢掉。
+/// 2026-09-19 删掉了那个路由，首屏只剩这一趟。
 ///
 /// ⚠️ **`days` 仍然是全历史**，不能改成窗口内的天 —— 前端拿它填**日期选择器的
 /// 可选范围**（`ContextBar` / `RoomFilters` 取首尾、显示「全部 N 天」）。
@@ -65,8 +66,8 @@ pub(super) struct Meta {
 }
 
 impl Meta {
-    /// 把跟窗口走的那两项填进来。**两个 handler 各自决定用哪个窗口**：
-    /// `/api/dataset` 用用户选的，`/api/meta` 用默认窗口（它没有窗口参数）。
+    /// 把跟窗口走的那两项填进来。窗口由 `/api/dataset` 的调用方给，
+    /// 不给就是 [`Period::bounds`] 的默认窗口（最近 `DEFAULT_DAYS` 天，夹到可用范围里）。
     ///
     /// 顺手定下全局的 `alias_is_authoritative` —— 它是 per-项标志缺席时的回落，
     /// 今天前端只剩一个消费者：客服页那句「尚未接入权威名册」的免责说明。
@@ -260,8 +261,8 @@ pub(super) async fn read_filters(
 ///
 /// ⚠️ **代价形状是已知的，本轮有意不改。** 它把窗口内「群数 × 天数」份 JSON 拉回来
 /// 逐个解析，只为产出**恒定几百个**别名 —— 输入随窗口内群日行数增长，产出不增长；
-/// 而且页面加载时 `/api/meta` 与 `/api/dataset` 各做一遍。
-/// 它在响应缓存后面（`cache.rs`），白天一组筛选只付一次；重写取数的收益还没量过，
+/// 它在响应缓存后面（`cache.rs`），白天一组筛选只付一次（曾经 `/api/meta` 与
+/// `/api/dataset` 各做一遍，那个路由已删）；重写取数的收益还没量过，
 /// 所以先把形状写在这里，让下一个看到它的人知道这不是没人注意到。
 async fn read_agent_accounts(
     connection: &mut MySqlConnection,
@@ -472,13 +473,13 @@ static SUMMARY_COUNTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
 /// 空集合返回 `NULL` 而不是 0（承重不变量 4 的形状：没有已回复事件时算不出分位数）。
 static SUMMARY_QUANTILES: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
-        "SELECT \
-     MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.5) + 1) THEN secs END) AS p50, \
-     MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.9) + 1) THEN secs END) AS p90 \
+        "SELECT {p50} AS p50, {p90} AS p90 \
      FROM (SELECT {sec} AS secs, \
                   ROW_NUMBER() OVER (ORDER BY {sec}) AS rn, \
                   COUNT(*) OVER () AS n \
            FROM b_merchant_group_event e",
+        p50 = crate::quantile::sql_pick(0.5),
+        p90 = crate::quantile::sql_pick(0.9),
         sec = *FIRST_REPLY_SEC
     )
 });
@@ -530,7 +531,10 @@ pub(super) async fn read_summary(
     buckets: &[u32],
 ) -> Result<Value, WebError> {
     // `backlog` 的边界是窗口最后一天，与前端 `isBacklog(e, lastDay)` 同一个 `lastDay`。
-    // **七条查询各自建一个 [`Scope`]** —— 它们是独立语句，共用文本但不共用绑定。
+    // **六条查询各自建一个 [`Scope`]** —— 它们是独立语句，共用文本但不共用绑定。
+    // ⚠️ 曾经是七条：第七条数「当前匹配事件引用了多少条原文」，全窗口回表 +
+    // `JSON_TABLE` 把 `source_msg_ids` 展开成逐条再三元组去重，只为产出一个数字，
+    // 而没有人看它。2026-09-19 删掉 —— 这里只剩 `agents` 那条必然回表。
     let (sql, binds) = summary_counts_sql(corp, since, until, sla_sec, filters);
     let counts: SummaryCounts = bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
         .fetch_one(&mut *connection)
@@ -548,14 +552,6 @@ pub(super) async fn read_summary(
     // 之间 —— [`Scope`] 把分母边界、窗口、筛选拆成三个预置片段，正好插得进去。
     let (sql, binds) = summary_agents_sql(corp, since, until, sla_sec, filters);
     let (agents,): (i64,) = bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
-        .fetch_one(&mut *connection)
-        .await?;
-    // 来源消息数 —— 「当前匹配事件一共引用了多少条原文」。按 (企业, 群, msg_id) 去重：
-    // 同一条消息被多个事件引用只算一次，所以它**不是**各事件 `source_msg_ids` 的长度之和。
-    //
-    // ⚠️ 和上面那条一样，`JSON_TABLE` 必须和基表同层 JOIN。
-    let (sql, binds) = summary_source_messages_sql(corp, since, until, sla_sec, filters);
-    let (source_messages,): (i64,) = bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
         .fetch_one(&mut *connection)
         .await?;
     // 按天趋势 —— 行数 = 窗口天数，几十行。
@@ -598,7 +594,6 @@ pub(super) async fn read_summary(
     let rate = |x: i64| (merchant > 0).then(|| x as f64 / merchant as f64);
     Ok(json!({
         "events": events, "rooms": rooms, "agents": agents,
-        "sourceMessages": source_messages,
         "merchant": merchant, "replied": replied, "unreplied": n(unreplied),
         "push": n(push), "p50": p50, "p90": p90,
         "overdue": n(overdue), "overdueRate": rate(n(overdue)),
@@ -735,15 +730,16 @@ fn group_binds(groups: &[Vec<String>]) -> impl Iterator<Item = Bind> + use<'_> {
 
 /// 分位数的分组版 —— `PARTITION BY` 换成分组键，其余与 [`SUMMARY_QUANTILES`] 逐字相同。
 ///
-/// 同一条 `LEAST(n, FLOOR(n * p) + 1)` 复刻前端 `quantile()` 的 `min(len-1, floor(len*p))`。
-/// **两处必须一起改** —— 一处改了另一处没改，同一份数据在总览和明细上会出两个数。
+/// **挑哪一行由 [`crate::quantile::sql_pick`] 出**，和跑批落库那份是同一个定义的两个出口。
+/// 此前这两处各自手抄一遍 `LEAST(n, FLOOR(n * p) + 1)`，靠一句「两处必须一起改」维持同步。
 fn grouped_quantiles(key: &str, source: &str) -> String {
     format!(
-        "SELECT {key}, MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.5) + 1) THEN secs END) AS p50, \
-         MIN(CASE WHEN rn = LEAST(n, FLOOR(n * 0.9) + 1) THEN secs END) AS p90 \
+        "SELECT {key}, {p50} AS p50, {p90} AS p90 \
          FROM (SELECT {key}, secs, ROW_NUMBER() OVER (PARTITION BY {key} ORDER BY secs) AS rn, \
                       COUNT(*) OVER (PARTITION BY {key}) AS n \
-               FROM {source}) w GROUP BY {key}"
+               FROM {source}) w GROUP BY {key}",
+        p50 = crate::quantile::sql_pick(0.5),
+        p90 = crate::quantile::sql_pick(0.9),
     )
 }
 
@@ -945,7 +941,7 @@ type CategoryAgg = (
 /// 二级（不给 `groups`）按 `event_type` 分组，`key` 就是 `type_id`。
 /// 一级（给 `groups`）按调用方给的分组分，`key` 是**组下标**，前端自己映射回父类名。
 ///
-/// ⚠️ **父类映射为什么不在这里 join 词表**：词表已经随 `/api/meta` 到了前端，
+/// ⚠️ **父类映射为什么不在这里 join 词表**：词表已经随 `/api/dataset` 到了前端，
 /// 在这里再 join 一次就多出一处能和前端打架的口径（`Filters` 的 `level1`
 /// 不下推是同一条理由）。后端在这里只当一个「按你给的分组算」的计算器。
 ///
@@ -1273,27 +1269,6 @@ fn summary_agents_sql(
         .finish()
 }
 
-fn summary_source_messages_sql(
-    corp: &str,
-    since: NaiveDate,
-    until: NaiveDate,
-    sla_sec: u32,
-    filters: &Filters,
-) -> (String, Vec<Bind>) {
-    Scope::new()
-        .push(
-            "SELECT COUNT(DISTINCT e.corpid, e.roomid, m.msg_id) FROM b_merchant_group_event e",
-            [],
-        )
-        .known_ok_days(corp, since, until)
-        .push(
-            " JOIN JSON_TABLE(e.source_msg_ids, '$[*]' COLUMNS(msg_id VARCHAR(64) PATH '$')) m",
-            [],
-        )
-        .window(corp, since, until)
-        .filters(filters, sla_sec, until)
-        .finish()
-}
 fn summary_by_day_sql(
     corp: &str,
     since: NaiveDate,
@@ -1695,11 +1670,10 @@ mod binding_tests {
         for filters in [Filters::default(), busy_filters()] {
             for groups in [Vec::new(), groups()] {
                 let (c, s, u, sla) = ("C", day(1), day(31), 1800);
-                // ① 概览的七条
+                // ① 概览的六条
                 summary_counts_sql(c, s, u, sla, &filters);
                 summary_quantiles_sql(c, s, u, sla, &filters);
                 summary_agents_sql(c, s, u, sla, &filters);
-                summary_source_messages_sql(c, s, u, sla, &filters);
                 summary_by_day_sql(c, s, u, sla, &filters);
                 summary_by_hour_sql(c, s, u, sla, &filters);
                 reply_buckets_sql(c, s, u, sla, &filters, &[60, 300, 900]);

@@ -66,7 +66,6 @@ pub async fn serve(
 
 pub(super) fn router(state: WebState) -> Router {
     Router::new()
-        .route("/api/meta", get(meta))
         .route("/api/dataset", get(dataset))
         .route("/api/summary", get(summary))
         .route("/api/rooms", get(rooms))
@@ -180,23 +179,18 @@ pub(super) fn agent_option(
     })
 }
 
-async fn meta(State(state): State<WebState>) -> Result<Response, WebError> {
-    let mut connection = state.pool.acquire().await?;
-    let mut tx = snapshot(&mut connection).await?;
-    let meta = read_meta(&mut tx, &state.corp, &state.limits).await?;
-    // 这个接口没有窗口参数，用**默认窗口**填筛选器 —— 页面随后拉 `/api/dataset`
-    // 时会拿到按实际窗口算的那一份，两者形状相同。
-    // 关键是它**不再扫全历史**：此前群与客服名单是无日期条件的全表扫描。
-    let (since, until) = Period::default().bounds(&meta.range)?;
-    let (rooms, agents) = filters(&state, &mut tx, since, until).await?;
-    tx.commit().await?;
-    bounded_json(&meta.with_filters(rooms, agents), &state.limits)
-}
-
 /// 页面的**上下文**：meta ＋ 群日记录。**不含事件明细。**
 ///
+/// ⚠️ **它是首屏唯一的一趟。** 曾经前端先打一个 `/api/meta` 拿 `days` 算窗口、再打这里，
+/// 而这里的响应体本来就自带同一份 meta —— 那一趟的产物全被丢掉，白花 5 条 SQL、
+/// 一次 11 万行的 `JSON_TABLE` 扫描和 2 次名册 HTTP，还把首屏推后一个 RTT。
+/// 2026-09-19 连同那个路由一起删了。窗口的默认与夹取一直都在 [`Period::bounds`] 里，
+/// 前端那份只是抄了一遍。
+///
 /// ⚠️ **事件明细已经从这里拿掉了。** 它是唯一一个「行数 = 群数 × 天数 × 每群每天事件数」
-/// 的集合（1000 群 7 天约 11 万行，撞 `max_rows` 直接 413），而页面要它只是为了在浏览器里
+/// 的集合（1000 群 7 天约 11 万行〔**估算**；2026-09-19 实测 dev 库是 307 群、
+/// 默认七天窗口约 1.3 万行，小 8 倍 —— 见 `docs/deploy.md`「实测基线」〕，
+/// 撞 `max_rows` 直接 413），而页面要它只是为了在浏览器里
 /// 现算指标 —— 那些指标现在由 `/api/summary`、`/api/rooms`、`/api/agents`、
 /// `/api/categories` 在数据库里算完只送数字，明细则由 `/api/events` 一页一页翻。
 ///

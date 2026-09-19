@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchEvent, fetchMessages, probeMeta } from "./client";
+import { fetchDataset, fetchEvent, fetchMessages } from "./client";
 import { buildMockDataset } from "@/test/mock/generator";
 
 afterEach(() => {
@@ -57,7 +57,9 @@ describe("只读接口边界", () => {
     await expect(fetchMessages(7)).rejects.toMatchObject({ kind, path: "/event/7/messages" });
   });
 
-  it("收到响应头后正文一直不结束，也会在探活期限内超时", async () => {
+  // 首屏那一趟就是探活（`/api/meta` 已删），所以这条守的是 `get()` 的通用行为：
+  // fetch 收到响应头就 resolve，计时器必须一路盖到正文下载与 JSON 解析。
+  it("收到响应头后正文一直不结束，也会在读取期限内超时", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       "fetch",
@@ -75,8 +77,11 @@ describe("只读接口边界", () => {
         }),
       ),
     );
-    const result = expect(probeMeta()).rejects.toMatchObject({ kind: "timeout", path: "/meta" });
-    await vi.advanceTimersByTimeAsync(2500);
+    const result = expect(fetchDataset()).rejects.toMatchObject({
+      kind: "timeout",
+      path: "/dataset",
+    });
+    await vi.advanceTimersByTimeAsync(20000);
     await result;
     expect(vi.getTimerCount()).toBe(0);
   });

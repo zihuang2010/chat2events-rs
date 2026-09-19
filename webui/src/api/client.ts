@@ -6,13 +6,12 @@
  */
 
 import { z, type ZodType } from "zod";
-import { windowBounds } from "@/lib/format";
+import { validDate } from "@/lib/format";
 import { RESPONSE_BIN_EDGES } from "@/domain/definitions";
 import {
   rawDatasetSchema,
   eventSchema,
   messageListSchema,
-  metaSchema,
   summarySchema,
   roomAggListSchema,
   agentAggListSchema,
@@ -30,7 +29,6 @@ import {
 } from "@/domain/schemas";
 
 export const API_BASE = "/api";
-const PROBE_TIMEOUT_MS = 2500;
 const READ_TIMEOUT_MS = 20000;
 
 export type ApiErrorKind = "network" | "timeout" | "http" | "contract";
@@ -137,9 +135,6 @@ async function get<T>(
   }
 }
 
-/** 探活。只有这一个请求成功，才认为真接口可用。 */
-export const probeMeta = (): Promise<Meta> => get("/meta", metaSchema, undefined, PROBE_TIMEOUT_MS);
-
 /** 页面上下文：meta ＋ 群日记录。**不含事件明细**（理由见 `rawDatasetSchema`）。 */
 export interface RawDataset {
   meta: Meta;
@@ -151,9 +146,23 @@ export interface DatasetWindow {
   to?: string | null;
 }
 
-export async function fetchDataset(meta: Meta, period: DatasetWindow = {}): Promise<RawDataset> {
-  const { from, to } = windowBounds(meta.days, period.from, period.to);
-  return get("/dataset", rawDatasetSchema, { from, to });
+/**
+ * 首屏唯一的一趟，**同时也是探活**：它成功才认为真接口可用。
+ *
+ * ⚠️ **窗口不在这边算。** 默认最近七天、夹到可用范围里，一直都是后端
+ * `web::params::Period::bounds` 的活；此前这里抄了一遍，代价是必须先打一个
+ * `/api/meta` 把 `days` 拿回来 —— 那一趟的产物除了 `days` 全被丢掉。
+ * 这里只滤掉 URL 里的非法日期（当作没给），其余交给后端。
+ *
+ * 副作用是好的：不给日期时 URI 就是裸的 `/dataset`，跨天也不变，
+ * 响应缓存的键（完整 URI）因此更稳。
+ */
+export async function fetchDataset(period: DatasetWindow = {}): Promise<RawDataset> {
+  // 走 `params` 而不是自己拼对象 —— 它守着「空值不进 URL」那条，
+  // 绕过去就会拼出 `?from=null`，正是那行注释警告的缓存键分叉。
+  return get("/dataset", rawDatasetSchema, {
+    ...params({ from: validDate(period.from), to: validDate(period.to) }),
+  });
 }
 
 /**

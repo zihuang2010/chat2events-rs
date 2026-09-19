@@ -11,7 +11,7 @@
 import { expect, it } from "vitest";
 import vectors from "@/domain/parity-vectors.json";
 import { mockSummary } from "./aggregate";
-import { buildTaxonomyIndex } from "@/domain/metrics";
+import { buildTaxonomyIndex, quantile } from "@/domain/metrics";
 import type { EventRow, GroupDailyRow } from "@/domain/schemas";
 
 it("概览 KPI 与后端 SQL 逐字段相等", () => {
@@ -22,4 +22,24 @@ it("概览 KPI 与后端 SQL 逐字段相等", () => {
     { from: vectors.window.from, to: vectors.window.to, slaSec: vectors.slaSec },
   );
   expect(actual).toEqual(vectors.expected);
+});
+
+/**
+ * 分位数口径对拍 —— **三份实现读同一组向量**。
+ *
+ * 另外两份：跑批落库的 `stage::metrics::pct`（`stage/metrics/tests.rs`，离线跑）·
+ * 只读取数的 `SUMMARY_QUANTILES`（`web/tests.rs` 的 `mysql_` 测试，跑真 SQL）。
+ *
+ * ⚠️ 上面那条 `expected` 钉的是「从 events 算出来的 p50/p90」，而
+ * `groupDaily.first_reply_p50_sec` 在那组向量里是**输入** —— 所以它碰不到 `pct`。
+ * 这一组才是唯一能同时压住三份实现的东西。
+ */
+it("分位数定义三份实现一致", () => {
+  expect(vectors.quantileCases.length).toBeGreaterThan(0);
+  for (const c of vectors.quantileCases) {
+    const secs = c.secs as number[];
+    expect(secs).toEqual([...secs].sort((a, b) => a - b));
+    expect(quantile(secs, 0.5)).toBe(c.p50);
+    expect(quantile(secs, 0.9)).toBe(c.p90);
+  }
 });

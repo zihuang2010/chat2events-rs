@@ -1,0 +1,24 @@
+webui/src/app/workbench.css
+  s_cd512a6fc02558::t_85186091c9dc1c 4-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "86dcb36f92c72ee35394e9781d2dc03524d611ed",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_cd512a6fc02558": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "085da558-538c-494b-b9f8-a25f43cd84e7",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

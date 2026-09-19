@@ -1,0 +1,25 @@
+config.toml
+  s_1307f532fea401::t_bca006e73aece8 29-34
+  s_1307f532fea401::t_89521b9295efba 192-198,243-245,249-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "629fa489e46dc9433d3e3523806e4d4fa913edde",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_1307f532fea401": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d967075-187d-4ff1-b5e9-7a95f68d2d47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

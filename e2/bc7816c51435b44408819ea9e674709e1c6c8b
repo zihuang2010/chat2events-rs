@@ -1,0 +1,52 @@
+src/bin/backfill.rs
+  s_1307f532fea401::t_399c56ffe56386 52-53
+src/stage/store/sql.rs
+  s_1307f532fea401::t_b17da05178fc9b 49-51
+  s_1307f532fea401::t_8541b26b041756 98-100
+  s_1307f532fea401::t_ec18121d7dec61 101
+src/stage/store/facts.rs
+  s_1307f532fea401::t_af9922be394d39 109-134,168
+  s_1307f532fea401::t_350730525f7d13 158-160,164
+  s_1307f532fea401::t_c3c33f2e666974 161-163
+  s_1307f532fea401::t_77bbdafcbee5dd 12
+  s_1307f532fea401::t_ce9d92104c18fe 135-157,165-167
+  s_1307f532fea401::t_ae03cd13526a09 169
+src/stage/store/tests.rs
+  s_1307f532fea401::t_31e037e4a4fca2 690-734,738-773
+  s_1307f532fea401::t_070335472338a1 774-818
+  s_1307f532fea401::t_8da659c76a91a5 735-737
+src/stage/store/schema.rs
+  s_1307f532fea401::t_c3c33f2e666974 27-30
+  s_1307f532fea401::t_8541b26b041756 4-5
+src/process/daily/run.rs
+  s_1307f532fea401::t_af9922be394d39 204-224
+  s_1307f532fea401::t_77bbdafcbee5dd 87-107,225
+schema.sql
+  s_1307f532fea401::t_9c5f2498f0661c 50
+  s_1307f532fea401::t_b17da05178fc9b 210-244
+  s_1307f532fea401::t_054813c3589c93 57
+  s_1307f532fea401::t_dbe7090714e4ab 245
+src/stage/store/mod.rs
+  s_1307f532fea401::t_af9922be394d39 49-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e2bc7816c51435b44408819ea9e674709e1c6c8b",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_1307f532fea401": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d967075-187d-4ff1-b5e9-7a95f68d2d47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

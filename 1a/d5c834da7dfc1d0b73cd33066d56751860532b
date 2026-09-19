@@ -1,0 +1,54 @@
+CLAUDE.md
+  s_1307f532fea401::t_011cea17d98ebc 116-127
+  s_8407ea5fede418::t_3a41cdf85adda5 133
+  s_1307f532fea401::t_74e3b1e6b2173c 140-142
+docs/invariants.md
+  s_1307f532fea401::t_0962f0137e2af7 22
+  s_1307f532fea401::t_7d871ef64ad5e2 23-46
+CONTEXT.md
+  s_1307f532fea401::t_7d871ef64ad5e2 60
+docs/deploy.md
+  s_1307f532fea401::t_44af5aa7fbfba9 307-308,339,343-361
+  s_1307f532fea401::t_bb5aa930e8666a 768-809
+  s_1307f532fea401::t_054813c3589c93 341-342
+  s_1307f532fea401::t_bca006e73aece8 155-169
+  s_1307f532fea401::t_432962a9171818 309-338,340
+  s_1307f532fea401::t_cc6d5c746ac70d 886
+  s_1307f532fea401::t_b760394c257cf5 810
+docs/deploy-webui.md
+  s_1307f532fea401::t_bca006e73aece8 314
+  s_1307f532fea401::t_cc6d5c746ac70d 56,250,254,266,270
+docs/architecture.md
+  s_1307f532fea401::t_054813c3589c93 395-398
+  s_1307f532fea401::t_7d871ef64ad5e2 351-354
+  s_1307f532fea401::t_cc6d5c746ac70d 380-384
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1ad5c834da7dfc1d0b73cd33066d56751860532b",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_1307f532fea401": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d967075-187d-4ff1-b5e9-7a95f68d2d47",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_8407ea5fede418": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89439bdc-c45f-4adc-b2c9-9411d978ebba",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

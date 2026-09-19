@@ -1,7 +1,11 @@
 /* 已确认工作台的共享布局与概览样式。 */
 @import "./theme/semantic.css";
 
-html:has(.od-overview),
+/* 横向溢出由**视口**裁掉，而视口的 overflow 是从 body 传播上去的。
+   ⚠️ **不要顺手给 html 也加一条** —— html 一旦不是 visible，body → 视口的传播
+   就断了，AntD 抽屉那条 `html body { overflow-y: hidden }` 锁不住视口，反而把
+   body 自己变成滚动容器：body 裁掉溢出内容，文档高度塌成一屏，滚到底部再点行
+   开抽屉，浏览器就把 scrollTop 夹回 0（实测 3168 → 813，位置 2355 → 0）。 */
 body:has(.od-overview) {
   overflow-x: clip;
 }

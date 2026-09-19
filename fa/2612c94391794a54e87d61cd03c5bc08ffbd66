@@ -1,0 +1,26 @@
+Cargo.toml
+  s_c50ed2aec97564::t_84f0c68b27f563 3
+Cargo.lock
+  s_c50ed2aec97564::t_f008fa420064cf 466
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fa2612c94391794a54e87d61cd03c5bc08ffbd66",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_c50ed2aec97564": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0df9bc2-fef0-4200-861d-42eabd23a860",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

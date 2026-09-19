@@ -113,22 +113,31 @@
 验证命令与适用范围见 `docs/deploy.md` 的「上线前的检查」：默认测试覆盖离线逻辑与本地 HTTP 模型协议；`mysql_` 测试在隔离 MySQL 上验证事务和只读取数，CI 显式执行。
 真实 OSS 测试仍需手动启用；离线协议通过不能代替真实模型业务质量验收。
 
-⚠️ **指标口径有两份实现**（后端 SQL ＋ 前端 `domain/metrics`，后者是指标与视图测试的对照物），
-由 `webui/src/domain/parity-vectors.json` 的**金标向量**钉住：Rust 侧
-`mysql_summary_matches_the_frontend_definitions` 跑真 SQL，前端 `test/mock/parity.test.ts`
-跑 `mockSummary`，各自断言等于同一组 `expected`。**改口径必须同时改两边并更新金标**——
-分家是静默的，页面照样显示一个看起来合理的数字。
+⚠️ **指标口径有三份实现**，全部由 `webui/src/domain/parity-vectors.json` 的**金标向量**钉住：
+
+| 谁 | 算什么 | 谁在钉它 |
+|---|---|---|
+| 后端只读 SQL | 页面上的每个数字 | `mysql_summary_matches_the_frontend_definitions`（真 SQL） |
+| 前端 `domain/metrics` | 指标与视图测试的对照物 | `test/mock/parity.test.ts` 跑 `mockSummary` |
+| **跑批 `stage/metrics`** | `metric_daily.first_reply_p*_sec`，**BI 报表直连读它** | `quantile::tests` 离线跑 · `mysql_quantile_sql_exit_*` 跑真 SQL |
+
+**改口径必须同时改三边并更新金标** —— 分家是静默的，页面照样显示一个看起来合理的数字。
+⚠️ 第三份此前**不在任何对拍里**（`expected` 从 events 算，而 `groupDaily.first_reply_p50_sec`
+是**输入**）。2026-09-19 补了一组 `quantileCases`（原始秒数 → 期望 p50/p90），并把分位数
+定义收进 `src/quantile.rs` 的两个出口（照 `worktime` 那个形状）。
 ⚠️ **样本会被就地替换**，文档里带条数的实测数字必须注明是哪一版样本量的。
 
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（2201 节点 / 10292 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已建索引（2329 节点 / 11001 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。
 **字面量 / 配置 / 非代码**还是 `search_code` 或 Grep —— 图不装这些。
 
 - **图里没有 ≠ 代码里没有。** 下「没有任何地方调用它」这种结论之前先 `check_index_coverage(scopes=["."])`。
-  ⚠️ `schema.sql` 与 `webui/src/test/mock/aggregate.ts` 是 `parse_partial`（前者是 DDL 里的中文注释噎住了解析器），**建表和这份 mock 相关的事直接读文件**，别信图。
+  ⚠️ `schema.sql` 是 `parse_partial`（DDL 里的中文注释噎住了解析器），**建表相关的事直接读文件**，别信图。
+  `webui/src/test/mock/aggregate.ts` 此前也是，原因是文件里嵌了 4 个**字面 NUL 字符**（复合键分隔符写成了真 NUL 而不是 `\0` 转义）——
+  那还让 `grep -r` **静默跳过整个文件**。2026-09-19 已改成转义，`file` 判定回到 UTF-8 文本、grep 搜得到；**索引标记待下次重新索引后确认**。
 - 搬模块 / 改文件名之后跑一次 `index_repository(mode="full")`；日常小改由 watch 自动刷新。

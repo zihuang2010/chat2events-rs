@@ -152,8 +152,21 @@ tag 上是三个 job：`build`（编二进制）与 `check` / `webui` **并行�
 保留起点锚在窗口上，调大 `lookback_days` 不会误删本轮要读的月份。
 
 ⚠️ 这个目录**不再是 webUI 下钻的可见范围** —— 原文渲染快照在抽取时落进
-`b_merchant_group_event.source_messages`，工作台不读文件。这里的保留期只决定
-「抽取失败重跑 / backfill 补跑还读不读得到原文」。
+`b_merchant_group_event.source_messages`，工作台不读文件。
+
+⚠️ **这里的保留期也不是补跑的硬边界，只决定「重跑时要不要重新下载」。**
+本地是 OSS 的镜像/缓存：月目录被删之后 `mirror::download` 读到本地长度为 0，
+直接整月重拉（`MAX_DOWNLOAD_BYTES` 是顺序多块、每块落盘，整月能在一轮内追平）。
+所以 `backfill . <since> <until>` 补跑任意历史都做得了，代价是一次下载。
+
+**真实边界是三个本仓库既不控制也不检查的条件**：
+
+1. OSS 对象是否还在 —— **已确认永久保留**（2026-09-19 与运维确认）；
+2. 上游索引表 `b_wecom_group_message_month_file` 那行是否仍满足 `file_status = 0 AND is_deleted = 0`；
+3. 该行的 `ndjson_last_append_time >= 窗口起点`（`mirror::index::list_month_files` 的绑定条件）。
+
+三条任一不成立，那个群本轮失败（404 走 `MirrorError::Room`，4xx 不重试），
+表现为 `run_failure.stage='extract'`，不是静默少数据。
 
 ### ⚠️ raw 区是未脱敏的客户正文，权限跟 `secrets.toml` 同级
 
@@ -290,6 +303,61 @@ RUST_LOG=chat2events_rs=debug ./chat2events-rs /etc/chat2events
 retry-after、5xx），只会让 reqwest/hyper 变吵。
 
 ---
+
+## 实测基线
+
+**2026-09-19 在 dev 库（`wechat_business_app_dev`）量过一次。** ⚠️ 这是 **dev 不是生产**，
+生产那台的规模没量过 —— 但它是目前唯一的真实测量，够用来判断此前那些外推数字靠不靠谱。
+
+| 项 | 实测值 |
+|---|---|
+| 测量日期 | 2026-09-19 |
+| 事件表行数 | **17,028** |
+| 归属日跨度 | 2026-09-05 ~ 2026-09-13（9 天） |
+| 群数 | 304（事件表）/ 307（群日表） |
+| 企业数 | **1** |
+| 群日行数 | 2,763（全部 `ok`/`ok`，`run_failure` **0 行**） |
+| **事件 / 群日行** | **6.16**（含零事件的天） |
+| **事件 / 活跃群日** | **13.71** |
+| `source_messages` | 11.6 MB，平均 **716 字节/行**，17,028 行全部非空 |
+| 事件表磁盘 | 数据 21.6 MB ＋ 索引 6.5 MB |
+| 最后一次跑批 | `fact_completed_time` 最大值 2026-09-15 15:23 |
+
+**那个 12 倍矛盾解开了**：
+
+- 「15.7 事件/群日」（由「1000 群 × 7 天 = 11 万行」反推）**接近真实的活跃群日速率 13.71** —— 它其实不离谱。
+- 「191 事件/群日」来自 `architecture.md` 那个 3742 条消息的样本，而那是**一个**派单群跨 5 天。
+  实测这个群比平均忙 **14 倍** —— **那个数不能用来估容量**，它只能说明「单群峰值能有多高」。
+- 真正错得多的是**群数**：注释里一律按 1000 群写，dev 实际 **307**。
+
+**按实测重算默认七天窗口**：1,892 事件/天 × 7 ≈ **13,200 行**，而不是注释里的 11 万 ——
+**小 8 倍**，离 `web.max_rows = 20000` 还很远。所以 `architecture.md` 那句「181 个群时默认七天
+窗口就开始报错」按实测应该是 **460 群左右**才会撞上。
+
+⚠️ **生产规模仍未测。** 上面这张表是 dev 的；要生产的数字，把下面三条 SQL 在生产只读账号上再跑一遍。
+
+`idx_overview` 的八列覆盖设计、`web.max_rows`、`store::sql::BATCH` 全都建立在这些数字上。
+**按实测重算，它们的代价比注释里写的小 8 倍** —— 见上表。
+
+原始 SQL（只读；字节那条走全表扫描，在生产上跑之前先知会一声）：
+
+```sql
+-- 事件表的规模与跨度
+SELECT COUNT(*) AS rows_total,
+       MIN(occurred_on) AS oldest, MAX(occurred_on) AS newest,
+       COUNT(DISTINCT roomid) AS rooms,
+       COUNT(DISTINCT corpid) AS corps
+FROM b_merchant_group_event;
+
+-- 展示列占多少字节（保留期有没有在起作用，看这个数会不会一直涨）
+SELECT COUNT(source_messages) AS rows_with_text,
+       SUM(LENGTH(source_messages)) AS bytes_total
+FROM b_merchant_group_event;
+
+-- 实际在跑的群数（群日表更准：事件表只有抽出过事件的群）
+SELECT COUNT(DISTINCT roomid) AS rooms, MIN(dt) AS oldest, MAX(dt) AS newest
+FROM b_merchant_group_metric_daily;
+```
 
 ## 上线前的检查
 
@@ -697,6 +765,49 @@ ALTER TABLE b_merchant_group_event DROP COLUMN event_types;
 真在新指纹路径上读到旧格式（`PRAGMA user_version = 1`，答案存成 JSON 数组），
 程序会带着文件路径显式报错而不是猜 —— 那说明有人手工搬过缓存文件。
 
+### 已有库增加冻结区重写记录表
+
+`backfill` / `retry` 会写穿冻结区（承重不变量 1 的具名授权），此前只留一行日志。
+这张表让「这几天被人工重写过吗」变成一条 SQL 能回答的问题 —— 冻结区存在的理由是
+报表能做同比环比，而一次补跑悄悄改了三个月前的数字时，报表照样显示一个正常的值。
+
+```sql
+CREATE TABLE b_merchant_group_rewrite_log (
+    id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    run_date          DATE            NOT NULL COMMENT '跑批日=人工触发那天',
+    window_since      DATE            NOT NULL COMMENT '本次重写覆盖的数据窗口起点',
+    window_until      DATE            NOT NULL COMMENT '本次重写覆盖的数据窗口终点',
+    frozen_before     DATE            NOT NULL COMMENT '当时的冻结线=日常窗口起点',
+    rooms             JSON            NULL     COMMENT '挑了哪几个群；NULL=窗口内全部群',
+    gmt_created_time  DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间',
+    gmt_modified_time DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_window (window_since, window_until),
+    KEY idx_run (run_date)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '冻结区重写记录（人工授权的删重写）';
+```
+
+⚠️ **不建这张表，`backfill` / `retry` 起不来** —— `store::check_schema` 在第一秒就查它，
+那是有意的：漏建的话会在事实列已经开始删重写之后才报错。
+
+**怎么查**（只供人工排查，看板不读它）：
+
+```sql
+-- 「2026-06-15 那天的数字被人工改过吗」
+SELECT * FROM b_merchant_group_rewrite_log
+WHERE window_since <= '2026-06-15' AND window_until >= '2026-06-15'
+ORDER BY gmt_created_time DESC;
+
+-- 「上个月做过哪些补跑」
+SELECT run_date, window_since, window_until, rooms, gmt_created_time
+FROM b_merchant_group_rewrite_log WHERE run_date >= '2026-08-01' ORDER BY run_date;
+```
+
+⚠️ 这张表**只增不改**，而且**和 `b_merchant_group_run_failure` 是两张表**。后者是失败记录，
+且 `KNOWN_OK_DAYS`（聚合分母）与 `retry` 的挑活都按 `stage='extract'` 过滤它 ——
+往那张表里塞一类「这不是失败」的行，会让刚补跑成功的群日掉出分母，而冻结区不再重抽，
+那个错是永久的。分开建表的代价只是一张表。
+
 ### 验证命令
 
 ```bash
@@ -772,7 +883,7 @@ cd webui && pnpm install --frozen-lockfile && pnpm dev    # http://localhost:527
 `<corpid>` 是必填位置参数，**每条查询都按它过滤**。取值查库拿：
 `SELECT DISTINCT corpid FROM b_merchant_group_event;` —— 也就是 raw 镜像里
 `<raw_root>/<yyyyMM>/<corpId>/` 那一层的目录名。填错不会静默返回空数据集，
-`/api/meta` 直接 409「该企业尚无已落库的群日或事件」。
+`/api/dataset` 直接 409「该企业尚无已落库的群日或事件」。
 
 前端只使用真实接口，需启动后端并连接 MySQL；接口不可用时页面直接报错。
 

@@ -53,7 +53,7 @@ ls /srv/chat2events-webui/    # 期望看到 index.html 和 assets/
 
 ### `<corpid>` 从哪来
 
-必填位置参数，**每条查询都按它过滤**，填错不会静默返回空数据，`/api/meta` 直接 409：
+必填位置参数，**每条查询都按它过滤**，填错不会静默返回空数据，`/api/dataset` 直接 409：
 
 ```sql
 SELECT DISTINCT corpid FROM b_merchant_group_event;
@@ -247,11 +247,11 @@ journalctl -u chat2events-webui | grep 'Nacos 解析到健康实例'
 # 一行都没有 = 进程根本没起来（它启动期解析不到实例就退出），看下面的故障对照表
 
 # ① 后端自己活着（本机直连，绕开 nginx）
-curl -s http://127.0.0.1:8787/api/meta | head -c 200
+curl -s http://127.0.0.1:8787/api/dataset | head -c 200
 # 期望：JSON。409「该企业尚无已落库的群日或事件」= corpid 填错了
 
 # ② nginx 反代通了，且 /api 没被静态站吃掉
-curl -s http://127.0.0.1:30001/api/meta | head -c 200
+curl -s http://127.0.0.1:30001/api/dataset | head -c 200
 # 期望：和 ① 一样的 JSON。返回 HTML = proxy_pass 配错或 location 顺序不对
 
 # ③ 静态站在
@@ -263,11 +263,11 @@ curl -sI http://127.0.0.1:30001/rooms | head -1
 # 期望：200，不是 404
 
 # ⑤ /api 压缩生效（gzip_proxied any）
-curl -s -H 'Accept-Encoding: gzip' -D- -o /dev/null http://127.0.0.1:30001/api/meta | grep -i content-encoding
+curl -s -H 'Accept-Encoding: gzip' -D- -o /dev/null http://127.0.0.1:30001/api/dataset | grep -i content-encoding
 # 期望：content-encoding: gzip  —— 没有这一行就是 gzip_proxied 没生效
 
 # ⑥ 写操作被堵死
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:30001/api/meta
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:30001/api/dataset
 # 期望：403
 
 # ⑦ 外网要口令（本机免密，所以必须从外面测这条）
@@ -311,7 +311,7 @@ tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 | 跑着跑着日志出现 `Nacos 刷新失败，沿用上一次的实例列表` | Nacos 侧抖动。**进程不会退，页面照常**（手上那份实例列表继续用，每 10 秒重试）。持续刷就去查 Nacos 自己 |
 | 刷新子页面 404 | `try_files` 没配 |
 | 多人同时用就有面板 503 | `web.concurrency` 不够：一次开页并发 7 个请求，名额要 ≥ 在线人数 × 7 |
-| 首屏慢、`journalctl` 里一堆 SLOW_REQUEST | 见 `docs/deploy.md`「只读工作台响应缓存」的索引升级 |
+| 首屏慢 | 先数一下慢请求：`journalctl -u chat2events-webui \| grep '只读请求超过'`（⚠️ **日志文本是中文，`grep SLOW_REQUEST` 什么都搜不到** —— 那是 `budget.rs` 里的常量名，不是打出来的字）。条数多再看 `docs/deploy.md`「只读工作台响应缓存」的索引升级；另见 `config.toml` 的 `roster.ttl_secs`，它是响应缓存寿命的上界 |
 
 ## 如果以后要走子路径
 

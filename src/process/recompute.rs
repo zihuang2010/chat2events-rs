@@ -71,7 +71,18 @@ pub async fn run(
         );
     }
 
-    let classifier = Classifier::new(version, types, llm.clone(), &config.classify.cache_dir)?;
+    // ⚠️ **挪出 runtime 线程**：`Classifier::new` 里的 `Cache::open` 是同步的，要把整个
+    // 打标缓存逐行读进内存（`classify.cache_dir` 下那个 ndjson 只增不减）。
+    // 与 `daily::run` / `daily::recover` 同一条理由 —— 而这里恰恰是最长的那条：
+    // 一个季度上千个群、缓存全空。此前这里是裸调，是四个调用点里漏掉的一个。
+    let (version2, llm2, cache_dir) = (
+        version.to_string(),
+        llm.clone(),
+        config.classify.cache_dir.clone(),
+    );
+    let classifier =
+        tokio::task::spawn_blocking(move || Classifier::new(&version2, types, llm2, &cache_dir))
+            .await??;
     // `Arc` 只为跨任务共享；分类请求不持有缓存锁，提交时统一采纳答案。
     let classifier = Arc::new(classifier);
     // 「群 × 这段区间」是重打标全程的作用域。`Window::span` 顺带兜住「since > until」

@@ -237,12 +237,18 @@ pub async fn review_draft(
     sums: &[(String, i64)],
     out_dir: &Path,
 ) -> Result<std::path::PathBuf> {
-    let classifier = Classifier::new(
-        &draft.version,
+    // ⚠️ **挪出 runtime 线程**，理由同 `daily::run` / `recompute::run`：
+    // `Classifier::new` 里的 `Cache::open` 是同步全量读盘。试打共用同一份结果缓存，
+    // 所以它读的也是那个只增不减的 ndjson。
+    let (version, types, llm2, cache_dir) = (
+        draft.version.clone(),
         draft.types.clone(),
         llm.clone(),
-        &config.classify.cache_dir,
-    )?;
+        config.classify.cache_dir.clone(),
+    );
+    let classifier =
+        tokio::task::spawn_blocking(move || Classifier::new(&version, types, llm2, &cache_dir))
+            .await??;
     let report = review(&classifier, sums).await?;
     tracing::info!(
         untyped_pct = format!("{:.2}", report.untyped_share() * 100.0),

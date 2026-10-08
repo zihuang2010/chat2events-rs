@@ -1,0 +1,24 @@
+src/process/merchant_sync/tests.rs
+  s_504c6032e731a8::t_3f0cf8b344a8b5 314-316,321,324-325
+docs/deploy.md
+  s_504c6032e731a8::t_07ab0e048af463 381
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_7ded1fbf34dd34 28-29
+  s_504c6032e731a8::t_c139ef3e27e3ae 141,143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "53e48246ba21c08f3a1572fbf0f95d8a4e842489",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

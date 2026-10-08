@@ -5,15 +5,20 @@
 不是聊天机器人，不是问答系统。**T+2 跑批，跳过当天和昨天，跑完即退出，没有常驻服务。**
 **webUI 是唯一旁路，且只读** —— **事实与指标只从 MySQL 取数**（原文下钻读 `source_messages`
 展示列，不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
-唯一的出站 HTTP 是 `web/roster.rs`：**展示别名**（客服姓名 / 商家名称）走 Nacos 找到的内部
-服务，**取不到必须回落显示 ID** —— 别名不进指标、不进聚合键、不落库，理由在那个文件的顶注。
+出站 HTTP 只有两处，都经 Nacos 找到内部服务（服务发现在内核 `nacos.rs`，调用与成功判定在内核 `rpc.rs`，两处共用）：
+`web/roster.rs` 取**客服姓名**这一种展示别名，**取不到必须回落显示 ID** ——
+它不进指标、不进聚合键、不落库，理由在那个文件的顶注；
+`process/merchant_sync.rs`（独立的定时刷新进程，不是跑批的一环）取商家名称 / 商家分组 /
+业务经理，落进商家摘要表，**跑批不读这张表**。⚠️ **商家名称已改为落库维度**（工作台直接读这张表，
+不再调商家域）：BI 要按商家分组和业务经理出报表、工作台要按它们筛选，进程内缓存里的名字当不了
+筛选维度，也让 BI 直连 MySQL 拿不到 —— 所以「展示别名不落库」只管客服姓名。
 
 ## 七个阶段
 
 `OSS → mirror → ingest → extract/assemble → 保存事实 → channel → classify → 更新标签与分类指标 → webUI(只读)`
 
-**六个阶段模块全在 `src/stage/` 下**，三个进程编排在 `src/process/`，只读旁路 `src/web/`，
-内核（`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）留 crate 根 ——
+**六个阶段模块全在 `src/stage/` 下**，四个进程编排在 `src/process/`，只读旁路 `src/web/`，
+内核（`boot` · `config` · `llm` · `nacos` · `quantile` · `rpc` · `window` · `worktime` · `rejection`）留 crate 根 ——
 四类东西写在路径上，不靠注释区分。判据见 `src/lib.rs` 顶注。
 
 | # | 阶段 | 模块 | 端口 | 出口类型 |
@@ -33,6 +38,8 @@
 另有两个**人工触发**进程，都不写 `b_merchant_group_event`、不参与跑批：
 `process/taxonomy/`（**词表由人手写** → `review` 试打 → `emit-sql` → 人工执行；机器归纳两条路都已放弃）·
 `process/recompute.rs`（升版重打标，只写标注列）。
+再有一个**定时**进程 `process/merchant_sync.rs`（商家摘要刷新：群配置表 → 商家域 / 账号域 →
+商家摘要表，一个事务 upsert，每天两次；**不是七阶段的一环**，任一步失败一行不写、非零退出）。
 入口在 `src/bin/`（写生产库的运维入口，随 release 发布）；`examples/` 只剩
 `dry` / `smoke` / `tzcheck` 三个不写库的诊断工具。**编排住在 lib 里**，
 入口只负责 `boot::Boot` 起进程再调它 —— `Boot::llms()` 建两队模型时一并打启动日志。
@@ -66,7 +73,7 @@
 5. **客服分类指标整群发布**：本群打标全部成功后才写新指标；事实重写时清除旧分类指标。聚合同时检查抽取、打标状态，未完成不是 0。
 6. **溯源**：`source_msg_ids` 非空且每个 ID 真实存在。**模型根本不接触 `msg_id`** —— prompt 里是段内 1-based 序号，代码映射回去，越界即校验失败。
 7. **正文脱敏**：给模型的正文必须过 `_body`。三件事同时：PII 出境 · 正文冒充行框架（**不变量 6 的绕过路径**）· 顺序依赖。**只掩锚点确定的东西**，姓名和自由文本地址一概不碰。
-8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。
+8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。业务经理编号（商家摘要表）是第四种 ID —— 账号域人员主键，与 `easyUserId` / `officialUserId` 不可互换。
 
 ## 硬规则
 
@@ -130,7 +137,11 @@
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（2329 节点 / 11001 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已于 2026-10-07 完成全量索引（5437 节点 / 23782 边）。**代码检索优先使用 codebase-memory；符号定位、调用链、架构和改动影响分析一律先查图。**
+
+- 开始检索时先用 `list_projects` / `index_status` 确认当前仓库及索引状态。
+- 优先调用 MCP 工具；会话未暴露工具时，使用本机 `codebase-memory-mcp cli <tool>`，参数格式查对应的 `--help`。
+- MCP 与本机 CLI 都不可用时，先说明限制，再用 `rg` 和源码读取完成检索，报告实际使用的依据。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。
@@ -139,5 +150,5 @@
 - **图里没有 ≠ 代码里没有。** 下「没有任何地方调用它」这种结论之前先 `check_index_coverage(scopes=["."])`。
   ⚠️ `schema.sql` 是 `parse_partial`（DDL 里的中文注释噎住了解析器），**建表相关的事直接读文件**，别信图。
   `webui/src/test/mock/aggregate.ts` 此前也是，原因是文件里嵌了 4 个**字面 NUL 字符**（复合键分隔符写成了真 NUL 而不是 `\0` 转义）——
-  那还让 `grep -r` **静默跳过整个文件**。2026-09-19 已改成转义，`file` 判定回到 UTF-8 文本、grep 搜得到；**索引标记待下次重新索引后确认**。
+  那还让 `grep -r` **静默跳过整个文件**。2026-09-19 已改成转义；2026-10-07 全量索引后的覆盖检查确认该文件未记录解析问题，索引元数据与源码匹配。
 - 搬模块 / 改文件名之后跑一次 `index_repository(mode="full")`；日常小改由 watch 自动刷新。

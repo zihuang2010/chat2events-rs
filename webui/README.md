@@ -107,12 +107,14 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 | `GET /api/agents` | 按客服一行 | **参与**（involved/rooms）与**首响归属**（owned/p50/p90/overdue）是两个口径，不能混。**没有 `unreplied`**：抽取保证「无平台回复 ⟹ agents 为空」，那一列结构上恒为 0；团队口径的无响应数在 `/api/summary` |
 | `GET /api/events` | `{ rows, total, pages, truncated }` | `b_merchant_group_event`。延迟关联翻页（内层只碰覆盖索引、外层才回表）。`page` 1~200、`page_size` 1~100，越界 400 不截断；页码在护栏内但越过 `pages` 返回空 `rows`。**`total` 不按已知成功群日过滤**，与 `/api/summary` 的 `events` 不是一个集合，前端不做任何分页算术 |
 
-四个聚合 / 明细接口收**同一组筛选参数**，全部进 SQL 的 `WHERE`：
+四个聚合 / 明细接口收**同一组筛选参数**，全部进 SQL 的 `WHERE`（工作台 URL 上对应 `group` / `manager` 等短键，`client.ts` 的 `params()` 翻译成下表的名字）：
 
 | 参数 | 说明 |
 |---|---|
 | `from` / `to` | 日期窗口，不给用默认七天 |
 | `room` / `agent` | 群号 / 客服 easyUserId |
+| `merchant_group_config_name` | 商家分组名称。匹配语义以 `src/web/params.rs` 里 `Filters` 的字段文档为准 |
+| `business_manager_id` | 业务经理编号（人员主键，BIGINT，前端一直当字符串传）。语义同上，可与分组、群聊同时给，取交集 |
 | `types` | 逗号分隔的 `event_type`。**父类由前端展开成子类集合再传** —— 词表在前端手上，后端不再 join 一次 |
 | `status` | `unreplied` / `replied` / `push` / `backlog`，与前端 `StatusFilter` 同名 |
 | `overdue_only` | `true` / `false`，非法值 400 不静默当假 |
@@ -142,8 +144,18 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 `/api/dataset` 的群元数据按 `(corp_id, official_room_id)` 左连接
 `b_wecom_merchant_group`，历史群仍读取已删除配置。`group_name` 返回为 `rooms[].alias`，
 名称非空时 `rooms[].alias_is_authoritative` 为 `true`；未匹配或名称为空时继续标记待补。
-`rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度，暂不用于商家展示或筛选。
-客服姓名仍由顶层 `alias_is_authoritative` 控制。工作台 MySQL 账号需具备该配置表的 SELECT 权限。
+`rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度；再经它左连接商家摘要表
+`b_merchant_group_merchant_summary`，带回 `rooms[].merchant_name`（页面照旧显示，缺失时回落商家编号）、
+`merchant_group_config_name`、`business_manager_id`（同样是字符串，保精度）和 `business_manager_name`。
+「没关联商家」（`merchant_id` 为 null）与「关联了但表里没名字」（`merchant_name` 为 null）可区分。
+客服姓名仍由顶层 `alias_is_authoritative` 控制。工作台 MySQL 账号需具备群配置表与商家摘要表的 SELECT 权限。
+
+筛选栏的「商家分组」「业务经理」两个下拉在「更多筛选」里（折叠时是可点掉的筹码），选项由 `meta.rooms`
+去重得出 —— 天然只含当前日期范围内的群；「未分组」是一项，查不到分组 / 经理的群不产生选项，
+经理姓名缺失（null 或空串）时显示编号。URL 键 `group` / `manager`，随 `reset()` 一并清掉；
+查询缓存键含整个 `QueryFilters`，两个新参数自动在内。浏览器里按群过滤的视图（覆盖度 · 群消息量 ·
+群列表 · 概览群表）共用 `useAnalytics` 的 `visibleRooms`，群聊 / 商家分组 / 业务经理三项一起过滤，
+与后端收到的是同一条件。
 
 ## 三条不能破的口径
 

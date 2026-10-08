@@ -49,8 +49,8 @@ rustc -V    # 必须 ≥ 1.85：本仓库是 edition 2024
 ```bash
 # 构建
 cargo build --release
-# 产物（七个二进制）：
-# target/release/{chat2events-rs, webui, backfill, recompute, recover, retry, taxonomy}
+# 产物（八个二进制）：
+# target/release/{chat2events-rs, webui, backfill, recompute, recover, retry, taxonomy, merchant_sync}
 # CI 的 build job 把它们打成 chat2events-rs-linux-x86_64.tar.gz，
 # 前端静态站另出一个 chat2events-webui-dist.tar.gz（见下面「只读工作台」），
 # 由 publish job 一起发成 Release。
@@ -119,6 +119,7 @@ tag 上是三个 job：`build`（编二进制）与 `check` / `webui` **并行�
     recover                     # 人工：补齐未完成分类
     retry                       # 人工：按 run_failure 重跑还没修好的群（⚠️ 可能写穿冻结区）
     taxonomy                    # 人工：看语料 / 试打 / 转 SQL
+    merchant_sync               # 定时：刷新商家摘要表，timer 每天 12:10 / 22:10 拉起（见「定时跑」）
 /etc/chat2events/
     config.toml                 # 调参与端点，跟仓库里那份同源
     secrets.toml                # 0600，config.rs 起手就检查权限，不对直接崩
@@ -302,6 +303,83 @@ RUST_LOG=chat2events_rs=debug ./chat2events-rs /etc/chat2events
 ⚠️ 调 `debug` 不会让 async-openai 更啰嗦（它只埋了 warn 级别的点：429 限流 header、
 retry-after、5xx），只会让 reqwest/hyper 变吵。
 
+### 商家摘要刷新（每天 12:10、22:10）
+
+`merchant_sync` 把商家名称 / 商家分组 / 业务经理落进 `b_merchant_group_merchant_summary`
+（BI 直连与工作台用），跑完即退出，和跑批同机、同一个配置目录。**它不是跑批的一环**：
+跑批不读这张表、也不检查它在不在 —— 所以两个 timer **互不依赖，谁先谁后无所谓**，
+不用 `After=` / `Requires=` 互相串，这边刷新失败也永远影响不到跑批。
+
+```ini
+# /etc/systemd/system/chat2events-merchant-sync.service
+[Unit]
+Description=chat2events merchant summary sync
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=chat2events
+ExecStart=/opt/chat2events/merchant_sync /etc/chat2events
+```
+
+```ini
+# /etc/systemd/system/chat2events-merchant-sync.timer
+[Unit]
+Description=chat2events merchant summary sync, twice daily
+
+[Timer]
+OnCalendar=*-*-* 12:10:00
+OnCalendar=*-*-* 22:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl daemon-reload                                 # 新装 / 改过 unit 文件之后
+systemctl enable --now chat2events-merchant-sync.timer
+systemctl list-timers | grep merchant                   # NEXT 列应是最近一个 12:10 或 22:10
+systemctl start chat2events-merchant-sync.service       # 手动跑一轮
+journalctl -u chat2events-merchant-sync -f              # 看日志
+```
+
+* **配置目录复用 `/etc/chat2events`，不新增密钥文件。** 进程只读 `config.toml` 的 `[mysql]` /
+  `[log]` / `[roster]` 三节，和 `secrets.toml` 的 `[mysql]` / `[roster]` 两节；模型、OSS、
+  跑批并发一概不碰。⚠️ `secrets.toml` 的 `[roster]`（Nacos 账号密码）跑批自己不读，
+  现网跑批机上的文件多半没有这一节 —— 不加，进程第一次启动就崩，
+  见「上线前的检查 · 已有库增加商家摘要表与刷新进程」。
+* **数据库账号**：它要写表，所以 `[mysql].url` 必须是可写账号 —— 指向跑批的配置目录，
+  不要指向工作台那个只读账号的目录。授权清单见同一节。
+* **不吃掉非零退出码，也不写 `Restart=`。** 与上面「别把非零退出码吃掉」同一条规矩：
+  Nacos / 商家域 / 账号域 / 数据库任何一步失败，整轮作废、**一行不写**、进程非零退出，
+  `Type=oneshot` 的 service 进入 `failed`，告警接在这上面。进程内不重试 ——
+  下一轮 timer 就是重试，不需要人工补救；表里的值在此期间停在上一次成功时的样子。
+* **不写 `WorkingDirectory=`**：它没有相对路径（`raw_root` 那条只约束跑批）。
+* `OnCalendar` 按**机器本地时区**解释，先 `timedatectl` 确认是东八区。目标机是 CentOS 7，
+  自带的 systemd 较老（版本以 `systemctl --version` 为准）：**别在 `OnCalendar` 里写时区后缀**
+  （新版本才支持），`systemd-analyze calendar` 也可能没有 —— 验证就看 `list-timers` 的 NEXT 列。
+* `Persistent=true`：机器在 12:10 / 22:10 关着，开机后补跑一次。刷新是幂等 upsert，补跑无害。
+* 目标机要能连上 Nacos，以及 Nacos 返回的 `merchant-app` / `account-app` 实例地址（内网）。
+
+### 商家摘要刷新的常见故障对照
+
+失败时进程把错误打到 stderr 后以非零码退出，`journalctl` 里是形如 `Error: "…"` 的一行
+（配置类错误是 panic，不是这个形状）。引号里的文案如下（Rust 用 Debug 格式打印，文案里的双引号会带反斜杠）：
+
+| 现象 | 多半是 |
+|---|---|
+| ``Nacos 查不到服务 `merchant-app` 的健康实例：检查服务名、roster.namespace（…）、roster.group_name（…），或上游根本还没注册上来``；服务名换成 `account-app` 同理 | 刷新进程**启动期两个服务都要解析到实例**，任一个不行就在碰数据库之前退出。先核对 `config.toml` `[roster]` 的 `merchant_service` / `employee_service`（账号域就是 `employee_service`）、`namespace`、`group_name`；在 Nacos 控制台按**命名空间**筛服务列表，默认命名空间的 ID 是空串不是 `public`。分组不对时 Nacos 返回的是空列表而不是报错。服务名都对就是上游没注册上来 |
+| `Nacos 登录被拒（HTTP …）` / `Nacos 登录请求失败（检查 roster.nacos 是否可达）` | 前者是 `secrets.toml` `[roster]` 的账号密码错、或服务端没开鉴权（那就两个键都写成空串）；后者是 `roster.nacos` 地址不可达。同 `deploy-webui.md` 的对应条目 |
+| ``商家域 `merchant-app` 第 1/3 批（1000 个编号）：应答异常：code=Some(…)（成功是 1） message=…``；账号域同理（``账号域 `account-app` 查经理姓名（… 个编号）：…``） | 上游业务接口 `code != 1`（没有 `code` 时显示 `code=None`），或 `data` 是 null；账号域另有一种：请求了经理编号却答 `code=1` 加空对象 `{}`（文案是 ``…：应答 code=1 但 data 为空对象，请求了编号却一个都没查到，按上游异常处理``）。**整轮失败、一行没写**，不会把「查不到」写成空值。看 `message` 与上游服务本身；下一轮 timer 自动重试。账号域部分编号查不到姓名（`data` 非空）不算失败，那些经理的姓名存 NULL |
+| `…：返回 HTTP 500 …（http://…）` / `…：调用失败：…` / `…：应答无法解析：…` | 前两者是上游挂了或超时：超时是 `[roster].timeout_secs`（默认 3 秒，**每个请求**一个，商家域一批多达 1000 个编号），上游慢可调大，但这个键和工作台共用；后者是打到的不是契约里的接口（环境对不上、路径不对） |
+| `写商家摘要表失败（… 个商家）：…1146… Table '…b_merchant_group_merchant_summary' doesn't exist` | **没建表**。这一步在最后（上游请求都成功之后），所以日志里前面没有别的错 |
+| `写商家摘要表失败（… 个商家）：…1142… INSERT`（或 `UPDATE` / `SELECT`）`command denied … for table 'b_merchant_group_merchant_summary'` | 可写账号缺这张表的权限，需要 `SELECT, INSERT, UPDATE` |
+| `读群配置表的商家编号失败：…1142… SELECT command denied … for table 'b_wecom_merchant_group'` | 可写账号缺**上游群配置表**的 `SELECT`。跑批从不读这张表，这条授权不会因为跑批能跑就已经有了 |
+| 起不来，`解析失败 …/secrets.toml：详情已省略` | `secrets.toml` 的语法或**缺键**：多半是 `[roster]` 缺了 `username` / `password`（不需要鉴权也要写空串，不能省）。同 `deploy-webui.md` |
+| 起不来，`…/secrets.toml 权限过宽（…），执行：chmod 600 …` | 文件权限不是 0600，照提示改 |
+| `群配置表里没有任何商家编号：确认连的是不是对的库、上游表是否被清空` | 群配置表里没有一条非空 `merchant_id`，**按失败处理**、一行没写（生产上这张表不会是空的）。多半是 `[mysql]` 连错了库，其次是上游表被清空 |
+
 ---
 
 ## 实测基线
@@ -386,8 +464,9 @@ ALTER TABLE b_merchant_group_run_failure
 ### 只读工作台响应缓存
 
 白天的查询走内存缓存（`src/web/cache.rs`），失效靠库里的「数据戳」：每个请求先读
-四张表各自的最后一次写，戳变了整个缓存作废；戳距现在不足 60 秒视作跑批还在写，只查不存。
-跑批不需要知道缓存存在。戳查询要走索引，已有库补这两条（新库直接用 `schema.sql`）：
+五张表各自的最后一次写，戳变了整个缓存作废；戳距现在不足 60 秒视作跑批还在写，只查不存。
+跑批不需要知道缓存存在。商家摘要表 `b_merchant_group_merchant_summary` 也在戳里 ——
+`merchant_sync` 白天写完它，工作台不用重启，下一次请求就看到新值（它的 `idx_modified` 随建表语句自带）。戳查询要走索引，已有库补这两条（新库直接用 `schema.sql`）：
 
 ```sql
 ALTER TABLE b_merchant_group_event ADD KEY idx_modified (gmt_modified_time);
@@ -807,6 +886,112 @@ FROM b_merchant_group_rewrite_log WHERE run_date >= '2026-08-01' ORDER BY run_da
 且 `KNOWN_OK_DAYS`（聚合分母）与 `retry` 的挑活都按 `stage='extract'` 过滤它 ——
 往那张表里塞一类「这不是失败」的行，会让刚补跑成功的群日掉出分母，而冻结区不再重抽，
 那个错是永久的。分开建表的代价只是一张表。
+
+### 已有库增加商家摘要表与刷新进程
+
+BI 与工作台要按商家名称 / 商家分组 / 业务经理看数，而这三样在商家域和账号域，不在本项目库里。
+刷新进程 `merchant_sync` 把它们落成 `b_merchant_group_merchant_summary`（一个商家一行，
+只存当前归属，只 upsert、永不删行）。unit 文件见「定时跑 · 商家摘要刷新」。**按下面的顺序做，
+每一步过了再做下一步，最后才启用 timer。**
+
+**① 先建表**（与 `schema.sql` 同文）：
+
+```sql
+CREATE TABLE b_merchant_group_merchant_summary (
+    id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID。upsert写入，id稳定',
+    merchant_id                BIGINT UNSIGNED NOT NULL COMMENT '商家编号，与群配置表b_wecom_merchant_group.merchant_id对得上',
+    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字，只有空白也存NULL',
+    merchant_group_config_name VARCHAR(255)    NULL     COMMENT '商家分组名称，原样存商家域的值。字面量「未分组」是上游自己补的，表示商家没配分组或分组已被删除，它是一个普通取值不是NULL，自然形成一个桶。分组按名字识别：改名拆桶、重名合桶',
+    business_manager_id        BIGINT UNSIGNED NULL     COMMENT '业务经理编号=账号域人员主键（与easyUserId/officialUserId都不可互换）。NULL=商家没配经理（上游为空或0）。与business_manager_name配合区分两种NULL',
+    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名（只有空白也算）',
+    gmt_created_time           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    gmt_modified_time          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间。只在值真的变了才推进，工作台缓存数据戳用它',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_merchant (merchant_id) COMMENT '语义键：一个商家一行，upsert靠它触发冲突',
+    KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time)走索引尾读'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶。分组值「未分组」由商家域自己补（商家没配分组或分组已被删除），是普通取值不是NULL，自然形成一个桶';
+```
+
+⚠️ **这张表不进 `store::check_schema`** —— 跑批不读它，缺表不影响跑批，所以跟「冻结区重写记录表」
+不一样：漏建不会在跑批第一秒喊出来，症状只出现在 `merchant_sync`（最后一步写表时 `1146`）
+和读这张表的工作台上。
+
+**② 凭据与授权**：
+
+* `secrets.toml` 加 `[roster]` 节（`username` / `password`，服务端没开鉴权就都写空串），
+  文件仍是 `0600`。**同一个文件，不新增密钥文件。** 跑批自己的 `Secrets` 不含这一节，
+  所以现网跑批机上的 `secrets.toml` 多半没有它；不加，`merchant_sync` 第一次启动就崩。
+  写法与权限检查的细节见 `docs/deploy-webui.md` 的「只读账号与 Nacos 凭据」，这里不重复。
+* `config.toml` 的 `[roster]` 节要有真实的 `merchant_service`（`merchant-app`）、
+  `employee_service`（`account-app`）、`namespace`、`group_name`，**按环境走，别把 dev 的照搬**。
+* 授权：
+
+| 账号 | 权限 | 说明 |
+|---|---|---|
+| 刷新进程的可写账号（`secrets.toml` 的 `[mysql].url`，与跑批同一个配置目录） | 新表 `SELECT, INSERT, UPDATE` | upsert 不删行，所以不需要 `DELETE`；`SELECT` 是事务里前后各数一次行数 |
+| 同上 | 群配置表 `b_wecom_merchant_group` 的 `SELECT` | 读 `merchant_id`。⚠️ **跑批从不读这张表**，仓库里没有这条授权已经到位的证据，必须在这一步验证 |
+| 工作台只读账号 | 新表 `SELECT` | 工作台不写这张表 |
+
+**③ 手动跑一次**（unit 文件装好之后；不要先启用 timer）：
+
+```bash
+systemctl daemon-reload
+systemctl start chat2events-merchant-sync.service     # oneshot：跑完才返回，失败会报错
+journalctl -u chat2events-merchant-sync -n 50
+```
+
+**④ 看日志里的商家数与请求数**。正向信号有两类，都要有（下面省略了时间戳 / 级别 / 模块前缀）：
+
+```text
+Nacos 解析到健康实例 service=merchant-app healthy=… instances=…
+Nacos 解析到健康实例 service=account-app healthy=… instances=…
+商家摘要刷新完成 merchants=… requests=… rows=… inserted=… updated=…
+```
+
+* 前两行是 Nacos 配对了的唯一正向信号：两个服务名各一行，`healthy` 都 ≥ 1。
+* `merchants`：群配置表里去重后的非空商家编号数。
+* `requests`：发出的上游请求数 ＝ `ceil(merchants / 1000)`（商家域，一批最多 1000、串行），
+  再加账号域那一次 —— 只要有商家配了经理就有，所有商家都没配经理则没有。
+* `rows`：商家域实际返回的商家数。`merchants - rows` 是上游没返回、表里保持旧值的商家；**首次运行应接近 0**。
+* `inserted` / `updated`：新增行数与值变了的行数。首次应是 `inserted ≈ rows`、`updated = 0`；
+  之后每轮 `inserted` 是新出现的商家，`updated` 是名称 / 分组 / 经理变了的商家。
+
+**⑤ 查表行数与「未分组」行数**：
+
+```sql
+SELECT COUNT(*) AS total,
+       SUM(merchant_group_config_name = '未分组') AS ungrouped,
+       SUM(business_manager_id IS NULL) AS no_manager,
+       SUM(business_manager_id IS NOT NULL AND business_manager_name IS NULL) AS manager_name_missing
+FROM b_merchant_group_merchant_summary;
+
+SELECT COUNT(DISTINCT merchant_id) AS merchants
+FROM b_wecom_merchant_group WHERE merchant_id IS NOT NULL;
+```
+
+* `total` 对得上第二条的 `merchants`（差值就是上游没返回的商家，首次应接近 0）。
+* `ungrouped`：「未分组」是上游自己补的字面量，表示商家没配分组或分组已被删，**是一个普通取值，不是 NULL**，
+  它自然是报表里的一个桶。
+* `no_manager`：商家没配经理（上游为空或 0），编号和姓名都是 NULL；
+  `manager_name_missing`：有经理编号但账号域查不到姓名。两种 NULL 不是一回事。
+* 数字是否「合理」没有自动判据：挑一个熟悉的商家，对一下名称、分组、经理是否和业务侧一致。
+
+**⑥ 启用 timer 并确认**：
+
+```bash
+systemctl enable --now chat2events-merchant-sync.timer
+systemctl list-timers | grep merchant     # NEXT 列应是最近一个 12:10 或 22:10（机器本地时间）
+```
+
+出错时对照「定时跑 · 商家摘要刷新的常见故障对照」。
+
+⚠️ **真实上游联调是手动步骤。** 仓库里这个进程的测试打的是本地假服务端（Nacos、商家域、账号域都是脚本化的假 HTTP），
+只验协议形状与落库逻辑，**通过不能代替线上配对成功** —— 服务名 / 命名空间对不对、两个上游的返回体长什么样，
+都只有在目标机上照着上面 ③④⑤ 手跑一遍才知道。
+
+⚠️ 这一节和「定时跑」里的命令、日志文案是从 `src/bin/merchant_sync.rs`、`src/process/merchant_sync.rs`、
+`src/nacos.rs` 读出来的，**没有在目标机上实际跑过**，unit 文件也没有用 `systemd-analyze verify` 校验过。
+第一次照着做时把踩到的坑补回来。
 
 ### 验证命令
 

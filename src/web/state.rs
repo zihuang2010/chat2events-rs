@@ -11,7 +11,7 @@
 //! 相对路径的 cwd 对不对」那一整类失败。
 //!
 //! ⚠️ **事实与指标只从 MySQL 取数**；`roster` 是唯一的例外，而它只装**展示别名**
-//! （客服姓名 / 商家名称），取不到必须回落显示 ID。理由在 `roster.rs` 的模块注释里。
+//! （客服姓名），取不到必须回落显示 ID。理由在 `roster.rs` 的模块注释里。
 
 use super::{cache::Cache, config::WebLimits, roster::Roster};
 use sqlx::MySqlPool;

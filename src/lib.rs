@@ -15,9 +15,10 @@
 // **`src/` 下四类东西，分类写在路径上，不写在注释里**：
 //
 //   stage/     七阶段的六个模块 —— 一轮跑批的全部「处理」
-//   process/   把它们串起来的三个「进程」编排：daily · taxonomy · recompute
+//   process/   把它们串起来的「进程」编排：daily · taxonomy · recompute，
+//              外加 merchant_sync（商家摘要刷新，不是七阶段的一环，只借 stage::store 的表名常量）
 //   web/       只读旁路（跑批不知道它存在）
-//   根目录     内核：boot · config · llm · window · worktime · rejection
+//   根目录     内核：boot · config · llm · nacos · quantile · rpc · window · worktime · rejection
 //
 // 这四类此前平摊在 crate 根的 15 个 `mod` 声明上，靠这段注释区分 —— 注释在，
 // 规则就在；注释漂了，平面还在。现在读 `use crate::stage::extract` 就知道它是哪一类。
@@ -67,7 +68,7 @@
 // 七阶段（① mirror ①② ingest ③④ extract ⑤ classify ⑥ metrics ⑦ store）
 pub mod stage;
 
-// 把七阶段串起来的编排：daily · taxonomy · recompute
+// 进程编排：daily · taxonomy · recompute 把七阶段串起来，merchant_sync 不是其中一环
 pub mod process;
 
 // 只读旁路 —— 跑批不知道它存在
@@ -77,8 +78,10 @@ pub mod web;
 pub mod boot;
 pub mod config;
 pub mod llm;
+pub mod nacos;
 pub mod quantile;
 mod rejection;
+pub(crate) mod rpc;
 pub mod window;
 pub mod worktime;
 

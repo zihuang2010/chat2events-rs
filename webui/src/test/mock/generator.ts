@@ -61,6 +61,26 @@ const ROOM_ALIAS = [
   "川渝-加急处理群",
   "京津-VIP商户群",
 ];
+/**
+ * 商家侧信息，与 `ROOM_ALIAS` 同下标。覆盖商家筛选的各种形状：同组多经理 · 同经理多群 ·
+ * 经理姓名查不到（null）· 姓名是空串 · 「未分组」字面量 · 没关联商家（整行 null）。
+ */
+const ROOM_MERCHANT: ({ group: string; manager: string | null; name: string | null } | null)[] = [
+  { group: "华东组", manager: "1001", name: "李经理" },
+  { group: "华东组", manager: "1001", name: "李经理" },
+  { group: "华南组", manager: "1002", name: "王经理" },
+  { group: "华南组", manager: "9007199254740993", name: null },
+  { group: "华南组", manager: "1002", name: "王经理" },
+  { group: "华北组", manager: "1003", name: "" },
+  { group: "华北组", manager: "1003", name: "" },
+  { group: "未分组", manager: null, name: null },
+  { group: "未分组", manager: null, name: null },
+  null,
+  null,
+  null,
+  null,
+  null,
+];
 const AGENT_ALIAS = ["林可", "周叙", "唐棠", "邵珩", "岑澜", "阮野", "毕遥", "柯茉"];
 const ROOM_HEAT = [1.6, 1.4, 1.25, 1.1, 1.05, 1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5];
 
@@ -442,7 +462,13 @@ export function buildMockDataset(seed = 20260829): MockDataset {
     meta: {
       corpid: CORPID,
       days: DAYS,
-      rooms: rooms.map(({ roomid, alias }) => ({ roomid, alias })),
+      rooms: rooms.map(({ roomid, alias }, i) => ({
+        roomid,
+        alias,
+        merchant_group_config_name: ROOM_MERCHANT[i]?.group ?? null,
+        business_manager_id: ROOM_MERCHANT[i]?.manager ?? null,
+        business_manager_name: ROOM_MERCHANT[i]?.name ?? null,
+      })),
       agents: agents.map(({ agent, alias }) => ({ agent, alias })),
       taxonomy: MOCK_TAXONOMY,
       taxonomy_version: TAXONOMY_VERSION,

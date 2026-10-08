@@ -73,6 +73,7 @@ function useTestAnalytics(...args: Parameters<typeof useAnalytics>) {
     events: data.events,
     groupDaily: data.groupDaily,
     tax: data.taxIndex,
+    rooms: data.meta.rooms,
   });
   return useAnalytics(...args);
 }
@@ -121,7 +122,7 @@ it("shows_merchant_name_and_falls_back_to_merchant_id", async () => {
     return view;
   };
 
-  // ① 名册给出了店铺名 —— 群名下面挂商家名。
+  // ① 商家摘要表里有店铺名 —— 群名下面挂商家名。
   const resolved = await show(
     withMerchant({
       merchant_id: "42",
@@ -132,7 +133,7 @@ it("shows_merchant_name_and_falls_back_to_merchant_id", async () => {
   expect(resolved.container.querySelector(".ra-room-merchant")).toHaveTextContent("甲商家");
   resolved.unmount();
 
-  // ② 关联了商家但名册查不到 —— 回落显示商家 ID，**不是空白**。
+  // ② 关联了商家但表里没有名字 —— 回落显示商家 ID，**不是空白**。
   const unresolved = await show(
     withMerchant({ merchant_id: "42", merchant_name: null, merchant_name_is_authoritative: false }),
   );
@@ -271,6 +272,33 @@ it("选择一个群后只显示该群指标", async () => {
   await settle(view);
   expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent(room.alias!);
+});
+
+type RoomOption = TestDataset["meta"]["rooms"][number];
+it.each<[string, (r: RoomOption) => boolean]>([
+  ["group=华东组", (r) => r.merchant_group_config_name === "华东组"],
+  ["manager=1003", (r) => r.business_manager_id === "1003"],
+  [
+    "group=华南组&manager=1002",
+    (r) => r.merchant_group_config_name === "华南组" && r.business_manager_id === "1002",
+  ],
+])("商家分组与业务经理筛选收敛群列表，指标只看这些群（%s）", async (search, pick) => {
+  const expected = dataset.meta.rooms.filter(pick);
+  expect(expected.length).toBeGreaterThan(0);
+  expect(expected.length).toBeLessThan(dataset.meta.rooms.length);
+  const view = render(
+    <MemoryRouter initialEntries={[`/rooms?${search}`]}>
+      <Providers>
+        <Workbench>
+          <Harness />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  await settle(view);
+  const labels = [...view.container.querySelectorAll(".ra-room-link")].map((el) => el.textContent);
+  expect(labels.sort()).toEqual(expected.map((r) => r.alias).sort());
+  expect(screen.getByLabelText("群指标摘要")).toHaveTextContent(`${expected.length} 个群`);
 });
 
 it("子路径部署的分类下钻链接包含 basename", async () => {

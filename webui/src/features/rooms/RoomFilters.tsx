@@ -60,6 +60,35 @@ export function RoomFilters({
       clear: { overdueOnly: null },
     });
   }
+  // 商家分组 / 业务经理的选项从群选项去重得出 —— `meta.rooms` 天然只含当前日期范围内的群。
+  // 查不到分组 / 经理（NULL）的群不产生选项；「未分组」是上游字面值，照常是一项。
+  // 经理姓名缺失（null；空白名写入侧已存成 NULL）时显示编号。
+  const groupNames = [
+    ...new Set(meta.rooms.map((room) => room.merchant_group_config_name).filter(Boolean)),
+  ].sort((a, b) => a!.localeCompare(b!, "zh"));
+  const managerLabels = new Map<string, string>();
+  for (const room of meta.rooms) {
+    const id = room.business_manager_id;
+    const name = room.business_manager_name;
+    if (id && (name || !managerLabels.has(id))) managerLabels.set(id, name || id);
+  }
+  const managerOptions = [...managerLabels]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "zh"));
+  if (filters.merchantGroup) {
+    moreChips.push({
+      key: "商家分组",
+      label: filters.merchantGroup,
+      clear: { merchantGroup: null },
+    });
+  }
+  if (filters.businessManager) {
+    moreChips.push({
+      key: "业务经理",
+      label: managerLabels.get(filters.businessManager) ?? filters.businessManager,
+      clear: { businessManager: null },
+    });
+  }
   const moreCount = moreChips.length;
   const active =
     from !== defaults.from ||
@@ -285,6 +314,32 @@ export function RoomFilters({
               { value: "1", label: "仅超时" },
               { value: "0", label: "仅未超时" },
             ]}
+          />
+        </Form.Item>
+        <Form.Item label="商家分组" htmlFor="room-filter-merchant-group">
+          <Select
+            id="room-filter-merchant-group"
+            aria-label="商家分组"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="全部分组"
+            value={filters.merchantGroup}
+            onChange={(value: string | undefined) => patch({ merchantGroup: value ?? null })}
+            options={groupNames.map((value) => ({ value, label: value }))}
+          />
+        </Form.Item>
+        <Form.Item label="业务经理" htmlFor="room-filter-manager">
+          <Select
+            id="room-filter-manager"
+            aria-label="业务经理"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="全部经理"
+            value={filters.businessManager}
+            onChange={(value: string | undefined) => patch({ businessManager: value ?? null })}
+            options={managerOptions}
           />
         </Form.Item>
       </div>

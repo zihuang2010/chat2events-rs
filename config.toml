@@ -212,10 +212,13 @@ max_rows = 20000
 # 真正的体检在 budget.rs 的 SLOW_REQUEST（800ms 打 warn），两者分工不同。
 query_timeout_secs = 10
 
-# 外部名册（只读工作台专用；跑批不读这一节）—— 商家名称与客服姓名的来源。
-# 这两份信息不在本项目库里，属于其他业务域，服务地址由 Nacos 管理、不是固定域名。
-# ⚠️ **名字是展示，不是事实，也不是维度**：不进指标、不进聚合键、不落库，
+# 外部名册（只读工作台与 merchant_sync 刷新进程用；跑批不读这一节）。
+# 工作台用它取**客服姓名**；merchant_sync 只用其中的 Nacos 连接那几个键和两个服务名
+# （ttl_secs 它不读），账号密码同在 secrets.toml 的 [roster]。
+# 这些信息不在本项目库里，属于其他业务域，服务地址由 Nacos 管理、不是固定域名。
+# ⚠️ **客服姓名是展示，不是事实，也不是维度**：不进指标、不进聚合键、不落库，
 #    取不到就回落显示 ID。理由内联在 src/web/roster.rs 的模块注释里。
+#    商家名称不在此列 —— 它已改为落库维度（商家摘要表），工作台不再调商家域。
 # ⚠️ 全部必填，代码里没有默认值 —— 跟本文件其余部分同一个规矩。
 [roster]
 # Nacos 服务端地址。只要 scheme://host:port，**不带 /nacos 路径**（代码自己拼 v1 端点）。
@@ -228,20 +231,23 @@ nacos = "https://mse-650a0714-p.nacos-ans.mse.aliyuncs.com:8848"
 namespace = "integration-dev"
 group_name = "INTEGRATION_GROUP"
 
-# 商家域与员工域的服务名。写错即**启动失败**，错误信息带上服务名。
+# 商家域与员工域的服务名。**进程只解析自己要用的那几个**，被解析的写错即**启动失败**，
+# 错误信息带上服务名。
 # 员工域 = 账号域 account-app，接口是它的
 # POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds（见 web/roster.rs）。
-# ⚠️ merchant_service 今天**还没有代码消费它**（商家名称那张票没做），但启动期两个服务名
-#    都要解析得到实例，所以它必须是真名。dev 下两个服务同在
+# ⚠️ merchant_service **只给 merchant_sync 用**：工作台启动只解析 employee_service，
+#    商家名称读商家摘要表、不再调商家域。键仍保留 —— 它与 employee_service 同属这一节，
+#    merchant_sync 两个都要解析，所以两个都必须是真名。
+#    dev 下两个服务同在
 #    integration-dev / INTEGRATION_GROUP。
 #    本地 profile 的服务名带后缀（merchant-app-local / merchant-app-test-local），别照抄。
 merchant_service = "merchant-app"
 employee_service = "account-app"
 
-# 名册（ID → 名字）的整体存活时间。到期整张表清空重查，不做逐条过期 ——
-# 名册规模很小（客服二十余人、商家数百），逐条过期要多存 N 个时间戳换不来东西。
-# 3600 秒 = 商家 / 客服改名后最坏 1 小时在页面上看到。取不到名字一律回落显示 ID，
-# 而别名不进指标、不进聚合键、不落库（理由见 web/roster.rs 顶注）——
+# 名册（ID → 客服姓名）的整体存活时间。到期整张表清空重查，不做逐条过期 ——
+# 名册规模很小（客服二十余人），逐条过期要多存 N 个时间戳换不来东西。
+# 3600 秒 = 客服改名后最坏 1 小时在页面上看到。取不到名字一律回落显示 ID，
+# 而客服姓名不进指标、不进聚合键、不落库（理由见 web/roster.rs 顶注）——
 # 所以名字陈旧一小时不损坏任何数据，只是显示得晚一点。
 # ⚠️ **它同时是响应缓存的作废周期。** 名册的「代数」拼在 web.cache 的数据戳上
 #    （名册活在进程内存里，它变了库里一个字节都没动），所以每过一个 TTL

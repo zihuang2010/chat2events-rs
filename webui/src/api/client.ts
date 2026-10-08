@@ -182,6 +182,10 @@ export interface QueryFilters {
   agent?: string | null;
   /** **首响归属**给他。与 `agent` 是两个口径，可以同时给 */
   responder?: string | null;
+  /** 商家分组名称，精确匹配（后端参数 `merchant_group_config_name`） */
+  merchantGroup?: string | null;
+  /** 业务经理编号，字符串保 BIGINT 精度（后端参数 `business_manager_id`） */
+  businessManager?: string | null;
   types?: readonly string[];
   /** **排除**这些 type_id。「未归类」只能这么表达 —— 词表外的编码列不出名单 */
   typesExclude?: readonly string[];
@@ -199,6 +203,8 @@ function params(f: QueryFilters): Record<string, string> {
   if (f.room) out.room = f.room;
   if (f.agent) out.agent = f.agent;
   if (f.responder) out.responder = f.responder;
+  if (f.merchantGroup) out.merchant_group_config_name = f.merchantGroup;
+  if (f.businessManager) out.business_manager_id = f.businessManager;
   if (f.types?.length) out.types = f.types.join(",");
   if (f.typesExclude?.length) out.types_exclude = f.typesExclude.join(",");
   if (f.status) out.status = f.status;

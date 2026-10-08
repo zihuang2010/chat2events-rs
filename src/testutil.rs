@@ -198,3 +198,82 @@ pub async fn drop_mysql_database(pool: sqlx::MySqlPool) {
         .unwrap();
     pool.close().await;
 }
+
+/// 脚本化应答的本地 HTTP 端点（Nacos 协议测试与名册测试共用）—— 照 [`http_model`] 的配方写，
+/// 差异是**按路径分发且支持 GET**（那份只应答固定路径的 POST）。
+///
+/// 每条脚本是 `(路径, 状态码, 应答 JSON)`；来一个请求就取**最早一条路径相同**的
+/// 应答并用掉，于是同一路径的多次调用可以给不同应答（token 过期重登就靠这个）。
+/// 收到脚本里没有的路径直接 panic —— 路径拼错要当场看见，不是静默对不上。
+///
+/// 返回收到的 `(请求行, 正文)`，顺序即到达顺序。
+pub fn scripted(
+    mut script: Vec<(&'static str, u16, Value)>,
+) -> (String, std::thread::JoinHandle<Vec<(String, String)>>) {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut requests = Vec::new();
+        while !script.is_empty() {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(2))
+                    }
+                    Err(e) => panic!("假 Nacos 未收到预期请求：{e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            // 大小写不能归一化：serviceName / accessToken 这些参数名是区分大小写的。
+            let header = String::from_utf8(header).unwrap();
+            let line = header.lines().next().unwrap().trim().to_owned();
+            let target = line.split_whitespace().nth(1).unwrap().to_owned();
+            let path = target.split('?').next().unwrap().to_owned();
+            let len: usize = header
+                .lines()
+                .find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0; len];
+            stream.read_exact(&mut body).unwrap();
+            let at = script
+                .iter()
+                .position(|(scripted, ..)| *scripted == path)
+                .unwrap_or_else(|| panic!("假 Nacos 收到未脚本化的请求：{line}"));
+            let (_, status, reply) = script.remove(at);
+            let reply = reply.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+            requests.push((line, String::from_utf8(body).unwrap()));
+        }
+        requests
+    });
+    (base, handle)
+}

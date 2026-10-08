@@ -2,7 +2,7 @@
 //! 重算一遍（一页 7 个请求、约 19 条扫窗口的 SQL）是白烧。
 //!
 //! **失效不靠时间，也不靠跑批来通知**（跑批不知道 webUI 存在）：每个请求先向库要一个
-//! [`Stamp`] —— 四张只读表各自的「最后一次写」，全走主键 / 索引，与表多大无关。
+//! [`Stamp`] —— 五张只读表各自的「最后一次写」，全走主键 / 索引，与表多大无关。
 //! 戳变了整个缓存作废。戳距现在不足 [`QUIET`] = 跑批可能还在写，这段时间**只查不存**，
 //! 于是「跑批结束后才开始缓存」不需要任何人来通知，也不需要知道跑批几点跑。
 //!
@@ -13,7 +13,7 @@
 //! 存的是**序列化后的字节**，命中时不再解析 JSON，也不再占 `ReadBudget` 那份内存。
 
 use super::{budget::WebError, state::WebState};
-use crate::stage::store::{T_EVENT, T_FAILURE, T_GROUP, T_TAXONOMY};
+use crate::stage::store::{T_EVENT, T_FAILURE, T_GROUP, T_MERCHANT_SUMMARY, T_TAXONOMY};
 use axum::{
     body::Bytes,
     extract::{Request, State},
@@ -39,19 +39,25 @@ const QUIET: chrono::Duration = chrono::Duration::seconds(60);
 
 /// 数据戳自缓存多久。
 ///
-/// 每个只读请求 —— **包括缓存命中** —— 都先向库要一次戳（四张表各自的最后一次写）。
+/// 每个只读请求 —— **包括缓存命中** —— 都先向库要一次戳（五张表各自的最后一次写）。
 /// 打开一次页面是七个并发请求，于是七次数据库往返，而命中路径本该几乎免费。
 ///
 /// 一秒**远小于** [`QUIET`] 的 60 秒静默期，所以**不改失效语义**：影响面是
 /// 「跑批结束后的第一秒」最坏多命中一次旧缓存，下一秒自动纠正。
 pub(super) const STAMP_TTL: Duration = Duration::from_secs(1);
 
-/// 四张只读表的「最后一次写」。事件与群日表走 `gmt_modified_time`（`ON UPDATE` 会跟着
-/// 打标的 `UPDATE` 变，`REPLACE` / `INSERT` 更不用说）—— 所以这两张表要有
+/// 五张只读表的「最后一次写」。事件、群日与商家摘要表走 `gmt_modified_time`（`ON UPDATE` 会跟着
+/// 打标的 `UPDATE` 变，`REPLACE` / `INSERT` 更不用说）—— 所以这三张表要有
 /// `idx_modified (gmt_modified_time)`，`MAX` 才是一次索引尾读；失败表只增不改，
 /// `MAX(id)` 走主键；词表几十行，扫一遍无所谓。
 ///
-/// ⚠️ **`b_wecom_merchant_group`（群名）不在戳里** —— 那是别人的表，没有可用的时间列。
+/// **商家摘要表是唯一在白天被写的表**（`merchant_sync` 每天两次，时刻见 `docs/deploy.md`）：它写完，
+/// 工作台不用重启，戳一变旧响应全部作废。它也参与「是否太新」的判断（同秒竞争，见 [`QUIET`]），
+/// 且它只在值真的变了才推进 `gmt_modified_time`，所以没有变化的刷新不会让白天的缓存白白作废。
+///
+/// ⚠️ **`b_wecom_merchant_group`（群名）不在戳里** —— 它有 `gmt_modified_time`（库上 `ON UPDATE`，
+/// 2026-10-07 核实上游 DDL），但**没有索引**：放进来，每次读戳都是一次全表扫。而且上游同步拉群账号
+/// 也会改这一行、推进这一列，与群名 / 商家绑定无关的改动会让缓存白白作废。
 /// 群改名要重启 `webui` 或等下一次跑批。
 ///
 /// ⚠️ **外部名册的代数也拼在戳上**（见 [`Cache::stamp`]）。名册活在进程内存里，
@@ -63,25 +69,32 @@ async fn read_stamp(pool: &MySqlPool) -> Result<(Stamp, bool), sqlx::Error> {
     // ⚠️ 表名走 `store::T_*`，**不抄字面量** —— 抄错在这里是**静默**的：
     // 戳查不到就是永远 quiet，缓存永不装入，页面只是变慢，没有任何东西会报错。
     // （`web/query.rs` 抄错会直接 500，看得见，所以那边的字面量本轮没动。）
-    let (event, group, failure, taxonomy, now): (
-        Option<NaiveDateTime>,
-        Option<NaiveDateTime>,
+    // 空表时 `MAX` 是 NULL。
+    type LastWrite = Option<NaiveDateTime>;
+    let (event, group, failure, taxonomy, merchant, now): (
+        LastWrite,
+        LastWrite,
         Option<u64>,
-        Option<NaiveDateTime>,
+        LastWrite,
+        LastWrite,
         NaiveDateTime,
     ) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT (SELECT MAX(gmt_modified_time) FROM {T_EVENT}), \
                 (SELECT MAX(gmt_modified_time) FROM {T_GROUP}), \
                 (SELECT MAX(id) FROM {T_FAILURE}), \
                 (SELECT MAX(gmt_modified_time) FROM {T_TAXONOMY}), \
+                (SELECT MAX(gmt_modified_time) FROM {T_MERCHANT_SUMMARY}), \
                 NOW()"
     )))
     .fetch_one(pool)
     .await?;
-    let latest = [event, group, taxonomy].into_iter().flatten().max();
+    let latest = [event, group, taxonomy, merchant]
+        .into_iter()
+        .flatten()
+        .max();
     let quiet = latest.is_none_or(|t| now.signed_duration_since(t) >= QUIET);
     Ok((
-        format!("{event:?}|{group:?}|{failure:?}|{taxonomy:?}"),
+        format!("{event:?}|{group:?}|{failure:?}|{taxonomy:?}|{merchant:?}"),
         quiet,
     ))
 }

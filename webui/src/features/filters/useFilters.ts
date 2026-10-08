@@ -21,6 +21,10 @@ export interface Filters {
   to: string | null;
   room: string | null;
   agent: string | null;
+  /** 商家分组名称，精确匹配上游字面值（「未分组」也是一个值）。后端参数 `merchant_group_config_name` */
+  merchantGroup: string | null;
+  /** 业务经理编号，**字符串**保 BIGINT 精度。后端参数 `business_manager_id` */
+  businessManager: string | null;
   level1: string | null;
   level2: string | null;
   status: StatusFilter | null;
@@ -48,6 +52,8 @@ const KEYS = {
   to: "to",
   room: "room",
   agent: "agent",
+  merchantGroup: "group",
+  businessManager: "manager",
   level1: "l1",
   level2: "l2",
   status: "status",
@@ -87,6 +93,8 @@ export function parseFilters(sp: URLSearchParams): Filters {
     to: from && to && to < from ? from : to,
     room: sp.get(KEYS.room),
     agent: sp.get(KEYS.agent),
+    merchantGroup: sp.get(KEYS.merchantGroup),
+    businessManager: sp.get(KEYS.businessManager),
     level1: sp.get(KEYS.level1),
     level2: sp.get(KEYS.level2),
     status: STATUS_FILTERS.includes(status as StatusFilter) ? (status as StatusFilter) : null,

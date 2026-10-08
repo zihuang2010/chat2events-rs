@@ -188,6 +188,30 @@ export function coverageLabel(cov: Coverage): string {
     .join(" · ");
 }
 
+/**
+ * 符合「群聊 · 商家分组 · 业务经理」三项筛选的群。前端在浏览器里按群过滤的视图
+ * （覆盖度 · 群消息量 · 群列表 · 概览热力图）和 mock 聚合都用它，与后端 `Filters::clause`
+ * 的 `roomid = ?` 加 `roomid IN (群配置表 ⋈ 商家摘要表)` 同一条件。
+ *
+ * 分组与经理的匹配语义（精确匹配 · NULL 不入选）以后端 `src/web/params.rs` 里 `Filters`
+ * 的字段文档为准，这里只是它在浏览器里的第二份实现。
+ */
+export function filterRooms(
+  rooms: Meta["rooms"],
+  f: {
+    room?: string | null;
+    merchantGroup?: string | null;
+    businessManager?: string | null;
+  },
+): Meta["rooms"] {
+  return rooms.filter(
+    (room) =>
+      (!f.room || room.roomid === f.room) &&
+      (!f.merchantGroup || room.merchant_group_config_name === f.merchantGroup) &&
+      (!f.businessManager || room.business_manager_id === f.businessManager),
+  );
+}
+
 /** 覆盖度。**数据完整时也要显示**，让调用方在结构上没法忘记处理它。 */
 export function coverage(
   groupDaily: readonly GroupDailyRow[],

@@ -15,9 +15,9 @@
 | # | 约束 | 本仓库怎么落 |
 |---|---|---|
 | 1 | MySQL **8.0+** | InnoDB + `utf8mb4`，承重不变量 2 依赖事务 |
-| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 六张表全部显式写出，不靠库级默认 |
+| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 七张表全部显式写出，不靠库级默认 |
 | 3 | 表名 / 字段名**全小写**，不以数字开头，两个下划线之间不只有数字 | ✓ |
-| 4 | **表前缀 `b_`**（公共基础应用 `basic-public-app`） | `b_merchant_group_event` · `b_merchant_group_metric_daily` · `b_merchant_group_agent_metric_daily` · `b_merchant_group_agent_msg_daily` · `b_merchant_group_taxonomy` · `b_merchant_group_run_failure` |
+| 4 | **表前缀 `b_`**（公共基础应用 `basic-public-app`） | `b_merchant_group_event` · `b_merchant_group_metric_daily` · `b_merchant_group_agent_metric_daily` · `b_merchant_group_agent_msg_daily` · `b_merchant_group_taxonomy` · `b_merchant_group_run_failure` · `b_merchant_group_merchant_summary` |
 | 5 | 非负整数必须 **`UNSIGNED`** | 自增 id、全部 `*_count`、`first_reply_p*_sec` |
 | 6 | 长度几乎相等的字符串用 **`CHAR`** 定长 | `easyUserId` → `CHAR(16)`（见下方例外 B） |
 | 7 | `VARCHAR` 长度 ≤ 5000，超了改 `TEXT` 独立成表 | 最长的 `summary` 是 `VARCHAR(200)` |
@@ -26,7 +26,7 @@
 | 10 | 禁用保留字；**状态/类型字段不得裸用 `type` / `status`** | `type` → **`event_type`**；`extraction_status` 本来就带前缀 |
 | 11 | 时间字段以**业务类型 + `_time`** 结尾 | `first_msg_at` → `first_msg_time`，`last_msg_at` → `last_msg_time`，`first_agent_reply_at` → `first_agent_reply_time` |
 | 12 | 索引命名 **`uk_` / `idx_`** | `uk_group_daily` · `idx_shard` · `idx_agent` … |
-| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 六张表全加（见下方例外 A：`is_deleted` 不加） |
+| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 七张表全加（见下方例外 A：`is_deleted` 不加） |
 
 ### 落到代码里的 SQL 写法（受同一份规范管）
 
@@ -38,6 +38,8 @@
   `b_merchant_group_agent_metric_daily` join `b_merchant_group_metric_daily` 查 `extraction_status`（承重不变量 5），双表。
   ⚠️ 「处理量 ＋ 消息量 ＋ 抽取是否完整」要三张表（再加 `b_merchant_group_agent_msg_daily`），
   **正好踩在上限上**，之后再加维度就没余量了。这是把消息量单独成表买的单，已知且接受。
+  ⚠️ 商家摘要表 `b_merchant_group_merchant_summary` 的 BI 关联路径，以及由此带来的超限
+  （客服维度要 4 张表）及其理由，见 `schema.sql` 里该表的表注释，这里不重复。
 - 数据订正（删除 / 修改）前先 `SELECT` 确认。
 
 ---
@@ -53,7 +55,9 @@
 理由：全项目**没有任何软删场景**。`b_merchant_group_event` 是按 `(corpid, roomid, occurred_on)`
 **物理 `DELETE` 后重插**（承重不变量 3：任一窗口失败就整群跳过、一行不写），
 `b_merchant_group_metric_daily` 与 `b_merchant_group_agent_msg_daily` 是 `REPLACE` 覆盖写，
-`b_merchant_group_agent_metric_daily` 是打标阶段整段 `DELETE` 后重插。加一个恒为 0 的 `is_deleted` 不是无害的占位——
+`b_merchant_group_agent_metric_daily` 是打标阶段整段 `DELETE` 后重插，
+`b_merchant_group_merchant_summary` 是 upsert 且**永不删行**（上游商家下线了，原行保留最后一次已知的值）。
+加一个恒为 0 的 `is_deleted` 不是无害的占位——
 **它会误导 BI**：查询的人看到这列就会写 `WHERE is_deleted = 0`，
 从而以为存在「被软删的历史行」这种东西，而实际上重写过的数据是真的没了。
 

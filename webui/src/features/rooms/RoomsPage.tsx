@@ -31,16 +31,14 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       roomRollup({
         aggs: aggs.data ?? [],
         groupDaily: analytics.dataset.groupDaily,
-        rooms: analytics.dataset.meta.rooms.filter(
-          (room) => !filters.room || room.roomid === filters.room,
-        ),
+        rooms: analytics.visibleRooms,
         days,
         dayset,
         labelOf: roomLabel,
         parents,
         query,
       }),
-    [aggs.data, analytics.dataset, days, dayset, roomLabel, parents, query, filters.room],
+    [aggs.data, analytics.dataset, analytics.visibleRooms, days, dayset, roomLabel, parents, query],
   );
   // 表格行数是群数（有界），所以翻页与排序都还留在前端 —— 与明细表不同。
   const pageSize = Math.min(200, filters.pageSize);
@@ -89,7 +87,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           {/* 商家名另起一行挂在群名下面 —— 这一列固定 240px，塞进同一行会把两个名字
               都挤成省略号。没关联商家时 `roomMerchant` 回 null，整块不渲染
               （不是渲染一个空串：表格里那会变成看不出是「没有」还是「没加载出来」的空白）。
-              名册查不到店名时它回落成商家 ID，那是一串裸 BIGINT —— 一看就不是名字，
+              商家摘要表里没有店名时它回落成商家 ID，那是一串裸 BIGINT —— 一看就不是名字，
               所以不另挂标记。 */}
           {roomMerchant(r.key) && (
             <div className="ra-room-merchant" title={roomMerchant(r.key)!}>

@@ -21,8 +21,8 @@
 
 ## 模块布局
 
-`src/` 分四层：`stage/`（六个阶段模块）· `process/`（三个进程编排）· `web/`（只读旁路）·
-crate 根（内核：`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）。
+`src/` 分四层：`stage/`（六个阶段模块）· `process/`（四个进程编排）· `web/`（只读旁路）·
+crate 根（内核：`boot` · `config` · `llm` · `nacos` · `quantile` · `rpc` · `window` · `worktime` · `rejection`）。
 下面的路径都省掉这一层前缀之外的部分，完整判据在 `src/lib.rs` 顶注。
 
 ### ① 摄取 ingest ＋ ② 会话 conversation
@@ -259,7 +259,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 - 拉取或读取失败时，`daily` 仅尝试追加 `run_failure`，不修改事实与指标；读取阶段的上游版本错误仍整轮退出。
   记录写入自身失败时保留原始原因并报错，不对非幂等的失败记录追加做重试。
 
-### 四个进程
+### 五个进程
 
 | 进程 | 触发 | 干什么 | 失败语义 |
 |---|---|---|---|
@@ -267,6 +267,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 | `daily` | 每日定时 | 抽取保存 → channel → 独立打标与指标发布 | **群 × 日分阶段隔离**，整轮继续 |
 | `taxonomy` | **人工触发** | **只产词表，不写 `b_merchant_group_event` 表** | 失败无所谓，不阻塞任何人 |
 | `recompute` | **人工触发**（词表升版后） | 按新词表重打标：只写标注列 + 重算 `agent_metric_daily` | **群隔离**，一个群一个事务，整轮继续 |
+| `merchant_sync` | 定时（每天两次），**不是跑批的一环** | 群配置表取商家编号 → 商家域查摘要 → 账号域查经理姓名 → 一个事务 upsert 商家摘要表 | **整轮一个事务**：任一步失败一行不写、非零退出，下一轮定时运行即重试 |
 
 ---
 
@@ -282,6 +283,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 | `b_merchant_group_agent_msg_daily` | `uk_agent_msg_daily (corpid, room, agent, dt)` **四列** REPLACE 覆盖 | 客服自己发了多少条，用来对冲「只看处理量」。**跟着事实阶段走**，见下 |
 | `b_merchant_group_taxonomy` | `uk_taxonomy (version, type_id)` | `name` 必填 · `description` **必填** · 词表由人定稿，不含向量列。从 ⑤ v1 起进 `check_schema` —— **查表不查行**，v0 期没有行是正常状态 |
 | `b_merchant_group_run_failure` | 追加 | `(run_date, corpid, roomid, reason)` |
+| `b_merchant_group_merchant_summary` | `uk_merchant (merchant_id)` **一列** upsert，永不删行 | 商家名称 / 商家分组 / 业务经理，**只存当前归属**。由独立进程 `merchant_sync` 每天两次刷新，**跑批不读、不进 `check_schema`**。BI 关联路径 群日指标 → 群配置表 → 本表，见 `schema.sql` 表头 |
 
 **`b_merchant_group_agent_msg_daily` 为什么是另一张表，不是上面那张表的一列**
 
@@ -370,13 +372,24 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 形态已定（2026-08-30）：**前后端分离 · 后端只读 JSON API · 全部 `GET` · 无登录版**（内网可达即可看）。
 它与跑批解耦 —— **事实与指标只从 MySQL 取数**，**不写任何表、不调模型、不参与跑批**，跑批不知道它存在。
-唯一的出站 HTTP 是 `web/roster.rs`：**展示别名**（客服姓名 / 商家名称）走 Nacos 找到的内部服务，
+唯一的出站 HTTP 是 `web/roster.rs`：**客服姓名**这一种展示别名走 Nacos 找到的内部服务，
 不进任何指标、不进任何聚合键、不落库，**取不到必须回落显示 ID**。理由内联在该文件顶注。
+⚠️ **商家名称已改为落库维度，不再是展示别名**：商家名称 / 商家分组 / 业务经理由 `merchant_sync`
+写进商家摘要表，工作台的 `read_filters` 经群配置表的 `merchant_id` 左关联一次 SQL 带回，
+不再调商家域（BI 要按这些维度出报表、工作台要按它们筛选，进程内缓存的名字两样都做不了）。
+**「商家分组」「业务经理」两个筛选只缩小群范围，指标算法一点没变**：`Filters::clause` 多产一段
+`e.roomid IN (SELECT … 群配置表 ⋈ 商家摘要表 WHERE corp_id = ? AND 分组 = ? AND 经理 = ?)`
+（两个条件各自可选，企业只绑一次；文本与绑定值照旧在 `scope` 里成对产出）。
+匹配语义（精确匹配 · NULL 不入选 · 不滤状态）以 `web/params.rs` 里 `Filters` 的字段文档为准。
+经理编号是 BIGINT，走 `Bind::Num`，不拿字符串去比。
+前端有几块是在浏览器里按群过滤的（覆盖度 · 群消息量 · 群列表 · 概览群表），它们共用
+`useAnalytics` 算出的 `visibleRooms`（群聊 ＋ 商家分组 ＋ 业务经理三项一起），
+与聚合接口收到的是同一条件；下拉选项由 `meta.rooms` 去重得出，所以天然只含当前日期范围内的群。
 下钻原文读 `b_merchant_group_event.source_messages` 一列，**它一个文件都不读** ——
-所以没有 `raw_root`、没有扫描名额、没有 `spawn_blocking`；除展示别名外只依赖 MySQL。
+所以没有 `raw_root`、没有扫描名额、没有 `spawn_blocking`；除客服姓名外只依赖 MySQL。
 
-`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额与响应缓冲 · `scope` SQL 片段与绑定 · `query` 只读 SQL · `roster` 外部展示别名）。
-`query` 只产出**待解析的 ID**，姓名那一跳在 `serve::filters` 补 —— 「只读 SQL 全在 `query`」的前提是那个文件里零 HTTP。
+`src/bin/webui.rs` 独立启动只读后端，HTTP 与查询实现集中在 `web/`（`serve` 路由 · `budget` 限额与响应缓冲 · `scope` SQL 片段与绑定 · `query` 只读 SQL · `roster` 外部客服姓名）。
+`query` 对客服只产出**待解析的 ID**，姓名那一跳在 `serve::filters` 补 —— 「只读 SQL 全在 `query`」的前提是那个文件里零 HTTP。
 `GET /api/dataset` 是**首屏唯一的一趟**：可用日期、群与客服标识、当前词表、群日记录一次给齐。
 ⚠️ 曾经前端先打一个 `GET /api/meta` 拿 `days` 自己算窗口、再打 dataset，而 dataset 的响应体
 本来就自带同一份 meta —— 那一趟的产物全被丢掉，白花 5 条 SQL、一次全窗口的 `JSON_TABLE`
@@ -420,7 +433,7 @@ SQL 文本与它的绑定值由 `web/scope.rs` **成对产出**：唯一的追�
 release 里会蒸发，而这条错了只会算错、不会报错）。此前这件事靠 `query.rs` 里七条
 「顺序错了不会报错，只会算错」的注释维持，那些注释已经删掉。
 **白天的响应走内存缓存**（`web/cache.rs`）：数据只在夜里跑批时写，每个请求先读一次库里的
-「数据戳」（四张表各自的最后一次写，走 `idx_modified` / 主键），戳变了整个缓存作废；
+「数据戳」（五张表各自的最后一次写，走 `idx_modified` / 主键；商家摘要表是唯一在白天被写的），戳变了整个缓存作废；
 戳距现在不足 60 秒视作跑批还在写，只查不存。跑批不知道缓存存在 —— 失效由数据本身驱动，
 不由时间、也不由跑批通知。只缓存 200，键是完整 URI，命中也占并发名额（名额仍是 MySQL 连接峰值的上界）。
 `run_failure` 记录本次失败覆盖的数据窗口（`window_since` / `window_until`），

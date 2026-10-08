@@ -62,14 +62,14 @@ export function RoomFilters({
   }
   // 商家分组 / 业务经理的选项从群选项去重得出 —— `meta.rooms` 天然只含当前日期范围内的群。
   // 查不到分组 / 经理（NULL）的群不产生选项；「未分组」是上游字面值，照常是一项。
-  // 经理姓名缺失（null 或空串，写入侧没清洗）时显示编号。
+  // 经理姓名缺失（null；空白名写入侧已存成 NULL）时显示编号。
   const groupNames = [
     ...new Set(meta.rooms.map((room) => room.merchant_group_config_name).filter(Boolean)),
   ].sort((a, b) => a!.localeCompare(b!, "zh"));
   const managerLabels = new Map<string, string>();
   for (const room of meta.rooms) {
     const id = room.business_manager_id;
-    const name = room.business_manager_name?.trim();
+    const name = room.business_manager_name;
     if (id && (name || !managerLabels.has(id))) managerLabels.set(id, name || id);
   }
   const managerOptions = [...managerLabels]

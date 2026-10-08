@@ -1423,3 +1423,199 @@ async fn mysql_quantile_sql_exit_matches_the_shared_parity_vectors() {
         assert_eq!(p90, case["p90"].as_i64(), "p90 不符：{note} {secs:?}");
     }
 }
+
+/// **商家分组 / 业务经理筛选只缩小群范围**：五个收筛选的接口都只看符合条件的群，
+/// 且符合条件 = 群配置表 → 商家摘要表**精确匹配**。
+///
+/// 钉住五件事：
+/// - 已解散的群（`group_status = 1`）与上游已删除的商家（群配置行 `is_deleted = 1`）照常被筛到；
+/// - 查不到分组 / 经理的群（没关联商家 · 商家还没同步）选了任何一个条件都不入选，
+///   「未分组」只匹配摘要表里的字面值，**不等于 NULL**；
+/// - 别的企业里同名的群号不串（`corp_id` 绑定）；
+/// - 经理编号全程是数字，超出 JS 安全整数也精确匹配；
+/// - 与现有的 `room` 筛选叠加是交集。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
+    use serde_json::Value;
+    let pool = testutil::mysql_pool("merchant_filters").await;
+    // 群 → 商家 → 摘要：
+    //   R1  商家 1  华东组 / 9007199254740993（安全整数之外）
+    //   R2  商家 2  华东组 / 20（姓名查不到），**已解散 + 商家已删**
+    //   R3  商家 3  未分组 / 无经理
+    //   R4  没关联商家        R5  商家 5 但摘要表里没有这一行
+    //   ('other','R3') 在别的企业里关联了商家 1 —— corp 不绑的话 R3 会被当成华东组。
+    sqlx::raw_sql(
+        "CREATE TABLE b_wecom_merchant_group (\
+         corp_id VARCHAR(64) NOT NULL, official_room_id VARCHAR(128) NOT NULL, \
+         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT NULL, \
+         group_status TINYINT NOT NULL DEFAULT 0, is_deleted TINYINT NOT NULL DEFAULT 0, \
+         UNIQUE KEY uk_corp_room (corp_id, official_room_id)\
+         ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; \
+         INSERT INTO b_wecom_merchant_group \
+         (corp_id,official_room_id,merchant_id,group_status,is_deleted) VALUES \
+         ('C','R1',1,0,0), ('C','R2',2,1,1), ('C','R3',3,0,0), ('C','R4',NULL,0,0), \
+         ('C','R5',5,0,0), ('other','R3',1,0,0); \
+         INSERT INTO b_merchant_group_merchant_summary \
+         (merchant_id,merchant_name,merchant_group_config_name,business_manager_id,business_manager_name) VALUES \
+         (1,'商家一','华东组',9007199254740993,'李经理'), \
+         (2,'商家二','华东组',20,NULL), \
+         (3,'商家三','未分组',NULL,NULL); \
+         INSERT INTO b_merchant_group_metric_daily \
+         (corpid,roomid,dt,msg_count,sender_count,event_count,merchant_event_count,unreplied_count,extraction_status,fact_completed_time) VALUES \
+         ('C','R1','2026-08-25',1,1,2,2,2,'ok','2026-08-30 10:00:00'), \
+         ('C','R2','2026-08-25',1,1,1,1,1,'ok','2026-08-30 10:00:00'), \
+         ('C','R3','2026-08-25',1,1,1,1,1,'ok','2026-08-30 10:00:00'), \
+         ('C','R4','2026-08-25',1,1,1,1,1,'ok','2026-08-30 10:00:00'), \
+         ('C','R5','2026-08-25',1,1,1,1,1,'ok','2026-08-30 10:00:00'); \
+         INSERT INTO b_merchant_group_event \
+         (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,occurred_on,asker,asker_role,agents,summary) VALUES \
+         ('C','R1',JSON_ARRAY('m1'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY(),'R1 第一件'), \
+         ('C','R1',JSON_ARRAY('m2'),'2026-08-25 10:00:00','2026-08-25 10:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY(),'R1 第二件'), \
+         ('C','R2',JSON_ARRAY('m3'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000002','EXTERNAL',JSON_ARRAY(),'R2 的事件'), \
+         ('C','R3',JSON_ARRAY('m4'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000003','EXTERNAL',JSON_ARRAY(),'R3 的事件'), \
+         ('C','R4',JSON_ARRAY('m5'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000004','EXTERNAL',JSON_ARRAY(),'R4 的事件'), \
+         ('C','R5',JSON_ARRAY('m6'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000005','EXTERNAL',JSON_ARRAY(),'R5 的事件'); \
+         UPDATE b_merchant_group_event SET event_type = 'reschedule', taxonomy_version = 'v1';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let app = router(WebState {
+        pool: pool.clone(),
+        corp: "C".into(),
+        limits: toml::from_str::<super::config::WebConfig>(include_str!("../../config.toml"))
+            .unwrap()
+            .web,
+        requests: Arc::new(Semaphore::new(4)),
+        cache: Arc::new(super::cache::Cache::new(1 << 20)),
+        roster: super::roster::Roster::canned(&[], Duration::from_secs(300)),
+    });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = signal.await;
+            })
+            .await
+            .unwrap();
+    });
+    let http = reqwest::Client::new();
+    // 参数走 `Url::parse_with_params` 编码 —— 中文分组名不手写百分号转义。
+    let get = |path: &str, filters: &[(&str, &str)]| {
+        let mut params = vec![("from", "2026-08-25"), ("to", "2026-08-25")];
+        params.extend_from_slice(filters);
+        get_json(
+            &http,
+            reqwest::Url::parse_with_params(&format!("{base}{path}"), params)
+                .unwrap()
+                .to_string(),
+        )
+    };
+    let summaries = |page: &Value| -> Vec<String> {
+        let mut all: Vec<String> = page["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["summary"].as_str().unwrap().to_owned())
+            .collect();
+        all.sort();
+        all
+    };
+
+    // (筛选, 期望的事件摘要)；空筛选是对照 —— 六件事件全在，说明下面的缩小是筛选造成的。
+    type Case<'a> = (&'a [(&'a str, &'a str)], &'a [&'a str]);
+    let cases: &[Case] = &[
+        (
+            &[],
+            &[
+                "R1 第一件",
+                "R1 第二件",
+                "R2 的事件",
+                "R3 的事件",
+                "R4 的事件",
+                "R5 的事件",
+            ],
+        ),
+        // 华东组 = R1 + 已解散的 R2；R3（未分组）· R4/R5（查不到分组）不在
+        (
+            &[("merchant_group_config_name", "华东组")],
+            &["R1 第一件", "R1 第二件", "R2 的事件"],
+        ),
+        // 「未分组」只匹配字面值：R3；NULL 的 R4/R5 不算
+        (&[("merchant_group_config_name", "未分组")], &["R3 的事件"]),
+        // 经理编号超出 JS 安全整数也精确匹配；差 1 的编号不串
+        (
+            &[("business_manager_id", "9007199254740993")],
+            &["R1 第一件", "R1 第二件"],
+        ),
+        (&[("business_manager_id", "9007199254740992")], &[]),
+        // 两个条件同时给 = 交集
+        (
+            &[
+                ("merchant_group_config_name", "华东组"),
+                ("business_manager_id", "20"),
+            ],
+            &["R2 的事件"],
+        ),
+        (
+            &[
+                ("merchant_group_config_name", "未分组"),
+                ("business_manager_id", "20"),
+            ],
+            &[],
+        ),
+        // 与现有的群聊筛选叠加也是交集
+        (
+            &[("merchant_group_config_name", "华东组"), ("room", "R3")],
+            &[],
+        ),
+        (
+            &[("merchant_group_config_name", "华东组"), ("room", "R2")],
+            &["R2 的事件"],
+        ),
+        // 没有这个分组 → 空，不是报错
+        (&[("merchant_group_config_name", "不存在的分组")], &[]),
+    ];
+    for (filters, expected) in cases {
+        let label = format!("{filters:?}");
+        let with_size = [*filters, &[("page_size", "50")]].concat();
+        let page = get("/api/events", &with_size).await;
+        assert_eq!(summaries(&page), *expected, "/api/events {label}");
+        assert_eq!(page["total"], expected.len(), "/api/events total {label}");
+
+        // 概览与明细是同一批事件：事件数 · 群数都跟着缩
+        let summary = get("/api/summary", filters).await;
+        assert_eq!(summary["events"], expected.len(), "/api/summary {label}");
+        let rooms = get("/api/rooms", filters).await;
+        let room_ids: std::collections::BTreeSet<&str> = expected
+            .iter()
+            .map(|s| s.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(
+            rooms.as_array().unwrap().len(),
+            room_ids.len(),
+            "/api/rooms {label}"
+        );
+        // 分类汇总：事件都打成同一类，各组的数加起来就是事件数
+        let categories = get("/api/categories", filters).await;
+        let counted: u64 = categories
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(counted as usize, expected.len(), "/api/categories {label}");
+        // 客服接口同样收这一组参数：夹具里事件都没有参与者，这里只验证 SQL 跑得通
+        assert!(
+            get("/api/agents", filters).await.is_array(),
+            "/api/agents {label}"
+        );
+    }
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap();
+    testutil::drop_mysql_database(pool).await;
+}

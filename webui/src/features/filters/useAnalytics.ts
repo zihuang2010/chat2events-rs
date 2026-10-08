@@ -15,7 +15,13 @@
 import { useMemo } from "react";
 import type { LoadedDataset } from "@/api/source";
 import type { QueryFilters } from "@/api/client";
-import { coverage, groupDayStatus, type Coverage, type TaxonomyIndex } from "@/domain/metrics";
+import {
+  coverage,
+  filterRooms,
+  groupDayStatus,
+  type Coverage,
+  type TaxonomyIndex,
+} from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
 import type { Filters } from "./useFilters";
 
@@ -31,7 +37,12 @@ export interface Analytics {
   days: string[];
   dayset: ReadonlySet<string>;
   lastDay: string;
-  /** 窗口内每天的群日记录，按天求和后给消息量图用 */
+  /**
+   * 符合「群聊 · 商家分组 · 业务经理」筛选的群。**浏览器里按群过滤的视图共用这一份**
+   * （覆盖度 · 消息量 · 群列表 · 概览群表），与聚合接口收到的是同一条件。
+   */
+  visibleRooms: LoadedDataset["meta"]["rooms"];
+  /** 窗口内每天的群日记录（只含可见的群），按天求和后给消息量图用 */
   cells: readonly LoadedDataset["groupDaily"][number][];
   cov: Coverage;
   slaSec: number;
@@ -94,6 +105,9 @@ export function useAnalytics(
     const lastDay = days[days.length - 1] ?? to;
 
     const rooms = new Map(dataset.meta.rooms.map((r) => [r.roomid, r]));
+    const visibleRooms = filterRooms(dataset.meta.rooms, filters);
+    const visible = new Set(visibleRooms.map((room) => room.roomid));
+    const cells = dataset.groupDaily.filter((row) => dayset.has(row.dt) && visible.has(row.roomid));
     const agents = new Map(dataset.meta.agents.map((a) => [a.agent, a]));
     const roomLabel = (id: string) => rooms.get(id)?.alias ?? id;
     // ⚠️ **不回落到 meta 的全局位**：那一位现在的含义是「本窗口内至少有一位客服拿到了
@@ -144,6 +158,8 @@ export function useAnalytics(
       to: lastDay,
       room: filters.room,
       agent: filters.agent,
+      merchantGroup: filters.merchantGroup,
+      businessManager: filters.businessManager,
       ...(types ? { types } : {}),
       ...(typesExclude ? { typesExclude } : {}),
       status: filters.status,
@@ -158,10 +174,11 @@ export function useAnalytics(
       days,
       dayset,
       lastDay,
-      cells: dataset.groupDaily.filter(
-        (row) => dayset.has(row.dt) && (!filters.room || row.roomid === filters.room),
-      ),
-      cov: coverage(dataset.groupDaily, dayset, filters.room, dataset.meta.rooms),
+      visibleRooms,
+      cells,
+      // 格子与群名单都换成筛选后的：按全部群算的话，选了经理之后覆盖度横幅
+      // 和「抽取完整」的判断说的还是别人的群，页面照常渲染，静默错。
+      cov: coverage(cells, dayset, null, visibleRooms),
       slaSec: filters.slaSec,
       query: filters.query.trim().toLowerCase(),
       aliasIsAuthoritative: dataset.meta.alias_is_authoritative,

@@ -22,6 +22,22 @@ describe("筛选状态的 URL 编码", () => {
     expect(f.pageSize).toBe(20);
   });
 
+  it("商家分组与业务经理进出 URL，清空即删键，经理编号保持字符串", () => {
+    let sp = applyPatch(new URLSearchParams(), {
+      merchantGroup: "未分组",
+      businessManager: "9007199254740993",
+    });
+    expect(parseFilters(sp)).toMatchObject({
+      merchantGroup: "未分组",
+      businessManager: "9007199254740993",
+    });
+    sp = applyPatch(sp, { merchantGroup: null, businessManager: null });
+    expect(sp.toString()).toBe("");
+    const empty = parseFilters(new URLSearchParams());
+    expect(empty.merchantGroup).toBeNull();
+    expect(empty.businessManager).toBeNull();
+  });
+
   it("默认值不落到 URL 上", () => {
     const sp = applyPatch(new URLSearchParams(), {
       slaSec: 1800,

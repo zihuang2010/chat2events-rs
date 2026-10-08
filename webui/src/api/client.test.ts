@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchDataset, fetchEvent, fetchMessages } from "./client";
+import { fetchAgentAggs, fetchDataset, fetchEvent, fetchMessages } from "./client";
 import { buildMockDataset } from "@/test/mock/generator";
 
 afterEach(() => {
@@ -42,6 +42,21 @@ describe("只读接口边界", () => {
     const [url, options] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.pathname).toBe("/api/event/7/messages");
     expect(options.method ?? "GET").toBe("GET");
+  });
+
+  // 后端没有 deny_unknown_fields：参数名拼错不会 400，只会被静默忽略 —— 筛选悄悄失效。
+  it("商家分组与业务经理按后端的参数名进查询串，没选就不出现", async () => {
+    const fetch = vi.fn(() => Promise.resolve(Response.json([])));
+    vi.stubGlobal("fetch", fetch);
+    await fetchAgentAggs({ merchantGroup: "未分组", businessManager: "9007199254740993" });
+    await fetchAgentAggs({ merchantGroup: null, businessManager: null });
+    const [first, second] = fetch.mock.calls.map(
+      (call) => ((call as unknown[])[0] as URL).searchParams,
+    );
+    expect(first!.get("merchant_group_config_name")).toBe("未分组");
+    expect(first!.get("business_manager_id")).toBe("9007199254740993");
+    expect(second!.has("merchant_group_config_name")).toBe(false);
+    expect(second!.has("business_manager_id")).toBe(false);
   });
 
   it.each([

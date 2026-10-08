@@ -95,11 +95,12 @@ const dataset = loadMock();
 function aggsOf(ctx: OverviewProps, data: TestDataset = dataset) {
   const input = [data.events, data.groupDaily, data.taxIndex] as const;
   const groups = parentGroups(data).map((parent) => parent.types);
+  const { rooms } = data.meta;
   return {
-    summary: mockSummary(...input, ctx.analytics.q),
-    rooms: mockRoomAggs(...input, ctx.analytics.q, groups),
-    agents: mockAgentAggs(...input, ctx.analytics.q),
-    level1: mockCategories(...input, ctx.analytics.q, groups),
+    summary: mockSummary(...input, ctx.analytics.q, rooms),
+    rooms: mockRoomAggs(...input, ctx.analytics.q, groups, rooms),
+    agents: mockAgentAggs(...input, ctx.analytics.q, rooms),
+    level1: mockCategories(...input, ctx.analytics.q, groups, rooms),
   };
 }
 
@@ -132,6 +133,7 @@ function useTestAnalytics(...args: Parameters<typeof useAnalytics>) {
     events: data.events,
     groupDaily: data.groupDaily,
     tax: data.taxIndex,
+    rooms: data.meta.rooms,
   });
   return useAnalytics(...args);
 }
@@ -358,7 +360,7 @@ describe("D 的群表", () => {
     const expected = roomRollup({
       aggs: aggsOf(props).rooms,
       groupDaily: analytics.dataset.groupDaily,
-      rooms: analytics.dataset.meta.rooms,
+      rooms: analytics.visibleRooms,
       days: analytics.days,
       dayset: analytics.dayset,
       parents: analytics.parents,
@@ -383,6 +385,96 @@ describe("D 的群表", () => {
     expect(actual, "群表的行顺序变了：排序键是不是被改成 events 了？").toEqual(expected);
     const cells = view.container.querySelectorAll(".od-table tbody td.od-num");
     expect(cells.length).toBe(expected.length * 5);
+    view.unmount();
+  });
+});
+
+/**
+ * 在浏览器里按群过滤的视图（概览热力图 / 群表 · 覆盖度 · 消息量）和聚合接口说的是同一批群。
+ *
+ * ⚠️ 此前「群聊」筛选在概览的群表上是**失效**的：它拿 `meta.rooms` 全集排前 10，
+ * 选中的群不一定在里面，其余群显示 0 事件。现在群聊、商家分组、业务经理三项一起收敛
+ * （已获准的行为变更）。
+ */
+describe("D 的群表与商家筛选", () => {
+  const roomsOf = (search: string) => {
+    const ctx = contextFor(search);
+    return { ctx, ids: ctx.analytics.visibleRooms.map((r) => r.roomid) };
+  };
+  const allRooms = dataset.meta.rooms;
+  const groupOf = (name: string) =>
+    allRooms.filter((r) => r.merchant_group_config_name === name).map((r) => r.roomid);
+
+  it("商家分组、业务经理、群聊三项一起收敛可见的群，并带进聚合接口的参数", () => {
+    expect(roomsOf("").ids).toEqual(allRooms.map((r) => r.roomid));
+    const east = roomsOf("group=华东组");
+    expect(east.ids).toEqual(groupOf("华东组"));
+    expect(east.ctx.analytics.q.merchantGroup).toBe("华东组");
+    // 「未分组」是字面值；没关联商家（NULL）的群选了任何分组都不在
+    expect(roomsOf("group=未分组").ids).toEqual(groupOf("未分组"));
+    const manager = roomsOf("manager=1003");
+    expect(manager.ids).toEqual(
+      allRooms.filter((r) => r.business_manager_id === "1003").map((r) => r.roomid),
+    );
+    expect(manager.ctx.analytics.q.businessManager).toBe("1003");
+    // 与群聊叠加是交集
+    expect(roomsOf(`group=华东组&room=${groupOf("华东组")[0]!}`).ids).toEqual([
+      groupOf("华东组")[0],
+    ]);
+    expect(roomsOf(`group=华东组&room=${groupOf("华南组")[0]!}`).ids).toEqual([]);
+  });
+
+  it("消息量与覆盖度只统计可见的群，不再按全部群算", () => {
+    const { ctx } = roomsOf("group=华东组");
+    const { analytics } = ctx;
+    const east = new Set(groupOf("华东组"));
+    expect(analytics.cells.length).toBeGreaterThan(0);
+    expect(analytics.cells.every((cell) => east.has(cell.roomid))).toBe(true);
+    // 覆盖度的格子数 = 可见群 × 窗口天数（群日表对每个群每天都有一行）
+    expect(analytics.cov.cells).toBe(analytics.cells.length);
+    const full = contextFor("").analytics.cov;
+    expect(analytics.cov.known + analytics.cov.failed + analytics.cov.missing).toBe(
+      east.size * analytics.days.length,
+    );
+    expect(analytics.cov.known).toBeLessThan(full.known);
+  });
+
+  it.each([["group=华东组"], ["manager=1003"], ["group=华南组&manager=1002"]])(
+    "概览群表只列可见的群（%s）",
+    async (search) => {
+      const props = contextFor(search);
+      const labels = props.analytics.visibleRooms.map((r) => props.analytics.roomLabel(r.roomid));
+      const view = render(
+        <MemoryRouter initialEntries={[`/overview?${search}`]}>
+          <Providers>
+            <OverviewDashboard {...props} />
+          </Providers>
+        </MemoryRouter>,
+      );
+      await settle(view);
+      const actual = [...view.container.querySelectorAll('.od-table th[scope="row"] a')].map((el) =>
+        el.textContent.trim(),
+      );
+      expect([...actual].sort()).toEqual([...labels].sort());
+      view.unmount();
+    },
+  );
+
+  it("群聊筛选在概览群表上也生效（此前失效）", async () => {
+    const room = allRooms[7]!;
+    const props = contextFor(`room=${room.roomid}`);
+    const view = render(
+      <MemoryRouter initialEntries={[`/overview?room=${room.roomid}`]}>
+        <Providers>
+          <OverviewDashboard {...props} />
+        </Providers>
+      </MemoryRouter>,
+    );
+    await settle(view);
+    const actual = [...view.container.querySelectorAll('.od-table th[scope="row"] a')].map((el) =>
+      el.textContent.trim(),
+    );
+    expect(actual).toEqual([room.alias]);
     view.unmount();
   });
 });

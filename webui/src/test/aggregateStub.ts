@@ -17,13 +17,15 @@ import {
   mockRoomAggs,
   mockSummary,
 } from "@/test/mock/aggregate";
-import type { EventRow, GroupDailyRow } from "@/domain/schemas";
+import type { EventRow, GroupDailyRow, Meta } from "@/domain/schemas";
 import type { TaxonomyIndex } from "@/domain/metrics";
 
 export interface AggregateStub {
   events: EventRow[];
   groupDaily: GroupDailyRow[];
   tax: TaxonomyIndex;
+  /** 群元数据。测试要用商家分组 / 业务经理筛选时才需要给（群的分组与经理不在事件上） */
+  rooms?: Meta["rooms"];
 }
 
 /**
@@ -34,11 +36,12 @@ export function sourceStub(actual: typeof Source, stub: AggregateStub): typeof S
   const input = () => [stub.events, stub.groupDaily, stub.tax] as const;
   return {
     ...actual,
-    loadSummary: (f) => Promise.resolve(mockSummary(...input(), f)),
-    loadRoomAggs: (f, groups) => Promise.resolve(mockRoomAggs(...input(), f, groups)),
-    loadAgentAggs: (f) => Promise.resolve(mockAgentAggs(...input(), f)),
-    loadCategories: (f, groups) => Promise.resolve(mockCategories(...input(), f, groups)),
+    loadSummary: (f) => Promise.resolve(mockSummary(...input(), f, stub.rooms)),
+    loadRoomAggs: (f, groups) => Promise.resolve(mockRoomAggs(...input(), f, groups, stub.rooms)),
+    loadAgentAggs: (f) => Promise.resolve(mockAgentAggs(...input(), f, stub.rooms)),
+    loadCategories: (f, groups) =>
+      Promise.resolve(mockCategories(...input(), f, groups, stub.rooms)),
     loadEventsPage: (f, page, size, sorting) =>
-      Promise.resolve(mockEventsPage(...input(), f, page, size, sorting)),
+      Promise.resolve(mockEventsPage(...input(), f, page, size, sorting, stub.rooms)),
   };
 }

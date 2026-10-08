@@ -14,6 +14,7 @@
 //! 它产出的是 `WHERE` 片段和一串 `Bind`，值一律走 `?`，不做字符串拼接。
 
 use super::{budget::WebError, query::FIRST_REPLY_SEC};
+use crate::stage::store::T_MERCHANT_SUMMARY;
 use axum::http::StatusCode;
 use chrono::NaiveDate;
 use serde::Deserialize;
@@ -252,6 +253,13 @@ pub(super) struct Filters {
     #[serde(default, deserialize_with = "query_bool")]
     pub(super) overdue_only: Option<bool>,
     pub(super) q: Option<String>,
+    /// 商家分组名称，**精确匹配上游字面值**（「未分组」就是字面量，不等于 NULL）。
+    /// 群在商家摘要表里查不到分组（没关联商家 · 商家还没同步）时选了它就不入选。
+    pub(super) merchant_group_config_name: Option<String>,
+    /// 业务经理编号（人员主键，BIGINT UNSIGNED）。⚠️ 走 `query_num`：两层 flatten 之后
+    /// serde 不肯把字符串转整数；读成数字再 `Bind::Num`，不拿字符串去比 BIGINT 列。
+    #[serde(default, deserialize_with = "query_num")]
+    pub(super) business_manager_id: Option<u64>,
 }
 
 impl Filters {
@@ -270,7 +278,12 @@ impl Filters {
     /// ⚠️ **不要自己 bind** —— 走 `scope::Scope::filters`，它把片段和这串绑定
     /// 一起追加进去。手工分开绑的那条路已经没有了：顺序错了 MySQL 不报错，只会算错。
     /// 唯一动态拼进 SQL 的是 `IN (?, ?, …)` 的**占位符个数**，值全走绑定。
-    pub(super) fn clause(&self, sla_sec: u32, last_day: NaiveDate) -> (String, Vec<Bind>) {
+    pub(super) fn clause(
+        &self,
+        corp: &str,
+        sla_sec: u32,
+        last_day: NaiveDate,
+    ) -> (String, Vec<Bind>) {
         let (mut sql, mut binds) = (String::new(), Vec::new());
         if let Some(room) = &self.room {
             sql.push_str(" AND e.roomid = ?");
@@ -340,6 +353,28 @@ impl Filters {
                 .replace('%', "\\%")
                 .replace('_', "\\_");
             binds.push(Bind::Str(format!("%{escaped}%")));
+        }
+        if self.merchant_group_config_name.is_some() || self.business_manager_id.is_some() {
+            // 商家分组与业务经理是**商家**的属性，不在事件表上：群配置表 → 商家摘要表，
+            // 子查询交出符合条件的群。只缩小群范围，指标算法一点没变。
+            // ⚠️ 不过滤 `is_deleted` / `group_status` / 商家状态 —— 已解散的群与上游已删除的
+            // 商家，在有数据的日期范围里照常要能被筛到（`read_filters` 同款）。
+            // 别名用 `gc` / `ms`，避开外层的 `e` / `d` / `g`。
+            sql.push_str(&format!(
+                " AND e.roomid IN (SELECT gc.official_room_id FROM b_wecom_merchant_group gc \
+                 JOIN {T_MERCHANT_SUMMARY} ms ON ms.merchant_id = gc.merchant_id \
+                 WHERE gc.corp_id = ?"
+            ));
+            binds.push(Bind::Str(corp.to_owned()));
+            if let Some(group) = &self.merchant_group_config_name {
+                sql.push_str(" AND ms.merchant_group_config_name = ?");
+                binds.push(Bind::Str(group.clone()));
+            }
+            if let Some(manager) = self.business_manager_id {
+                sql.push_str(" AND ms.business_manager_id = ?");
+                binds.push(Bind::Num(manager));
+            }
+            sql.push(')');
         }
         (sql, binds)
     }
@@ -544,7 +579,7 @@ mod tests {
     #[test]
     fn every_filter_binds_exactly_as_many_values_as_it_adds_placeholders() {
         let one = |f: Filters| {
-            let (sql, binds) = f.clause(1800, DAY);
+            let (sql, binds) = f.clause("C", 1800, DAY);
             assert_eq!(
                 sql.matches('?').count(),
                 binds.len(),
@@ -595,6 +630,14 @@ mod tests {
                 q: Some("加单".into()),
                 ..Default::default()
             },
+            Filters {
+                merchant_group_config_name: Some("华东组".into()),
+                ..Default::default()
+            },
+            Filters {
+                business_manager_id: Some(9007199254740993),
+                ..Default::default()
+            },
         ] {
             one(f);
         }
@@ -609,9 +652,57 @@ mod tests {
             status: Some("backlog".into()),
             overdue_only: Some(true),
             q: Some("加单".into()),
+            merchant_group_config_name: Some("华东组".into()),
+            business_manager_id: Some(9007199254740993),
         });
         // room 1 + agent 1 + responder 1 + types 3 + exclude 2 + backlog 1 + sla 1 + q 1
-        assert_eq!(binds.len(), 11, "{sql}");
+        // + 商家子查询（企业 1 + 分组 1 + 经理 1）
+        assert_eq!(binds.len(), 14, "{sql}");
+    }
+
+    /// 商家分组 / 业务经理是 `roomid IN (子查询)`：群配置表关联商家摘要表，**企业只绑一次**，
+    /// 两个条件各自可选。
+    ///
+    /// 钉三件事：经理编号走 `Bind::Num`（BIGINT 不能当字符串去比，>2^53 的值会误匹配）；
+    /// 子查询里**不出现** `is_deleted` / `group_status`（已解散群、上游已删商家在有数据的
+    /// 日期里必须照常被筛到）；只给一个条件时另一个不出现。
+    #[test]
+    fn merchant_filters_become_one_room_subquery_with_a_single_corp_bind() {
+        let both = Filters {
+            merchant_group_config_name: Some("未分组".into()),
+            business_manager_id: Some(18446744073709551615),
+            ..Default::default()
+        };
+        let (sql, binds) = both.clause("C", 1800, DAY);
+        assert!(sql.starts_with(" AND e.roomid IN (SELECT "), "{sql}");
+        assert_eq!(sql.matches("corp_id = ?").count(), 1, "{sql}");
+        assert!(sql.contains("merchant_group_config_name = ?"), "{sql}");
+        assert!(sql.contains("business_manager_id = ?"), "{sql}");
+        assert!(
+            !sql.contains("is_deleted") && !sql.contains("group_status"),
+            "{sql}"
+        );
+        assert!(matches!(
+            binds.as_slice(),
+            [Bind::Str(corp), Bind::Str(group), Bind::Num(18446744073709551615)]
+                if corp == "C" && group == "未分组"
+        ));
+
+        let only_group = Filters {
+            merchant_group_config_name: Some("华东组".into()),
+            ..Default::default()
+        };
+        let (sql, binds) = only_group.clause("C", 1800, DAY);
+        assert!(!sql.contains("business_manager_id"), "{sql}");
+        assert_eq!(binds.len(), 2);
+
+        let only_manager = Filters {
+            business_manager_id: Some(7),
+            ..Default::default()
+        };
+        let (sql, binds) = only_manager.clause("C", 1800, DAY);
+        assert!(!sql.contains("merchant_group_config_name"), "{sql}");
+        assert_eq!(binds.len(), 2);
     }
 
     /// 空串按「没给」处理 —— 前端把父类展开成空集合时不该被筛成零结果。
@@ -636,7 +727,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let (sql, binds) = f.clause(1800, DAY);
+            let (sql, binds) = f.clause("C", 1800, DAY);
             assert!(sql.is_empty() && binds.is_empty(), "不该加条件：{sql}");
         }
     }
@@ -649,7 +740,7 @@ mod tests {
             q: Some(r"100%_a\b".into()),
             ..Default::default()
         }
-        .clause(1800, DAY);
+        .clause("C", 1800, DAY);
         let Some(Bind::Str(pattern)) = binds.first() else {
             panic!("q 应当绑一个字符串");
         };
@@ -797,12 +888,12 @@ mod tests {
             overdue_only: Some(true),
             ..Default::default()
         }
-        .clause(1800, DAY);
+        .clause("C", 1800, DAY);
         let (no, _) = Filters {
             overdue_only: Some(false),
             ..Default::default()
         }
-        .clause(1800, DAY);
+        .clause("C", 1800, DAY);
         assert!(yes.contains("first_agent_reply_time IS NULL"));
         assert_eq!(no, yes.replacen(" AND ", " AND NOT ", 1));
     }
@@ -866,6 +957,21 @@ mod tests {
 
         // 没给就是没给，走默认
         assert_eq!(parse::<Sla>("room=R1").unwrap().sla_sec(), 1800);
+
+        // 商家筛选两个参数：拼错参数名不会 400（没有 deny_unknown_fields），只会被静默忽略，
+        // 所以三种嵌套深度都要真读到。经理编号是 BIGINT，超出 JS 安全整数也不能丢精度。
+        let q = "merchant_group_config_name=%E5%8D%8E%E4%B8%9C%E7%BB%84\
+                 &business_manager_id=9007199254740993&sla_sec=300";
+        let merchant = |f: &Filters| (f.merchant_group_config_name.clone(), f.business_manager_id);
+        let expected = (Some("华东组".to_owned()), Some(9007199254740993));
+        assert_eq!(merchant(&parse::<Sla>(q).unwrap().filters), expected);
+        assert_eq!(
+            merchant(&parse::<Grouping>(q).unwrap().sla.filters),
+            expected
+        );
+        assert_eq!(merchant(&parse::<Paging>(q).unwrap().filters), expected);
+        // 经理编号不是数字要拒，不能静默当成「没给」
+        assert!(parse::<Sla>("business_manager_id=abc").is_err());
     }
 
     /// ⚠️ 默认值必须等于前端的 `DEFAULT_SLA_SEC`（`webui/src/domain/definitions.ts`）——

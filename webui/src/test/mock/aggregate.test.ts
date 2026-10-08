@@ -5,9 +5,15 @@
  * 对应后端 `web::query::Paging::order_by`：`(expr) IS NULL, expr [ASC|DESC], e.id`。
  */
 import { describe, expect, it } from "vitest";
-import { mockEventsPage, mockSummary } from "./aggregate";
+import {
+  mockAgentAggs,
+  mockCategories,
+  mockEventsPage,
+  mockRoomAggs,
+  mockSummary,
+} from "./aggregate";
 import { buildTaxonomyIndex } from "@/domain/metrics";
-import type { EventRow, GroupDailyRow } from "@/domain/schemas";
+import type { EventRow, GroupDailyRow, Meta } from "@/domain/schemas";
 
 const tax = buildTaxonomyIndex([], "v1");
 const DAY = "2026-08-25";
@@ -139,5 +145,62 @@ describe("抽取失败的群日", () => {
 
   it("同一个事件不进概览的事件总数", () => {
     expect(mockSummary(all, both, tax, window).events).toBe(3);
+  });
+});
+
+/**
+ * **商家分组 / 业务经理筛选只缩小群范围**，逐条对应后端 `Filters::clause` 里的
+ * `roomid IN (群配置表 ⋈ 商家摘要表)`：精确匹配，查不到分组 / 经理（NULL）的群一律筛掉。
+ */
+describe("商家分组与业务经理筛选", () => {
+  const rooms: Meta["rooms"] = [
+    { roomid: "R1", alias: null, merchant_group_config_name: "华东组", business_manager_id: "1" },
+    { roomid: "R2", alias: null, merchant_group_config_name: "华东组", business_manager_id: "2" },
+    // 「未分组」是上游字面值，不是 NULL
+    { roomid: "R3", alias: null, merchant_group_config_name: "未分组", business_manager_id: null },
+    // 没关联商家 / 商家还没同步：两项都是 NULL
+    { roomid: "R4", alias: null },
+  ];
+  const cellOf = (roomid: string): GroupDailyRow => ({ ...cells[0]!, roomid });
+  const eventOf = (roomid: string, id: number): EventRow => ({
+    ...events[0]!,
+    id,
+    roomid,
+    event_type: "x",
+    summary: `${roomid} 的事件`,
+  });
+  const byRoom = rooms.map((room, index) => eventOf(room.roomid, index + 1));
+  const daily = rooms.map((room) => cellOf(room.roomid));
+  const window = { from: DAY, to: DAY };
+  const idsOf = (f: Parameters<typeof mockSummary>[3]) =>
+    mockEventsPage(byRoom, daily, tax, { ...window, ...f }, 1, 10, {}, rooms).rows.map(
+      (e) => e.roomid,
+    );
+
+  it("按分组精确匹配：华东组只有 R1 R2，「未分组」只有 R3，NULL 的 R4 哪个都不在", () => {
+    expect(idsOf({})).toEqual(["R1", "R2", "R3", "R4"]);
+    expect(idsOf({ merchantGroup: "华东组" })).toEqual(["R1", "R2"]);
+    expect(idsOf({ merchantGroup: "未分组" })).toEqual(["R3"]);
+    expect(idsOf({ merchantGroup: "不存在" })).toEqual([]);
+  });
+
+  it("按经理编号精确匹配；与分组、群聊叠加都是交集", () => {
+    expect(idsOf({ businessManager: "2" })).toEqual(["R2"]);
+    expect(idsOf({ merchantGroup: "华东组", businessManager: "2" })).toEqual(["R2"]);
+    expect(idsOf({ merchantGroup: "未分组", businessManager: "2" })).toEqual([]);
+    expect(idsOf({ merchantGroup: "华东组", room: "R3" })).toEqual([]);
+  });
+
+  it("五个聚合入口收同一组筛选，缩的是同一批群", () => {
+    const f = { ...window, merchantGroup: "华东组" };
+    const args = [byRoom, daily, tax, f] as const;
+    expect(mockSummary(...args, rooms).events).toBe(2);
+    expect(mockRoomAggs(...args, undefined, rooms).map((r) => r.roomid)).toEqual(["R1", "R2"]);
+    expect(mockAgentAggs(...args, rooms)[0]?.roomIds).toEqual(["R1", "R2"]);
+    expect(mockCategories(...args, undefined, rooms)[0]?.count).toBe(2);
+  });
+
+  it("要筛商家却没给群元数据时显式报错，不静默当成没筛", () => {
+    expect(() => mockSummary(byRoom, daily, tax, { ...window, merchantGroup: "华东组" })).toThrow();
   });
 });

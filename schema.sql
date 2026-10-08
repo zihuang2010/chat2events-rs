@@ -262,3 +262,39 @@ CREATE TABLE b_merchant_group_run_failure (
     KEY idx_run (run_date) COMMENT '按跑批日查失败群',
     KEY idx_room_stage_time (corpid, roomid, stage, gmt_created_time) COMMENT '按群与阶段定位最后失败时间，避免每次聚合全部历史'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '跑批失败记录（群×本次运行）';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- b_merchant_group_merchant_summary —— 商家摘要，一个商家一行。
+-- 由独立进程 merchant_sync（src/process/merchant_sync.rs）每天两次刷新，**跑批不读它、
+-- 不检查它是否存在**（所以它不在 store::check_schema 的清单里）。
+-- 商家名称 / 商家分组 / 业务经理都是商家域和账号域的数据，本项目只是把它们落一份给 BI 与工作台用。
+--
+-- ⚠️ **只存当前归属。** 商家换了经理，这张表只留新经理 —— 历史数字按经理汇总时会跟着变，
+--    上游不提供历史，补不回来。**经理维度的同比环比不是冻结的数字。**
+-- ⚠️ **分组按名字识别。** 上游 getMap 不返回分组编号：分组改名会拆成两个桶，两个分组重名会合成一个桶。
+-- ⚠️ **只 upsert，永不删行。** 上游没返回的商家（已删除 / 查不到）保留最后一次已知的值，
+--    所以这里的商家比上游现存的商家多是正常的。值没变的行 gmt_modified_time 不动。
+--
+-- BI 关联路径（3 表）：群日指标 b_merchant_group_metric_daily（corpid, roomid）
+--     → 群配置表 b_wecom_merchant_group（corp_id, official_room_id → merchant_id）
+--     → 本表（merchant_id）
+-- ⚠️ **客服维度要 4 表**：客服日指标 → 群日指标（看抽取是否完整，承重不变量 5）→ 群配置表 → 本表，
+--    超出公司规范「超过三个表禁止 join」的上限，**已知并接受**，评审时以此为据。
+--
+-- ⚠️ **分位数不可加、不可平均。** metric_daily 的 first_reply_p50_sec / p90_sec 是「群 × 日」的分位数，
+--    经理 / 分组级的 p50、p90 必须从事件明细（b_merchant_group_event）重新算，对群级 p50 取平均是错的。
+--    计数列（event_count / unreplied_count / merchant_event_count / msg_count）可以直接相加。
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE b_merchant_group_merchant_summary (
+    id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID。upsert写入，id稳定',
+    merchant_id                BIGINT UNSIGNED NOT NULL COMMENT '商家编号，与群配置表b_wecom_merchant_group.merchant_id对得上',
+    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字',
+    merchant_group_config_name VARCHAR(255)    NULL     COMMENT '商家分组名称，原样存商家域的值。字面量「未分组」是上游自己补的，表示商家没配分组或分组已被删除，它是一个普通取值不是NULL，自然形成一个桶。分组按名字识别：改名拆桶、重名合桶',
+    business_manager_id        BIGINT UNSIGNED NULL     COMMENT '业务经理编号=账号域人员主键（与easyUserId/officialUserId都不可互换）。NULL=商家没配经理（上游为空或0）。与business_manager_name配合区分两种NULL',
+    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名',
+    gmt_created_time           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    gmt_modified_time          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间。只在值真的变了才推进，工作台缓存数据戳用它',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_merchant (merchant_id) COMMENT '语义键：一个商家一行，upsert靠它触发冲突',
+    KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time)走索引尾读'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶';

@@ -212,7 +212,8 @@ max_rows = 20000
 # 真正的体检在 budget.rs 的 SLOW_REQUEST（800ms 打 warn），两者分工不同。
 query_timeout_secs = 10
 
-# 外部名册（只读工作台专用；跑批不读这一节）—— 商家名称与客服姓名的来源。
+# 外部名册（只读工作台与 merchant_sync 刷新进程用；跑批不读这一节）—— 商家名称与客服姓名的来源。
+# merchant_sync 只用其中的 Nacos 连接那几个键（ttl_secs 它不读），账号密码同在 secrets.toml 的 [roster]。
 # 这两份信息不在本项目库里，属于其他业务域，服务地址由 Nacos 管理、不是固定域名。
 # ⚠️ **名字是展示，不是事实，也不是维度**：不进指标、不进聚合键、不落库，
 #    取不到就回落显示 ID。理由内联在 src/web/roster.rs 的模块注释里。
@@ -231,8 +232,8 @@ group_name = "INTEGRATION_GROUP"
 # 商家域与员工域的服务名。写错即**启动失败**，错误信息带上服务名。
 # 员工域 = 账号域 account-app，接口是它的
 # POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds（见 web/roster.rs）。
-# ⚠️ merchant_service 今天**还没有代码消费它**（商家名称那张票没做），但启动期两个服务名
-#    都要解析得到实例，所以它必须是真名。dev 下两个服务同在
+# ⚠️ 启动期两个服务名都要解析得到实例，所以两个都必须是真名（merchant_sync 要调这两个服务）。
+#    dev 下两个服务同在
 #    integration-dev / INTEGRATION_GROUP。
 #    本地 profile 的服务名带后缀（merchant-app-local / merchant-app-test-local），别照抄。
 merchant_service = "merchant-app"

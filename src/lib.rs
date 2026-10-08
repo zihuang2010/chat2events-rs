@@ -15,7 +15,8 @@
 // **`src/` 下四类东西，分类写在路径上，不写在注释里**：
 //
 //   stage/     七阶段的六个模块 —— 一轮跑批的全部「处理」
-//   process/   把它们串起来的三个「进程」编排：daily · taxonomy · recompute
+//   process/   把它们串起来的「进程」编排：daily · taxonomy · recompute，
+//              外加不碰任何阶段的 merchant_sync（商家摘要刷新）
 //   web/       只读旁路（跑批不知道它存在）
 //   根目录     内核：boot · config · llm · nacos · window · worktime · rejection
 //
@@ -67,7 +68,7 @@
 // 七阶段（① mirror ①② ingest ③④ extract ⑤ classify ⑥ metrics ⑦ store）
 pub mod stage;
 
-// 把七阶段串起来的编排：daily · taxonomy · recompute
+// 进程编排：daily · taxonomy · recompute 把七阶段串起来，merchant_sync 不碰阶段
 pub mod process;
 
 // 只读旁路 —— 跑批不知道它存在

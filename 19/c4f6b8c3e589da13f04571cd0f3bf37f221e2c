@@ -1,0 +1,83 @@
+webui/src/api/client.test.ts
+  s_504c6032e731a8::t_2864e5ed50c4ab 53-55
+  s_504c6032e731a8::t_d5c26e8b3b9a55 2,47-52,56-59
+  s_504c6032e731a8::t_a4cfb63e67d372 60-61
+webui/src/test/mock/aggregate.test.ts
+  s_504c6032e731a8::t_a22bfdbf4186ed 169,200
+  s_504c6032e731a8::t_34bceecac9c1c7 8-14,16,150-168,170-199,201-205
+  s_504c6032e731a8::t_2e2d2a5a67c8e2 206
+webui/src/domain/metrics.ts
+  s_504c6032e731a8::t_a22bfdbf4186ed 191-215
+webui/src/test/mock/aggregate.ts
+  s_504c6032e731a8::t_a22bfdbf4186ed 22,37,108,112-120,125,153,155,203,205,251,253,301,303,363,365
+webui/src/features/filters/useAnalytics.ts
+  s_504c6032e731a8::t_7d353683c1a723 18-24,40-45,108-110,161-162,177-181
+webui/src/test/mock/generator.test.ts
+  s_504c6032e731a8::t_0f850660e8f3d6 54
+  s_504c6032e731a8::t_0f8d8b1bb20bf1 41-53,55-57
+webui/src/features/filters/useFilters.test.ts
+  s_504c6032e731a8::t_3e7cdba04c3ab9 25-40
+src/web/tests.rs
+  s_504c6032e731a8::t_cf6b3d5bcfee9b 1529-1530
+  s_504c6032e731a8::t_99122de8d3b1e1 1426-1477,1480-1528,1531-1601,1603-1621
+  s_504c6032e731a8::t_b068d2d6fe815d 1478-1479,1602
+src/web/query.rs
+  s_504c6032e731a8::t_4bebfe52bdb516 1248,1263,1289,1315,1353,1383,1414,1445,1476,1513,1604
+  s_504c6032e731a8::t_c2d6b1aefa7e1f 368,1218
+  s_504c6032e731a8::t_e784afd872d278 1679-1680
+src/web/params.rs
+  s_504c6032e731a8::t_4bebfe52bdb516 17,256-262,281-286,357-377
+  s_504c6032e731a8::t_b0f50055899028 582,633-640,655-656,659-680,685-705,730,743,891,896,960-964,966-967,972-974
+  s_504c6032e731a8::t_e784afd872d278 681-684,965,968-971
+  s_504c6032e731a8::t_08ff281469913e 378
+webui/src/features/rooms/RoomsPage.tsx
+  s_504c6032e731a8::t_7d353683c1a723 34,41
+webui/src/features/rooms/RoomFilters.test.tsx
+  s_504c6032e731a8::t_61739c50f44ae4 191
+  s_504c6032e731a8::t_dea5752da4c9e2 192
+  s_504c6032e731a8::t_6ccd5148041d63 174-178,180,189-190,193-233
+  s_504c6032e731a8::t_261b60c716b3dc 179,181-188
+webui/src/features/rooms/RoomFilters.tsx
+  s_504c6032e731a8::t_222d6147090034 63-91,319-344
+src/web/scope.rs
+  s_504c6032e731a8::t_4bebfe52bdb516 73-80
+webui/src/features/overview/OverviewPage.test.tsx
+  s_504c6032e731a8::t_0f850660e8f3d6 455-456
+  s_504c6032e731a8::t_ee21d8ee0f0294 98,100-103,136,363,392-454,457-477,479
+  s_504c6032e731a8::t_233dd45d477592 478,480-481
+webui/src/test/aggregateStub.ts
+  s_504c6032e731a8::t_ee21d8ee0f0294 20,27-28,39-43,45
+webui/src/features/overview/OverviewDashboard.tsx
+  s_504c6032e731a8::t_7d353683c1a723 77
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_504c6032e731a8::t_30e3687f9065e9 277-280,283
+  s_504c6032e731a8::t_5defc034ff6681 76,281-282,284-301
+  s_504c6032e731a8::t_ba1da6e7d17f3a 302-303
+docs/architecture.md
+  s_504c6032e731a8::t_1430b0fed34987 380-388
+webui/src/test/mock/generator.ts
+  s_504c6032e731a8::t_0f8d8b1bb20bf1 64-83,465-471
+webui/README.md
+  s_504c6032e731a8::t_77b7be28eed6c8 153-159
+  s_504c6032e731a8::t_1430b0fed34987 110,116-117
+webui/src/features/filters/useFilters.ts
+  s_504c6032e731a8::t_03c4126e6053ab 24-27,55-56,96-97
+webui/src/api/client.ts
+  s_504c6032e731a8::t_a614b3824503ed 185-188,206-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "19c4f6b8c3e589da13f04571cd0f3bf37f221e2c",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

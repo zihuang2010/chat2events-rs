@@ -1,0 +1,33 @@
+src/web/params.rs
+  s_0ab99e0c584ff8::t_00f2848fa7fbf0 236-238
+webui/src/api/client.ts
+  s_0ab99e0c584ff8::t_81f5701a3d6f98 174-176
+webui/src/domain/metrics.ts
+  s_0ab99e0c584ff8::t_6146b84e933580 354-355
+webui/src/features/agents/AgentsPage.tsx
+  s_0ab99e0c584ff8::t_99e39dc2704fe6 56-57
+webui/src/features/filters/filters.css
+  s_0ab99e0c584ff8::t_960097152c4818 27-28,33,42-56,75,77-78
+webui/src/features/rooms/RoomFilters.test.tsx
+  s_0ab99e0c584ff8::t_37f8af9fae1327 1,56-108,181,213
+webui/src/features/rooms/RoomFilters.tsx
+  s_0ab99e0c584ff8::t_bdd990cc661b8c 39,41,83-90,114-214,216,219,221
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_0ab99e0c584ff8::t_e82a1fdac99593 185,226,276-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "be821214a778565daca3e6b9f3d5143cecc89b81",
+  "prompts": {},
+  "sessions": {
+    "s_0ab99e0c584ff8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec490745-2b04-4ba6-8f9c-9201e4187de6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -17,7 +17,7 @@
 //   stage/     七阶段的六个模块 —— 一轮跑批的全部「处理」
 //   process/   把它们串起来的三个「进程」编排：daily · taxonomy · recompute
 //   web/       只读旁路（跑批不知道它存在）
-//   根目录     内核：boot · config · llm · window · worktime · rejection
+//   根目录     内核：boot · config · llm · nacos · window · worktime · rejection
 //
 // 这四类此前平摊在 crate 根的 15 个 `mod` 声明上，靠这段注释区分 —— 注释在，
 // 规则就在；注释漂了，平面还在。现在读 `use crate::stage::extract` 就知道它是哪一类。
@@ -77,6 +77,7 @@ pub mod web;
 pub mod boot;
 pub mod config;
 pub mod llm;
+pub mod nacos;
 pub mod quantile;
 mod rejection;
 pub mod window;

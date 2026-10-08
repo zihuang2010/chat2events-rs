@@ -24,7 +24,7 @@
 //!   cache.rs   白天的响应缓存：库里的「数据戳」一变整个作废，戳太新（跑批在写）不存
 //!   scope.rs   SQL 片段与绑定值成对产出 —— 「第 n 个 `?` 配第 n 个绑定」由构造保证
 //!   query.rs   一致快照 · meta · 日期区间 · event 的 SELECT —— 只读 SQL 全在这里
-//!   roster.rs  外部名册：Nacos 服务发现 ＋ 按需批量的姓名缓存 —— 唯一一处出站 HTTP
+//!   roster.rs  外部名册：按需批量的姓名缓存（服务发现在内核层 `crate::nacos`）—— 唯一一处出站 HTTP
 //! ```
 
 mod budget;

@@ -1,0 +1,72 @@
+webui/README.md
+  s_504c6032e731a8::t_15b26ad5ecf91c 145-149
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_14a46cd5767221 41-42,280,288
+src/bin/merchant_sync.rs
+  s_504c6032e731a8::t_b09148e69dc3fc 22-26
+src/nacos.rs
+  s_504c6032e731a8::t_015c4d7da0f16f 66-67
+  s_504c6032e731a8::t_a92628111fa6d1 94-97,102-106
+webui/src/domain/schemas.ts
+  s_504c6032e731a8::t_c5a9df84568cb3 186-187,204,207-212
+config.toml
+  s_504c6032e731a8::t_8b4a529459521b 215-219,221,234-235,238-240,247-250
+src/web/roster.rs
+  s_504c6032e731a8::t_79ed071ef1caf5 1,9-11,13-19,25-26,33,49,54,70-74,78-80,93,115,118-119,126,131-132,134-135,139,157-158,165,170,177-178,180,185,189,191,193,197,201,208,229,233-238,261,265,271-281,284,289,299,305,309,318,320,326,329,331,339
+  s_504c6032e731a8::t_ea1b68e53ffe48 454,537,555
+webui/src/features/rooms/RoomsPage.tsx
+  s_504c6032e731a8::t_26a011851e764e 92
+CLAUDE.md
+  s_504c6032e731a8::t_c3decbd97be98b 9-10,12-14
+src/stage/store/sql.rs
+  s_504c6032e731a8::t_14a46cd5767221 49-52
+src/web/cache.rs
+  s_504c6032e731a8::t_925680f210145c 70-71,73-74,76-77
+  s_504c6032e731a8::t_14a46cd5767221 5,16,42,49-50,54-57,72,84,89-92,95
+webui/src/domain/schemas.test.ts
+  s_504c6032e731a8::t_79ec2e8471235c 19,26-31,34-43
+src/web/serve.rs
+  s_504c6032e731a8::t_7c11ec2fc0e341 94,97,118,126-127,129,133-140,145-150
+  s_504c6032e731a8::t_ce77c90a97bc0b 18-19
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_504c6032e731a8::t_26a011851e764e 124,135
+src/web/tests.rs
+  s_504c6032e731a8::t_ce8e8700bb20b0 1008,1010,1012,1014-1015,1017,1019-1027,1030-1032,1034,1037-1045,1048-1050,1054,1057-1059
+  s_504c6032e731a8::t_af0836f38dc724 44-50,93
+  s_504c6032e731a8::t_98e7d0dd8d2a03 130-133,583-584,647-649,652-679
+  s_504c6032e731a8::t_d264a0bbc773e4 851-854,860,872
+  s_504c6032e731a8::t_d7f66ea1742c27 32-34,824-825,848-850,855-859,861-871
+docs/architecture.md
+  s_504c6032e731a8::t_7c7ca54146016e 375,377-379,381,383-384,428
+docs/deploy.md
+  s_504c6032e731a8::t_2e0d01c0ffe667 389-391
+src/web/query.rs
+  s_504c6032e731a8::t_7c11ec2fc0e341 147-148,151-154,160-164,166-176,185-189,202-204,210,225-227
+src/nacos/tests.rs
+  s_504c6032e731a8::t_80a04043bfc67e 34-38,117-119,141-157,169-171,220
+src/web/state.rs
+  s_504c6032e731a8::t_8b4a529459521b 14
+src/stage/store/mod.rs
+  s_504c6032e731a8::t_14a46cd5767221 61
+docs/deploy-webui.md
+  s_504c6032e731a8::t_15b26ad5ecf91c 312
+  s_504c6032e731a8::t_5273da9dda245b 64-66,75-76,78,80,91-93,147-148,152,247,249
+src/web/mod.rs
+  s_504c6032e731a8::t_8b4a529459521b 8-9,11,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1826bf0b07e20486649f4dfca8d94aac12dffa99",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -54,7 +54,7 @@
 | `docs/invariants.md` | **八条承重不变量全文 —— 动它们之前必读** |
 | `CONTEXT.md` | 术语 · 业务场景 · 上游数据形状 · 领域类型契约 · 词表生命周期 |
 | `docs/architecture.md` | 七模块各自内部 · 端口上什么不许出门 · MySQL 表键的理由 · webUI |
-| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与五条已取下的例外 |
+| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与四条已取下的例外 |
 | `docs/deploy.md` | 构建 · 部署 · 目标机约束 |
 | `docs/deploy-webui.md` | 只读工作台在 39.98.175.5:30001 的 runbook（nginx · systemd · 验证） |
 

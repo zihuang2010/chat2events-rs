@@ -5,7 +5,7 @@
 -- 不用 CREATE TABLE IF NOT EXISTS —— 它会掩盖「表结构变了但没迁移」。
 -- 不引 ORM、不引 migration 框架：跑批进程只读写数据，不碰 DDL。
 --
--- 遵循公司《数据库规范》，本仓库适用条款与**五条已取下的例外**见
+-- 遵循公司《数据库规范》，本仓库适用条款与**四条已取下的例外**见
 -- docs/database-conventions.md。要求 MySQL 8.0+。
 --
 -- **InnoDB 是承重的**（承重不变量 2）：一个群一次运行的 N 个分片必须在同一个事务里。
@@ -274,8 +274,7 @@ CREATE TABLE b_merchant_group_run_failure (
 -- ⚠️ **分组按名字识别。** 上游 getMap 不返回分组编号：分组改名会拆成两个桶，两个分组重名会合成一个桶。
 -- ⚠️ **只 upsert，永不删行。** 上游没返回的商家（已删除 / 查不到）保留最后一次已知的值，
 --    所以这里的商家比上游现存的商家多是正常的。值没变的行 gmt_modified_time 不动。
--- ⚠️ **merchant_id 是 UNSIGNED，上游群配置表的同名列很可能是有符号 BIGINT**（无 DDL，待核实），
---    join 类型可能不一致，已知并接受，见 docs/database-conventions.md 例外 E。
+-- merchant_id 与上游群配置表的同名列同为 BIGINT UNSIGNED（2026-10-07 核实上游 DDL），join 类型一致。
 --
 -- BI 关联路径（3 表）：群日指标 b_merchant_group_metric_daily（corpid, roomid）
 --     → 群配置表 b_wecom_merchant_group（corp_id, official_room_id → merchant_id）

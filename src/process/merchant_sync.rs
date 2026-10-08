@@ -129,11 +129,10 @@ pub async fn run(
     discovery: &Discovery,
     nacos: &NacosConfig,
 ) -> crate::Result<()> {
-    // `CAST ... AS UNSIGNED`：上游的 `merchant_id` 是有符号 BIGINT（Java `Long`），
-    // sqlx 解码 `u64` 要求列带 UNSIGNED 标志，直接读会在生产报类型不匹配。
+    // 上游列是 `BIGINT UNSIGNED`（2026-10-07 核实上游 DDL），直接解成 `u64`。
     let ids: Vec<u64> = sqlx::query_scalar(
-        "SELECT DISTINCT CAST(merchant_id AS UNSIGNED) AS id FROM b_wecom_merchant_group \
-         WHERE merchant_id IS NOT NULL ORDER BY id",
+        "SELECT DISTINCT merchant_id FROM b_wecom_merchant_group \
+         WHERE merchant_id IS NOT NULL ORDER BY merchant_id",
     )
     .fetch_all(pool)
     .await

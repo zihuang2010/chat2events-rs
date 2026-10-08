@@ -57,15 +57,14 @@ fn merchant_sync_startup_needs_only_database_log_and_nacos() {
 
 /// 建库并造一张模拟的群配置表。
 ///
-/// ⚠️ `merchant_id` 故意是**有符号** `BIGINT`：上游实体是 `Long`，仓库里没有它的 DDL。
-/// 照 web 测试抄成 `UNSIGNED` 会让「读成 u64」这条路在测试里绿、在生产报类型不匹配。
+/// `merchant_id` 照上游 DDL 是 `BIGINT UNSIGNED`（2026-10-07 核实）。
 /// 也故意带 `group_status` / `is_deleted`：刷新不按它们过滤，得有列才能证明。
 async fn fixture(name: &str) -> MySqlPool {
     let pool = testutil::mysql_pool(name).await;
     sqlx::raw_sql(
         "CREATE TABLE b_wecom_merchant_group (\
              corp_id VARCHAR(64) NOT NULL, official_room_id VARCHAR(128) NOT NULL, \
-             merchant_id BIGINT NULL, group_status TINYINT NOT NULL DEFAULT 0, \
+             merchant_id BIGINT UNSIGNED NULL, group_status TINYINT NOT NULL DEFAULT 0, \
              is_deleted TINYINT NOT NULL DEFAULT 0, \
              UNIQUE KEY uk_corp_room (corp_id, official_room_id))",
     )
@@ -76,7 +75,7 @@ async fn fixture(name: &str) -> MySqlPool {
 }
 
 /// 每个商家编号一个群；`None` = 群没关联商家。
-async fn seed_rooms(pool: &MySqlPool, merchants: &[Option<i64>]) {
+async fn seed_rooms(pool: &MySqlPool, merchants: &[Option<u64>]) {
     let rows: Vec<String> = merchants
         .iter()
         .enumerate()
@@ -169,10 +168,10 @@ fn body(request: &(String, String)) -> Value {
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
 async fn mysql_sync_fills_the_table_from_two_batches_and_one_manager_lookup() {
     let pool = fixture("merchant_sync_fill").await;
-    // 1..=1000 ＋ 一个超出 2^53 的编号（i64::MAX）：不丢精度；再混入同一商家的第二个群、
+    // 1..=1000 ＋ BIGINT UNSIGNED 的上界（u64::MAX，远超 2^53）：不丢精度；再混入同一商家的第二个群、
     // 一个没关联商家的群。
-    let mut merchants: Vec<Option<i64>> = (1..=1000).map(Some).collect();
-    merchants.push(Some(i64::MAX));
+    let mut merchants: Vec<Option<u64>> = (1..=1000).map(Some).collect();
+    merchants.push(Some(u64::MAX));
     merchants.push(Some(1));
     merchants.push(None);
     seed_rooms(&pool, &merchants).await;
@@ -184,7 +183,7 @@ async fn mysql_sync_fills_the_table_from_two_batches_and_one_manager_lookup() {
     .await
     .unwrap();
 
-    let max = i64::MAX as u64;
+    let max = u64::MAX;
     let (result, requests) = sync(
         &pool,
         vec![
@@ -356,7 +355,7 @@ async fn mysql_sync_does_not_call_a_domain_it_has_nothing_to_ask() {
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
 async fn mysql_sync_stores_blank_names_as_null_and_writes_in_merchant_id_order() {
     let pool = fixture("merchant_sync_blank").await;
-    let merchants: Vec<Option<i64>> = (1..=8).map(Some).collect();
+    let merchants: Vec<Option<u64>> = (1..=8).map(Some).collect();
     seed_rooms(&pool, &merchants).await;
     let (result, _) = sync(
         &pool,
@@ -418,7 +417,7 @@ async fn pin_stamps(pool: &MySqlPool) {
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
 async fn mysql_sync_writes_nothing_when_any_upstream_step_fails() {
     let pool = fixture("merchant_sync_fail").await;
-    let merchants: Vec<Option<i64>> = (1..=1001).map(Some).collect();
+    let merchants: Vec<Option<u64>> = (1..=1001).map(Some).collect();
     seed_rooms(&pool, &merchants).await;
     seed_summary(&pool, (1, "旧店一", "旧组", Some(9), Some("旧经理"))).await;
     seed_summary(&pool, (42, "旧店四十二", "未分组", None, None)).await;

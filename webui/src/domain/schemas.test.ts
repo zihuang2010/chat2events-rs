@@ -21,7 +21,7 @@ it("群元数据保留商家与经理的大整数 ID，并带出商家分组与�
     {
       roomid: "R",
       alias: "商家服务群",
-      merchant_id: "9223372036854775807",
+      merchant_id: "18446744073709551615",
       alias_is_authoritative: true,
       merchant_name: "极限商家",
       merchant_name_is_authoritative: true,

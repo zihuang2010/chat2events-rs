@@ -335,7 +335,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 类型由人命名并给出描述；`description` 必填，因为它与名称共同决定模型选择标签的含义。
 
-**建表**：一个手写的 `schema.sql`，人工执行一次。字段类型 / 命名 / 必须字段遵循公司《数据库规范》，适用条款与五条已取下的例外见 `database-conventions.md`。不用 `CREATE TABLE IF NOT EXISTS`（会掩盖"表结构变了但没迁移"）。**不引入 ORM 和 migration 框架。** 跑批进程只读写数据，不碰 DDL。
+**建表**：一个手写的 `schema.sql`，人工执行一次。字段类型 / 命名 / 必须字段遵循公司《数据库规范》，适用条款与四条已取下的例外见 `database-conventions.md`。不用 `CREATE TABLE IF NOT EXISTS`（会掩盖"表结构变了但没迁移"）。**不引入 ORM 和 migration 框架。** 跑批进程只读写数据，不碰 DDL。
 
 **原始 ndjson 行不入 MySQL；来源消息的渲染快照入。** 抽取时 `assemble` 把每条来源消息的
 `msg_id / at / sender_id / sender_role / text` 写进 `b_merchant_group_event.source_messages`

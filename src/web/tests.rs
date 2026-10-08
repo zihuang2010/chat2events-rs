@@ -29,26 +29,25 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .finish(),
     );
     let pool = testutil::mysql_pool("web").await;
-    // 群配置表是上游的表，这里造一张（`merchant_id` 复刻上游的有符号 `BIGINT`，与摘要表的
-    // `BIGINT UNSIGNED` join，见 database-conventions 例外 E）；商家摘要表是本项目自己的，
-    // `mysql_pool` 已按 schema.sql 建好，只插数据。R 关联的商家是 9223372036854775807
-    // （`i64::MAX`，有符号 BIGINT 的上界）、经理编号 9007199254740993（JS 安全整数之外）——
+    // 群配置表是上游的表，这里照上游 DDL 造一张（`merchant_id` 是 `BIGINT UNSIGNED`）；商家摘要表
+    // 是本项目自己的，`mysql_pool` 已按 schema.sql 建好，只插数据。R 关联的商家是
+    // 18446744073709551615（BIGINT UNSIGNED 的上界）、经理编号 9007199254740993（JS 安全整数之外）——
     // 顺带钉住「编号全程是字符串」。
     sqlx::raw_sql(
         "CREATE TABLE b_wecom_merchant_group (\
          corp_id VARCHAR(64) NOT NULL, official_room_id VARCHAR(128) NOT NULL, \
-         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT NULL, \
+         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT UNSIGNED NULL, \
          is_deleted TINYINT UNSIGNED NOT NULL DEFAULT 0, UNIQUE KEY uk_corp_room (corp_id, official_room_id)\
          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; \
          INSERT INTO b_wecom_merchant_group (corp_id,official_room_id,group_name,merchant_id,is_deleted) VALUES \
-         ('C','R','商家服务群',9223372036854775807,1), \
+         ('C','R','商家服务群',18446744073709551615,1), \
          ('other','R','其他企业群',2,0), ('C','empty-name','',NULL,0), \
          ('C','unused-room','未产生记录的群',3,0), \
          ('C','no-summary-room','摘要表里没有这个商家的群',4,0), \
          ('C','blank-name-room','商家名是空白的群',5,0); \
          INSERT INTO b_merchant_group_merchant_summary \
          (merchant_id,merchant_name,merchant_group_config_name,business_manager_id,business_manager_name) VALUES \
-         (9223372036854775807,'极限商家','华东组',9007199254740993,'李经理'), \
+         (18446744073709551615,'极限商家','华东组',9007199254740993,'李经理'), \
          (5,NULL,'未分组',NULL,NULL); \
          INSERT INTO b_merchant_group_event \
          (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary,last_msg_role,event_type,taxonomy_version,source_messages) \
@@ -127,7 +126,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(
         data["meta"]["rooms"],
         json!([{
-            "roomid": "R", "alias": "商家服务群", "merchant_id": "9223372036854775807",
+            "roomid": "R", "alias": "商家服务群", "merchant_id": "18446744073709551615",
             "alias_is_authoritative": true,
             "merchant_name": "极限商家", "merchant_name_is_authoritative": true,
             // 商家分组与业务经理来自商家摘要表；经理编号是字符串 —— 这个值超出 JS 的安全整数。
@@ -862,7 +861,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(merchant_name_of_r(&cached), "极限商家");
     sqlx::query(
         "UPDATE b_merchant_group_merchant_summary SET merchant_name = '改名后的商家' \
-         WHERE merchant_id = 9223372036854775807",
+         WHERE merchant_id = 18446744073709551615",
     )
     .execute(&pool)
     .await
@@ -1456,7 +1455,7 @@ async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
     sqlx::raw_sql(
         "CREATE TABLE b_wecom_merchant_group (\
          corp_id VARCHAR(64) NOT NULL, official_room_id VARCHAR(128) NOT NULL, \
-         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT NULL, \
+         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT UNSIGNED NULL, \
          group_status TINYINT NOT NULL DEFAULT 0, is_deleted TINYINT NOT NULL DEFAULT 0, \
          UNIQUE KEY uk_corp_room (corp_id, official_room_id)\
          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; \

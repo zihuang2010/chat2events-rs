@@ -1,0 +1,24 @@
+src/process/merchant_sync/tests.rs
+  s_dd88778454c857::t_ed546a715dad60 58-62,67,72-81
+  s_dd88778454c857::t_1d8daca46ec495 63-66,68-71
+  s_dd88778454c857::t_b5b865417bc746 121,124
+src/process/merchant_sync.rs
+  s_dd88778454c857::t_f340dfbc179ab1 108-111,115-130
+  s_dd88778454c857::t_7820a1605e5c5c 131-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ad4addd6270757e9038e671e05a6e155920e2cf",
+  "prompts": {},
+  "sessions": {
+    "s_dd88778454c857": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b04ae35-41f7-4616-b567-b4fd7c4c7a2f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

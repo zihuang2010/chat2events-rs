@@ -1,0 +1,22 @@
+webui/src/domain/schemas.test.ts
+  s_504c6032e731a8::t_09c164a1603aeb 24
+src/web/tests.rs
+  s_504c6032e731a8::t_09c164a1603aeb 32-36,40,44,51,130,865
+  s_504c6032e731a8::t_b3d831ca250cd3 1481-1486,1536-1549,1633-1660
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f3bfb0cce599feacccaf4d28f3cbda0938f09d6e",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

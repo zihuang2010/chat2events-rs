@@ -16,15 +16,31 @@ it("accepts_pending_labels_and_rejects_partially_populated_label_columns", () =>
   }
 });
 
-it("群元数据保留商家大整数 ID 与独立名称来源", () => {
+it("群元数据保留商家与经理的大整数 ID，并带出商家分组与经理姓名", () => {
   const rooms = [
     {
       roomid: "R",
       alias: "商家服务群",
       merchant_id: "18446744073709551615",
       alias_is_authoritative: true,
+      merchant_name: "极限商家",
+      merchant_name_is_authoritative: true,
+      merchant_group_config_name: "华东组",
+      // 经理编号同样是 BIGINT，超出 JS 安全整数，必须以字符串保留。
+      business_manager_id: "9007199254740993",
+      business_manager_name: "李经理",
     },
     { roomid: "missing", alias: null, merchant_id: null, alias_is_authoritative: false },
+    // 有编号查不到姓名 / 商家没配分组：三个新字段都允许 null。
+    {
+      roomid: "unnamed",
+      alias: "无名经理的群",
+      merchant_id: "7",
+      merchant_name: null,
+      merchant_group_config_name: null,
+      business_manager_id: "42",
+      business_manager_name: null,
+    },
   ];
   const meta = metaSchema.parse({ ...raw.meta, rooms });
   expect(meta.rooms).toEqual(rooms);

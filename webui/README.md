@@ -142,8 +142,11 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 `/api/dataset` 的群元数据按 `(corp_id, official_room_id)` 左连接
 `b_wecom_merchant_group`，历史群仍读取已删除配置。`group_name` 返回为 `rooms[].alias`，
 名称非空时 `rooms[].alias_is_authoritative` 为 `true`；未匹配或名称为空时继续标记待补。
-`rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度，暂不用于商家展示或筛选。
-客服姓名仍由顶层 `alias_is_authoritative` 控制。工作台 MySQL 账号需具备该配置表的 SELECT 权限。
+`rooms[].merchant_id` 是可空字符串，保留 BIGINT 精度；再经它左连接商家摘要表
+`b_merchant_group_merchant_summary`，带回 `rooms[].merchant_name`（页面照旧显示，缺失时回落商家编号）、
+`merchant_group_config_name`、`business_manager_id`（同样是字符串，保精度）和 `business_manager_name`。
+「没关联商家」（`merchant_id` 为 null）与「关联了但表里没名字」（`merchant_name` 为 null）可区分。
+客服姓名仍由顶层 `alias_is_authoritative` 控制。工作台 MySQL 账号需具备群配置表与商家摘要表的 SELECT 权限。
 
 ## 三条不能破的口径
 

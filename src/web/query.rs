@@ -144,23 +144,36 @@ pub(super) async fn read_meta(
 /// 的子集 —— 多查一路只是把最大的那张表再扫一遍。实测：只在 event 里、不在
 /// `metric_daily` 里的群 **0 个**。
 ///
-/// ⚠️ **两支都只产出「待解析的 ID」，不产出最终别名。** 客服是
-/// `(easyUserId, officialUserId?)`，群是 `(roomid, 群名?, merchantId?)` ——
-/// 账号到姓名、商家 ID 到店铺名那两跳都是 HTTP（外部名册），而
+/// ⚠️ **客服一支只产出「待解析的 ID」，不产出最终别名。** 客服是
+/// `(easyUserId, officialUserId?)` —— 账号到姓名那一跳是 HTTP（外部名册），而
 /// 「只读 SQL 全在这一个文件」的前提是**这个文件里零 HTTP**。回填在 handler 层做，
 /// 见 `serve::filters`。链条是：
-/// `easyUserId →(这里的 SQL)→ officialUserId →(HTTP)→ 姓名`，
-/// `roomid →(这里的 SQL)→ merchantId →(HTTP)→ 店铺名`。
+/// `easyUserId →(这里的 SQL)→ officialUserId →(HTTP)→ 姓名`。
+///
+/// **群这一支没有 HTTP 那一跳**：商家名称、商家分组、业务经理都落在商家摘要表里
+/// （`merchant_sync` 刷新），经群配置表的 `merchant_id` 左关联一次 SQL 就带回来了。
 ///
 /// ⚠️ **客服名单只能从 `event.agents` 展开，不能改查 `b_merchant_group_agent_metric_daily`。**
 /// 那张表按 `metrics::Attribution::FirstResponder` 只记首响人，而 `agents` 是**全部
 /// 参与者** —— 实测同一批数据 22 人 vs 20 人。换过去会让「参与过但从没首响过」的人
 /// 从筛选器里静默消失。JSON 列进不了索引，这条只能靠窗口把行数压住。
-/// 一个群的筛选器选项在**取数这一侧**的形状：群号 · 群名 · 关联的商家 ID。
+/// 一个群的筛选器选项在**取数这一侧**的形状：群号 · 群名 · 关联的商家 ID · 商家名称 ·
+/// 商家分组名称 · 业务经理编号 · 业务经理姓名。
 ///
-/// ⚠️ **商家 ID 是字符串**（SQL 里 `CAST(... AS CHAR)`）—— `merchant_id` 是
-/// `BIGINT UNSIGNED`，前端拿 JSON number 会丢精度。名册那一跳也原样用字符串。
-pub(super) type Room = (String, Option<String>, Option<String>);
+/// ⚠️ **两个编号都是字符串**（SQL 里 `CAST(... AS CHAR)`）—— 商家与经理编号是
+/// `BIGINT UNSIGNED`，前端拿 JSON number 会丢精度。
+///
+/// **「没关联商家」与「关联了但表里没名字」靠第三、四项区分**：前者商家 ID 就是 `None`，
+/// 后者商家 ID 有值而商家名称为 `None`（商家还没刷新进摘要表，或上游一直没给名字）。
+pub(super) type Room = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 pub(super) async fn read_filters(
     connection: &mut MySqlConnection,
@@ -169,7 +182,11 @@ pub(super) async fn read_filters(
     until: NaiveDate,
     limits: &WebLimits,
 ) -> Result<(Vec<Room>, Vec<(String, Option<String>)>), WebError> {
-    // 历史群仍读取已删除配置；商家 ID 转字符串，避免前端丢失 BIGINT 精度。
+    // 历史群仍读取已删除配置；商家 ID 与经理编号转字符串，避免前端丢失 BIGINT 精度。
+    //
+    // 商家摘要表同样**不按任何状态过滤**：上游已删除的商家，摘要表里保留着最后一次已知的值
+    // （`merchant_sync` 只 upsert、永不删行），历史群照样显示它。
+    // 商家名只有空白等于没有名字（`NULLIF(TRIM)`），回落显示商家编号 —— 旧名册路径就这么处置。
     //
     // ⚠️ **失败那一支按 `window_since/window_until` 收敛，不是 `run_date`。**
     // `run_date` 是**跑批日**，`since/until` 是**数据日** —— T+2 之下跑批日恒比任何
@@ -182,12 +199,15 @@ pub(super) async fn read_filters(
     // 与 `KNOWN_OK_DAYS` / `read_group_days` 同一条规矩。
     let (sql, binds) = Scope::new()
         .push(
-            "SELECT r.roomid, NULLIF(g.group_name, ''), CAST(g.merchant_id AS CHAR) FROM (\
+            "SELECT r.roomid, NULLIF(g.group_name, ''), CAST(g.merchant_id AS CHAR), \
+             NULLIF(TRIM(s.merchant_name), ''), s.merchant_group_config_name, \
+             CAST(s.business_manager_id AS CHAR), s.business_manager_name FROM (\
              SELECT DISTINCT roomid FROM b_merchant_group_metric_daily \
              WHERE corpid = ? AND dt BETWEEN ? AND ? \
              UNION SELECT DISTINCT roomid FROM b_merchant_group_run_failure \
              WHERE corpid = ? AND (window_since IS NULL OR (window_since <= ? AND window_until >= ?))) r \
              LEFT JOIN b_wecom_merchant_group g ON g.official_room_id = r.roomid AND g.corp_id = ? \
+             LEFT JOIN b_merchant_group_merchant_summary s ON s.merchant_id = g.merchant_id \
              ORDER BY r.roomid LIMIT ?",
             [
                 Bind::Str(corp.to_owned()),
@@ -202,10 +222,9 @@ pub(super) async fn read_filters(
             ],
         )
         .finish();
-    let rooms: Vec<(String, Option<String>, Option<String>)> =
-        bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
-            .fetch_all(&mut *connection)
-            .await?;
+    let rooms: Vec<Room> = bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
+        .fetch_all(&mut *connection)
+        .await?;
     if rooms.len() > limits.max_rows {
         return Err(too_large());
     }

@@ -61,8 +61,9 @@ SELECT DISTINCT corpid FROM b_merchant_group_event;
 
 ### 名册配置（`config.toml` 的 `[roster]` 节）
 
-工作台要把客服的 ID 显示成姓名、把群背后的 `merchant_id` 显示成商家名称。这两份信息
-不在本项目库里，属于其他业务域，服务地址由 Nacos 管理。
+工作台要把客服的 ID 显示成姓名。这份信息不在本项目库里，属于账号域，服务地址由 Nacos 管理。
+商家名称 / 商家分组 / 业务经理**不走名册**：它们由刷新进程 `merchant_sync` 落进商家摘要表
+`b_merchant_group_merchant_summary`，工作台直接读表。
 
 ⚠️ **全部必填，代码里没有默认值** —— 少一个键进程起不来（跟跑批那份配置一个规矩）。
 
@@ -71,12 +72,12 @@ SELECT DISTINCT corpid FROM b_merchant_group_event;
 | `nacos` | Nacos 服务端地址。只要 `scheme://host:port`，**不带 `/nacos` 路径**（v1 端点由代码自己拼），不带凭证、查询串 | `http://10.0.0.9:8848` |
 | `namespace` | 命名空间 ID。**用的就是 Nacos 默认值也要写出来**（默认命名空间的 ID 是空串）。⚠️ **按环境走，别把 dev 的照搬到 test/pre/prod** | `integration-dev` |
 | `group_name` | 分组名。同上，默认值也要显式写 | `INTEGRATION_GROUP` |
-| `merchant_service` | 商家域的服务名。写错即**启动失败**，错误信息带上这个名字。⚠️ 仓库里这一行仍是**占位符**，商家名称那张票还没做 | `merchant-service` |
-| `employee_service` | 员工域 = **账号域 `account-app`**（`spring.application.name`）。工作台打它的 `POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds` | `account-app` |
+| `merchant_service` | 商家域的服务名。⚠️ **工作台不再使用它**：启动不解析、运行不调用（商家名称读商家摘要表）。键保留，是因为这一节 Nacos 配置同时被刷新进程 `merchant_sync` 使用 —— 它只给刷新进程用，写错只会让刷新进程启动失败 | `merchant-app` |
+| `employee_service` | 员工域 = **账号域 `account-app`**（`spring.application.name`）。写错即**工作台启动失败**，错误信息带上这个名字。工作台打它的 `POST /rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpIdAndUserIds` | `account-app` |
 | `ttl_secs` | 名册（ID → 名字）整体存活多久，到期整张表清空重查。它决定「上游改名后多久在页面上看到」 | `300` |
-| `timeout_secs` | Nacos 与两个业务服务共用的 HTTP 超时。内网调用，秒级即可 —— 给大了只会在上游卡住时把 `web.query_timeout_secs` 的预算一起耗掉 | `3` |
+| `timeout_secs` | Nacos 与业务服务共用的 HTTP 超时。内网调用，秒级即可 —— 给大了只会在上游卡住时把 `web.query_timeout_secs` 的预算一起耗掉 | `3` |
 
-名字**只是展示**：不进任何指标、不进任何聚合键、不落库。上游查不到就回落显示 ID，
+客服姓名**只是展示**：不进任何指标、不进任何聚合键、不落库。上游查不到就回落显示 ID，
 页面照常可用 —— 所以这一节配错了不会算错任何一个数字，但会让进程起不来。
 
 ⚠️ **传给账号域的 `corpId` 就是启动参数里那个 `<corpid>`**（企微主体 corpId），
@@ -87,6 +88,9 @@ SELECT DISTINCT corpid FROM b_merchant_group_event;
 
 生产应给工作台配**独立的 MySQL 只读账号**，写进 `/etc/chat2events/secrets.toml` 的
 `[mysql].url`。它不构造 LLM / OSS 客户端，不写表，不需要 `ingest.raw_root`。
+除本项目的表外，它还要对群配置表 `b_wecom_merchant_group` 和商家摘要表
+`b_merchant_group_merchant_summary` 有 `SELECT` —— 缺后者时 `/api/dataset` 直接 500
+（群选项那条 SQL 左关联它）。
 
 Nacos 的账号密码在**同一个文件**的 `[roster]` 节，走**同一份 `0600` 权限检查**
 （不对就直接崩，跟数据库凭据一个待遇）：
@@ -140,13 +144,12 @@ WantedBy=multi-user.target
 ```bash
 systemctl enable --now chat2events-webui
 journalctl -u chat2events-webui -f
-# 期望三行（顺序固定）：
-#   Nacos 解析到健康实例 service=merchant-service healthy=2 instances=...
-#   Nacos 解析到健康实例 service=employee-service healthy=3 instances=...
+# 期望两行（顺序固定；工作台只解析员工域，不再解析商家域）：
+#   Nacos 解析到健康实例 service=account-app healthy=3 instances=...
 #   只读工作台启动 address=127.0.0.1:8787
 ```
 
-⚠️ 那两行 `Nacos 解析到健康实例` 是**「名册配对了」的唯一正向信号**，见「五、验证」第 ⓪ 条。
+⚠️ 那一行 `Nacos 解析到健康实例` 是**「名册配对了」的唯一正向信号**，见「五、验证」第 ⓪ 条。
 它们只在实例列表**发生变化**时打印（启动那次必打），之后每十秒一轮的刷新不刷屏。
 
 停止用 SIGINT（`systemctl stop` 默认就是），会等在飞请求结束再退。
@@ -241,9 +244,9 @@ firewall-cmd --permanent --add-port=30001/tcp && firewall-cmd --reload
 按顺序，每一步都要过：
 
 ```bash
-# ⓪ 名册配对了：两个服务各解析到几个健康实例（这是唯一的正向信号，curl 查不出来）
+# ⓪ 名册配对了：员工域解析到几个健康实例（这是唯一的正向信号，curl 查不出来）
 journalctl -u chat2events-webui | grep 'Nacos 解析到健康实例'
-# 期望：两行，service= 分别是 [roster] 里那两个服务名，healthy= 都 ≥ 1
+# 期望：一行，service= 是 [roster] 里的 employee_service，healthy= ≥ 1
 # 一行都没有 = 进程根本没起来（它启动期解析不到实例就退出），看下面的故障对照表
 
 # ① 后端自己活着（本机直连，绕开 nginx）
@@ -306,7 +309,7 @@ tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 | 409「该企业尚无已落库的群日或事件」 | `<corpid>` 填错 |
 | 起不来，日志 `Nacos 登录被拒（HTTP 403）` 或 `Nacos 登录请求失败` | 前者是 `secrets.toml` 的 `[roster]` 账号密码错、或服务端压根没开鉴权（后一种把 `username` / `password` 都写成空串）；后者是 `roster.nacos` 地址不可达。先 `curl -d 'username=…&password=…' <nacos>/nacos/v1/auth/login` 手验一遍 |
 | 起不来，日志 `解析失败 …/secrets.toml：详情已省略` | 那个文件的 TOML 语法或**缺键**。按提示的行号看：多半是 `[roster]` 节缺了 `username` / `password`，或值没加引号。不需要鉴权也要写空串，不能省 |
-| 起不来，日志 `Nacos 查不到服务 \`X\` 的健康实例` 且 X 是配的服务名 | 服务名或 `roster.namespace` 写错。在 Nacos 控制台按**命名空间**筛一遍服务列表，注意默认命名空间的 ID 是空串不是 `public` |
+| 起不来，日志 `Nacos 查不到服务 \`X\` 的健康实例` 且 X 是配的服务名（工作台只解析 `employee_service`） | 服务名或 `roster.namespace` 写错。在 Nacos 控制台按**命名空间**筛一遍服务列表，注意默认命名空间的 ID 是空串不是 `public` |
 | 起不来，同上但服务名确认无误 | 上游根本没注册上来，或 `roster.group_name` 写错（分组不对时 Nacos 返回的是空列表，不是报错）。控制台上看那个服务的实例数与所属分组 |
 | 跑着跑着日志出现 `Nacos 刷新失败，沿用上一次的实例列表` | Nacos 侧抖动。**进程不会退，页面照常**（手上那份实例列表继续用，每 10 秒重试）。持续刷就去查 Nacos 自己 |
 | 刷新子页面 404 | `try_files` 没配 |

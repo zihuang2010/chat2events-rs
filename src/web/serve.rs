@@ -15,8 +15,8 @@ use super::{
     config::WebLimits,
     params::{Grouping, Paging, Period, Sla},
     query::{
-        available_range, count_events, has_mixed_version, read_agents, read_categories, read_event,
-        read_event_page, read_filters, read_group_days, read_meta, read_rooms,
+        Room, available_range, count_events, has_mixed_version, read_agents, read_categories,
+        read_event, read_event_page, read_filters, read_group_days, read_meta, read_rooms,
         read_source_messages, read_summary, snapshot,
     },
     roster::Roster,
@@ -91,9 +91,10 @@ pub(super) fn router(state: WebState) -> Router {
 
 /// 筛选器选项 ＋ **外部名册回填 —— 全仓唯一的注入点**。
 ///
-/// `read_filters` 只产出「待解析的 ID」（`easyUserId, officialUserId?`），姓名那一跳在
+/// `read_filters` 对客服一支只产出「待解析的 ID」（`easyUserId, officialUserId?`），姓名那一跳在
 /// 这里补：只读 SQL 模块因此保持**零 HTTP**，而前端所有位置的人名都来自筛选器元数据
 /// 构建的那两张查找表 —— 按群聚合 / 按客服聚合 / 事件明细 / 事件抽屉一个字都不用改。
+/// 群一支没有这一跳：商家名称等已在 SQL 里从商家摘要表带回来了。
 ///
 /// ⚠️ **补齐必须在响应生成之前完成。** 先出一份「显示 ID」的半成品，它会被响应缓存
 /// 钉住直到名册 TTL 到期才翻身 —— 那不会自愈。
@@ -112,19 +113,9 @@ async fn filters(
         .iter()
         .flat_map(|(_, account)| account.clone())
         .collect();
-    let merchant_ids = rooms
-        .iter()
-        .flat_map(|(_, _, merchant)| merchant.clone())
-        .collect();
-    // 两个域各补一次。**不并发**：两次都是名册命中时零往返、未命中时各一次内网调用，
-    // 而它们共用同一把填充锁（见 `roster`），并发起来也要排队。
     let names = state.roster.employees(&state.corp, &accounts).await;
-    let merchants = state.roster.merchants(&merchant_ids).await;
     Ok((
-        rooms
-            .into_iter()
-            .map(|(roomid, alias, merchant)| room_option(roomid, alias, merchant, &merchants))
-            .collect(),
+        rooms.into_iter().map(room_option).collect(),
         agents
             .into_iter()
             .map(|(agent, account)| agent_option(agent, account, &names))
@@ -132,30 +123,31 @@ async fn filters(
     ))
 }
 
-/// 一个群选项。群名那一支照旧（来自 `b_wecom_merchant_group`），**新增的是商家那一支**。
+/// 一个群选项。群名那一支来自 `b_wecom_merchant_group`，商家那一支（名称 · 分组 · 经理）
+/// 来自商家摘要表 —— 两者都已经由 `read_filters` 的 SQL 带回来，这里只负责成形。
 ///
-/// **「没关联商家」和「关联了但查不到名字」是两种情况，响应里可区分**：
+/// **「没关联商家」和「关联了但表里没名字」是两种情况，响应里可区分**：
 /// 前者 `merchant_id` 为 `null`，后者 `merchant_id` 有值而 `merchant_name` 为 `null`。
 /// 混成一种就没法回答「这个群到底有没有归属商家」。
 ///
-/// `merchant_name_is_authoritative` 由构造保证等价于 `merchant_name != null`
-/// （名册只会给出真名，回落是**不给**）—— 前端因此不读它：商家那一支的回落是
-/// 一串裸 BIGINT，肉眼一看就不是名字，不像客服的 `zhang.san` 会被误当成姓名。
-/// 留着它是为了和客服那一支同形，以及让接口的消费者不必自己推。
-pub(super) fn room_option(
-    roomid: String,
-    alias: Option<String>,
-    merchant: Option<String>,
-    merchants: &std::collections::HashMap<String, String>,
-) -> serde_json::Value {
-    let name = merchant.as_deref().and_then(|id| merchants.get(id));
+/// `merchant_name_is_authoritative` 等价于 `merchant_name != null` —— 前端因此不读它：
+/// 商家那一支的回落是一串裸 BIGINT，肉眼一看就不是名字，不像客服的 `zhang.san`
+/// 会被误当成姓名。留着它是为了和客服那一支同形，以及让接口的消费者不必自己推。
+///
+/// `business_manager_id` 是**字符串**（保 BIGINT 精度）；它为 `null` 是商家没配经理或群没关联商家，
+/// 为字符串而 `business_manager_name` 为 `null` 是有编号但账号域查不到姓名。
+pub(super) fn room_option(room: Room) -> serde_json::Value {
+    let (roomid, alias, merchant_id, merchant_name, group, manager_id, manager_name) = room;
     serde_json::json!({
         "roomid": roomid,
         "alias": alias,
         "alias_is_authoritative": alias.is_some(),
-        "merchant_id": merchant,
-        "merchant_name": name,
-        "merchant_name_is_authoritative": name.is_some(),
+        "merchant_id": merchant_id,
+        "merchant_name": merchant_name,
+        "merchant_name_is_authoritative": merchant_name.is_some(),
+        "merchant_group_config_name": group,
+        "business_manager_id": manager_id,
+        "business_manager_name": manager_name,
     })
 }
 

@@ -63,7 +63,8 @@ pub struct NacosConfig {
     /// 落进代码当默认值的话，配错了不会在启动时喊，只表现成「解析不到实例」。
     pub namespace: String,
     pub group_name: String,
-    /// 商家域与员工域的服务名。写错即启动失败，错误信息带上服务名。
+    /// 商家域与员工域的服务名。**进程只解析自己要用的那几个**（见 [`Discovery::start`]）：
+    /// 工作台只用员工域，刷新进程两个都用。被解析的那个写错即启动失败，错误信息带上服务名。
     pub merchant_service: String,
     pub employee_service: String,
     /// Nacos 与两个业务服务共用的 HTTP 超时。
@@ -90,15 +91,21 @@ pub struct Discovery {
 }
 
 impl Discovery {
-    /// 登录 Nacos，解析两个服务名各自的健康实例，然后起后台刷新。
+    /// 登录 Nacos，解析 `services` 里每个服务名的健康实例，然后起后台刷新。
+    ///
+    /// **要解析哪些服务由调用方决定**，不是配置里的全部：工作台只用账号域，刷新进程用商家域
+    /// 和账号域。多解析一个没用的服务，就是让它的抖动白白挡住进程启动。
     ///
     /// **任一步失败即返回 `Err`，调用方直接退出进程** —— 配置错误要在进程起来的第一秒
     /// 暴露，不把错的服务名 / 命名空间 / 分组名 / 账号密码带上生产。启动期没有「保留
     /// 上一次」可言：手上一份可用数据都没有。
-    pub async fn start(cfg: &NacosConfig, secrets: &NacosSecrets) -> crate::Result<Self> {
+    pub async fn start(
+        cfg: &NacosConfig,
+        secrets: &NacosSecrets,
+        services: Vec<String>,
+    ) -> crate::Result<Self> {
         let mut nacos = Nacos::new(cfg, secrets)?;
         let hosts: Arc<Hosts> = Arc::default();
-        let services = vec![cfg.merchant_service.clone(), cfg.employee_service.clone()];
         let wait = nacos.refresh(&services, &hosts).await?;
         let task = Arc::clone(&hosts);
         tokio::spawn(async move {

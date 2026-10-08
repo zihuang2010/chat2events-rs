@@ -38,6 +38,8 @@
 
 use crate::config::{LogConfig, MysqlConfig, MysqlSecrets, load, require_owner_only};
 use crate::nacos::{Discovery, NacosConfig, NacosSecrets};
+// 只借表名常量（让数据戳读到同一个名字），不碰任何阶段。
+use crate::stage::store::T_MERCHANT_SUMMARY;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
 use sqlx::MySqlPool;
@@ -46,9 +48,6 @@ use std::{
     path::Path,
     time::Duration,
 };
-
-/// 本进程自己的表。不进 `stage::store` 的常量清单 —— 见模块顶注。
-const T_SUMMARY: &str = "b_merchant_group_merchant_summary";
 
 /// 商家域（`merchant-app`）的批量商家摘要。
 const MERCHANT_PATH: &str = "/rpc/merchantGroupConfigSummary/getMap";
@@ -278,7 +277,7 @@ pub async fn run(
 /// `ON DUPLICATE KEY UPDATE` 下新增 = 1、**值没变 = 1**、真更新 = 2，所以更新数 =
 /// `rows_affected - 行数`；新增数用事务前后的 `COUNT(*)` 之差。
 async fn upsert(pool: &MySqlPool, rows: &[Row]) -> Result<(u64, u64), sqlx::Error> {
-    let count = format!("SELECT COUNT(*) FROM {T_SUMMARY}");
+    let count = format!("SELECT COUNT(*) FROM {T_MERCHANT_SUMMARY}");
     let mut tx = pool.begin().await?;
     let before: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(count.clone()))
         .fetch_one(&mut *tx)
@@ -286,7 +285,7 @@ async fn upsert(pool: &MySqlPool, rows: &[Row]) -> Result<(u64, u64), sqlx::Erro
     let mut affected = 0;
     for chunk in rows.chunks(UPSERT_BATCH) {
         let sql = format!(
-            "INSERT INTO {T_SUMMARY} (merchant_id, merchant_name, merchant_group_config_name, \
+            "INSERT INTO {T_MERCHANT_SUMMARY} (merchant_id, merchant_name, merchant_group_config_name, \
              business_manager_id, business_manager_name) VALUES {} \
              ON DUPLICATE KEY UPDATE merchant_name = VALUES(merchant_name), \
              merchant_group_config_name = VALUES(merchant_group_config_name), \

@@ -183,7 +183,8 @@ export type MessageRow = z.infer<typeof messageSchema>;
 
 /**
  * 群名称来自 b_wecom_merchant_group，逐群标记是否为权威名称。
- * 商家 ID 用字符串保留 BIGINT 精度；客服姓名仍由全局标记控制。
+ * 商家名称 / 分组 / 业务经理来自商家摘要表（b_merchant_group_merchant_summary）。
+ * 商家 ID 与经理编号用字符串保留 BIGINT 精度；客服姓名仍由全局标记控制。
  */
 export const metaSchema = z.object({
   corpid: z.string(),
@@ -200,9 +201,15 @@ export const metaSchema = z.object({
       alias: z.string().nullable(),
       merchant_id: z.string().nullable().optional(),
       alias_is_authoritative: z.boolean().optional(),
-      /** 商家名称。`merchant_id` 有值而这里为 null = 关联了商家但名册查不到它。 */
+      /** 商家名称。`merchant_id` 有值而这里为 null = 关联了商家但商家摘要表里没有它的名字。 */
       merchant_name: z.string().nullable().optional(),
       merchant_name_is_authoritative: z.boolean().optional(),
+      /** 商家分组名称。原样存上游的值，「未分组」是字面量；null = 查不到这个商家。 */
+      merchant_group_config_name: z.string().nullable().optional(),
+      /** 业务经理编号（字符串保 BIGINT 精度）。null = 商家没配经理或查不到商家。 */
+      business_manager_id: z.string().nullable().optional(),
+      /** 业务经理姓名。编号有值而这里为 null = 账号域查不到姓名。 */
+      business_manager_name: z.string().nullable().optional(),
     }),
   ),
   agents: z.array(

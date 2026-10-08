@@ -19,7 +19,11 @@ async fn main() -> Result<()> {
     let (cfg, secrets) = load_from_dir(&config::dir_from_args());
     config::init_logging(&cfg.log);
     // 配错了在第一秒就退出，同工作台：服务名 / 命名空间 / 账号密码写错不带上生产。
-    let discovery = Discovery::start(&cfg.roster, &secrets.roster).await?;
+    let services = vec![
+        cfg.roster.merchant_service.clone(),
+        cfg.roster.employee_service.clone(),
+    ];
+    let discovery = Discovery::start(&cfg.roster, &secrets.roster, services).await?;
     let pool = config::mysql_pool(&cfg.mysql, &secrets.mysql.url).await?;
     run(&pool, &discovery, &cfg.roster).await
 }

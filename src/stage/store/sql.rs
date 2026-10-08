@@ -46,6 +46,10 @@ pub(crate) const T_AGENT: &str = "b_merchant_group_agent_metric_daily";
 pub(crate) const T_AGENT_MSG: &str = "b_merchant_group_agent_msg_daily";
 pub(crate) const T_FAILURE: &str = "b_merchant_group_run_failure";
 pub(crate) const T_TAXONOMY: &str = "b_merchant_group_taxonomy";
+/// 商家摘要表 —— 由 `process::merchant_sync` 写，工作台的取数与数据戳读。**不进 [`check_schema`]
+/// 的清单**：跑批不读它，它不在也不该拦住跑批。表名放在这里只是为了让写它的刷新进程和
+/// 读它的数据戳（`web/cache.rs`）引用同一个常量，免得抄错。
+pub(crate) const T_MERCHANT_SUMMARY: &str = "b_merchant_group_merchant_summary";
 /// 冻结区重写的账。**不进 `web/cache.rs` 的数据戳** —— 没有任何取数读它，
 /// 它变了页面上一个数字都不会变。
 pub(super) const T_REWRITE: &str = "b_merchant_group_rewrite_log";

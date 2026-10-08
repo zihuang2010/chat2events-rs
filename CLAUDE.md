@@ -18,7 +18,7 @@
 `OSS → mirror → ingest → extract/assemble → 保存事实 → channel → classify → 更新标签与分类指标 → webUI(只读)`
 
 **六个阶段模块全在 `src/stage/` 下**，四个进程编排在 `src/process/`，只读旁路 `src/web/`，
-内核（`boot` · `config` · `llm` · `nacos` · `window` · `worktime` · `rejection`）留 crate 根 ——
+内核（`boot` · `config` · `llm` · `nacos` · `quantile` · `rpc` · `window` · `worktime` · `rejection`）留 crate 根 ——
 四类东西写在路径上，不靠注释区分。判据见 `src/lib.rs` 顶注。
 
 | # | 阶段 | 模块 | 端口 | 出口类型 |

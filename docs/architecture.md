@@ -22,7 +22,7 @@
 ## 模块布局
 
 `src/` 分四层：`stage/`（六个阶段模块）· `process/`（四个进程编排）· `web/`（只读旁路）·
-crate 根（内核：`boot` · `config` · `llm` · `nacos` · `window` · `worktime` · `rejection`）。
+crate 根（内核：`boot` · `config` · `llm` · `nacos` · `quantile` · `rpc` · `window` · `worktime` · `rejection`）。
 下面的路径都省掉这一层前缀之外的部分，完整判据在 `src/lib.rs` 顶注。
 
 ### ① 摄取 ingest ＋ ② 会话 conversation

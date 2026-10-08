@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -53,6 +53,59 @@ function params() {
 }
 
 describe("群聊分析筛选", () => {
+  it("关键词字段名是事件摘要，占位符给例子，没有说搜分类、群聊或客服的提示", () => {
+    mount();
+    const input = screen.getByLabelText("事件摘要");
+    expect(input).toHaveAttribute("placeholder", "搜索事件摘要，如：退款、改地址");
+    expect(screen.queryByLabelText("关键词")).toBeNull();
+    expect(screen.queryByTitle(/分类、群聊或客服/)).toBeNull();
+  });
+
+  it("商家分组与业务经理在第一行不用展开就能用，更多筛选里只有四项事件属性", async () => {
+    const user = userEvent.setup();
+    mount();
+    for (const name of ["日期范围", "群聊", "客服", "商家分组", "业务经理", "事件摘要"]) {
+      expect(screen.getAllByLabelText(name).length).toBeGreaterThan(0);
+    }
+    expect(screen.getByRole("combobox", { name: "商家分组" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "业务经理" })).toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "更多筛选" });
+    await user.click(more);
+    const panel = document.getElementById(more.getAttribute("aria-controls")!)!;
+    expect(
+      within(panel)
+        .getAllByRole("combobox")
+        .map((el) => el.getAttribute("aria-label")),
+    ).toEqual(["一级分类", "二级分类", "状态", "超时条件"]);
+  });
+
+  it("更多筛选的计数与收起标签只算四项事件属性，商家分组与业务经理不算", async () => {
+    const user = userEvent.setup();
+    const type = meta.taxonomy[0]!;
+    mount(`?group=未分组&manager=1001&l2=${encodeURIComponent(type.type_id)}&overdue=0`);
+    expect(screen.getByRole("button", { name: "更多筛选（2）" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(screen.getAllByRole("button", { name: /^清除.*筛选：/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /清除商家分组筛选/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /清除业务经理筛选/ })).toBeNull();
+    // 只有分组与经理生效：更多筛选不亮、没有筹码行，重置仍亮
+    await user.click(
+      screen.getByRole("button", { name: "清除二级筛选：" + type.parent_name + " / " + type.name }),
+    );
+    await user.click(screen.getByRole("button", { name: "清除超时筛选：仅未超时" }));
+    await waitFor(() =>
+      expect(params().toString()).toBe("group=%E6%9C%AA%E5%88%86%E7%BB%84&manager=1001"),
+    );
+    expect(screen.getByRole("button", { name: "更多筛选" })).toHaveAttribute(
+      "data-active",
+      "false",
+    );
+    expect(screen.queryByText("更多筛选生效中")).toBeNull();
+    expect(screen.getByRole("button", { name: "重置" })).toHaveAttribute("data-active", "true");
+  });
+
   it("reset_clears_filters_and_legacy_source", async () => {
     mount("?source=api&q=关键词&page=2");
     await userEvent.setup().click(screen.getByRole("button", { name: "重置" }));
@@ -125,7 +178,7 @@ describe("群聊分析筛选", () => {
   it("关键词保持回车提交，重置与浏览器返回同步输入框", async () => {
     const user = userEvent.setup();
     const view = mount("?q=原关键词&status=unreplied");
-    const input = screen.getByLabelText("关键词");
+    const input = screen.getByLabelText("事件摘要");
     await user.clear(input);
     await user.type(input, "空调");
     expect(params().get("q")).toBe("原关键词");
@@ -157,7 +210,7 @@ describe("群聊分析筛选", () => {
   it("搜索按钮提交草稿，清除关键词时保留其他筛选", async () => {
     const user = userEvent.setup();
     const view = mount("?room=R-test&page=3");
-    const input = screen.getByLabelText("关键词");
+    const input = screen.getByLabelText("事件摘要");
     await user.type(input, "空调");
     expect(params().has("q")).toBe(false);
     await user.click(screen.getByRole("button", { name: "搜索" }));
@@ -179,7 +232,6 @@ describe("群聊分析筛选", () => {
     // 每个下拉用一份新挂载：收起的下拉不会从 DOM 里摘掉，同屏读会把两个下拉的选项混在一起
     const optionsOf = async (name: string) => {
       const view = mount();
-      await user.click(screen.getByRole("button", { name: "更多筛选" }));
       await user.click(screen.getByRole("combobox", { name }));
       const texts = [...document.querySelectorAll(".ant-select-item-option-content")].map(
         (el) => el.textContent,
@@ -195,7 +247,6 @@ describe("群聊分析筛选", () => {
   it("选商家分组与业务经理写进 URL，与其他条件叠加并复位页码，重置一并清掉", async () => {
     const user = userEvent.setup();
     const view = mount("?room=R-test&page=3");
-    await user.click(screen.getByRole("button", { name: "更多筛选" }));
     await user.click(screen.getByRole("combobox", { name: "商家分组" }));
     await user.click(
       screen.getByText("华东组", { exact: true, selector: ".ant-select-item-option-content" }),
@@ -212,22 +263,6 @@ describe("群聊分析筛选", () => {
     expect(screen.getByRole("button", { name: "重置" })).toHaveAttribute("data-active", "true");
     await user.click(screen.getByRole("button", { name: "重置" }));
     await waitFor(() => expect(params().toString()).toBe(""));
-    view.unmount();
-  });
-
-  it("折叠时两个条件各是一颗可点掉的筹码；经理筹码显示姓名，查不到姓名时显示编号", async () => {
-    const user = userEvent.setup();
-    const view = mount("?group=未分组&manager=9007199254740993");
-    expect(screen.getByRole("button", { name: "更多筛选（2）" })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
-    expect(
-      screen.getByRole("button", { name: "清除业务经理筛选：9007199254740993" }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "清除商家分组筛选：未分组" }));
-    await waitFor(() => expect(params().has("group")).toBe(false));
-    expect(params().get("manager")).toBe("9007199254740993");
     view.unmount();
   });
 

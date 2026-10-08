@@ -24,20 +24,35 @@
   padding-block: var(--space-xs);
   border-block: 1px solid var(--color-rule);
 }
+/* 两行：第一行圈范围（日期 · 快捷时间 · 群聊 · 客服 · 商家分组 · 业务经理），
+   第二行事件摘要关键词，更多筛选与重置在行尾。窄屏靠 flex-wrap 自动换行。 */
 .ra-filter-primary {
   display: grid;
-  grid-template-columns: 400px max-content minmax(220px, 1fr);
-  align-items: end;
   gap: var(--space-sm);
 }
+.ra-filter-scope,
 .ra-filter-dates,
-.ra-filter-people,
 .ra-filter-search-actions,
 .ra-filter-actions {
   display: flex;
   align-items: end;
   gap: var(--space-xs);
   min-width: 0;
+}
+.ra-filter-scope {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.ra-filter-dates {
+  flex-wrap: wrap;
+}
+.ra-filter-scope > .ra-filter-select {
+  flex: 1 1 150px;
+  min-width: 150px;
+  max-width: 220px;
+}
+.ra-filter-scope .ant-select {
+  width: 100%;
 }
 .ra-filter-panel .ant-form-item {
   margin: 0;
@@ -52,26 +67,15 @@
   height: auto;
   font-weight: 500;
 }
-.ra-filter-primary .ant-form-item-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
 .ra-filter-dates .ant-picker {
   width: 226px;
 }
-.ra-filter-people > .ant-form-item {
-  flex: 1;
-}
 .ra-filter-search {
   flex: 1;
+  max-width: 520px;
 }
-.ra-filter-search-actions {
-  gap: var(--space-xs);
+.ra-filter-actions {
+  margin-left: auto;
 }
 .ra-filter-search-actions .ant-btn {
   height: 32px;
@@ -186,20 +190,6 @@
   margin-top: var(--space-sm);
   padding-top: var(--space-sm);
 }
-@media (max-width: 1180px) {
-  .ra-filter-primary {
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr);
-  }
-  .ra-filter-search-actions {
-    grid-column: 1 / -1;
-  }
-  .ra-filter-search {
-    max-width: 260px;
-  }
-  .ra-filter-dates {
-    flex-wrap: wrap;
-  }
-}
 @media (max-width: 960px) {
   .ra-filter-more:not([hidden]) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -209,12 +199,6 @@
   :is(.od-room-analysis, .ia-workbench) .od-header {
     flex-direction: column;
     align-items: flex-start;
-  }
-  .ra-filter-primary {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .ra-filter-search-actions {
-    justify-content: flex-start;
   }
 }
 @media (max-width: 560px) {
@@ -236,7 +220,6 @@
   .ra-filter-panel {
     padding-block: var(--space-sm);
   }
-  .ra-filter-dates,
   .ra-filter-search-actions {
     flex-wrap: wrap;
   }
@@ -248,9 +231,6 @@
     width: 100%;
     flex-basis: 100%;
     max-width: none;
-  }
-  .ra-filter-actions {
-    margin-left: auto;
   }
   .ra-filter-panel .ant-segmented {
     max-width: 100%;

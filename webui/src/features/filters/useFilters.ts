@@ -35,7 +35,7 @@ export interface Filters {
   pageSize: number;
   /** 群聊分析的排行口径 */
   rank: string;
-  /** 明细表的服务端排序键，见 `EVENT_SORTS`。null = 按归属日 */
+  /** 明细表的服务端排序键，见 `EVENT_SORTS`。null = 按开始时间倒序（后端默认） */
   sort: EventSort | null;
   /** 排序方向。只在 sort 非空时有意义 */
   dir: "asc" | "desc" | null;

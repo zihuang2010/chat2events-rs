@@ -86,8 +86,8 @@ function matches(event: DecoratedEvent, f: QueryFilters, lastDay: string): boole
   if (f.overdueOnly !== null && f.overdueOnly !== undefined) {
     if (isOverdue(event, sla) !== f.overdueOnly) return false;
   }
-  // ⚠️ **只匹配摘要**，与后端的 `e.summary LIKE ?` 一致。群名 / 客服名的匹配
-  // 由页面在**已经返回的聚合行**上本地做 —— 那些行数有界，不需要下推。
+  // ⚠️ **只匹配摘要**，与后端的 `e.summary LIKE ?` 一致。前端没有别的关键词匹配：
+  // 群名 / 客服名 / 类型名都不参与，要按它们筛就用各自的下拉框。
   if (f.q && !event.summary.toLowerCase().includes(f.q.toLowerCase())) return false;
   return true;
 }

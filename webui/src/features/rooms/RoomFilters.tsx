@@ -10,6 +10,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
+import { managerLabels } from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
 import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
 import type { FilterPatch, FiltersApi } from "@/features/filters/useFilters";
@@ -67,13 +68,7 @@ export function RoomFilters({
   const groupNames = [
     ...new Set(meta.rooms.map((room) => room.merchant_group_config_name).filter(Boolean)),
   ].sort((a, b) => a!.localeCompare(b!, "zh"));
-  const managerLabels = new Map<string, string>();
-  for (const room of meta.rooms) {
-    const id = room.business_manager_id;
-    const name = room.business_manager_name;
-    if (id && (name || !managerLabels.has(id))) managerLabels.set(id, name || id);
-  }
-  const managerOptions = [...managerLabels]
+  const managerOptions = [...managerLabels(meta.rooms)]
     .map(([value, label]) => ({ value, label }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh"));
   const moreCount = moreChips.length;

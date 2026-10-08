@@ -952,6 +952,27 @@ it("detail_defaults_to_newest_first_and_toggles_between_desc_and_asc", async () 
   expect(idsOnPage(view.container)).toEqual([3, 2, 1, 4]);
 });
 
+/**
+ * 「开始时间」的悬停提示要说实话：antd 默认在正序状态提示「点击取消排序」，
+ * 但这一列的第三态不是无排序，而是回到默认倒序。
+ */
+it("detail_start_time_sorter_tooltip_describes_the_next_state", async () => {
+  const user = userEvent.setup();
+  const view = await mount("detail");
+  const sorter = () =>
+    view.container.querySelector<HTMLElement>(
+      ".ant-table-thead th[aria-sort] .ant-table-column-sorters",
+    )!;
+
+  await user.hover(sorter());
+  expect(await screen.findByText("点击切换为正序")).toBeInTheDocument();
+
+  await user.click(sorter());
+  expect(await screen.findByText("点击恢复倒序")).toBeInTheDocument();
+  expect(screen.queryByText("点击切换为正序")).toBeNull();
+  expect(screen.queryByText("点击取消排序")).toBeNull();
+});
+
 it("detail_falls_back_to_newest_first_when_another_sort_is_cancelled", async () => {
   const user = userEvent.setup();
   const data = eventsAt([1, "2026-08-26 09:00:00"], [2, "2026-08-27 09:00:00"]);

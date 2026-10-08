@@ -64,7 +64,7 @@ const ids = (sorting: { sort?: string; dir?: "asc" | "desc" }) =>
   mockEventsPage(events, cells, tax, { from: DAY, to: DAY }, 1, 10, sorting).rows.map((e) => e.id);
 
 describe("明细排序", () => {
-  it("不给排序键时开始时间倒序，相同再按 id 倒序", () => {
+  it("defaults_to_newest_first_then_id_descending_without_sort_key", () => {
     // 三条开始时间相同，只能靠 id 倒序定序。
     expect(ids({})).toEqual([3, 2, 1]);
     // 1 号最晚开始，排最前；2、3 号开始时间相同，3 号在前。

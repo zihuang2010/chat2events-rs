@@ -14,6 +14,7 @@
 use crate::config::{
     LogConfig, MysqlConfig, MysqlSecrets, SET_SESSION_TZ, load, require_owner_only,
 };
+use crate::nacos::{NacosConfig, NacosSecrets};
 use serde::Deserialize;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use std::{path::Path, time::Duration};
@@ -39,38 +40,21 @@ pub struct WebLimits {
 
 /// 外部名册的发现与取数参数 —— 全部必填，代码里没有默认值。
 /// 为什么只读工作台可以调外部服务，见 [`crate::web::roster`] 的模块注释。
+///
+/// Nacos 连接那几个键归内核层的 [`NacosConfig`]（服务发现不是工作台独有的），
+/// 这里 `flatten` 回同一个 `[roster]` 节 —— 配置文件格式不变。
 #[derive(Deserialize)]
 pub struct RosterConfig {
-    /// Nacos 服务端地址，`scheme://host:port`，**不带 `/nacos` 路径**。
-    pub nacos: String,
-    /// 命名空间 ID 与分组名。**用的就是 Nacos 默认值时也必须显式写出来** ——
-    /// 落进代码当默认值的话，配错了不会在启动时喊，只表现成「解析不到实例」。
-    pub namespace: String,
-    pub group_name: String,
-    /// 商家域与员工域的服务名。写错即启动失败，错误信息带上服务名。
-    pub merchant_service: String,
-    pub employee_service: String,
+    #[serde(flatten)]
+    pub discovery: NacosConfig,
     /// 名册（ID → 名字）整体存活多久，到期整张表清空重查。
     pub ttl_secs: u64,
-    /// Nacos 与两个业务服务共用的 HTTP 超时。
-    pub timeout_secs: u64,
 }
 
 #[derive(Deserialize)]
 pub struct WebSecrets {
     pub mysql: MysqlSecrets,
-    pub roster: RosterSecrets,
-}
-
-/// Nacos 的账号密码。跟数据库只读账号同一个 `secrets.toml`，同一份 0600 检查。
-///
-/// 两个键**必填但可以是空串**：`username = ""` 表示服务端没开鉴权，此时
-/// [`crate::web::roster`] 既不登录也不带 `accessToken`。必填是有意的 ——
-/// 「忘了写」和「确实不需要」得长得不一样，前者必须启动即崩。
-#[derive(Deserialize)]
-pub struct RosterSecrets {
-    pub username: String,
-    pub password: String,
+    pub roster: NacosSecrets,
 }
 
 pub fn load_from_dir(dir: &Path) -> (WebConfig, WebSecrets) {
@@ -87,7 +71,7 @@ pub fn load_from_dir(dir: &Path) -> (WebConfig, WebSecrets) {
         "只读查询名额、结果预算与超时必须大于零"
     );
     assert!(
-        config.roster.ttl_secs > 0 && config.roster.timeout_secs > 0,
+        config.roster.ttl_secs > 0 && config.roster.discovery.timeout_secs > 0,
         "名册 TTL 与 HTTP 超时必须大于零"
     );
     let secrets = dir.join("secrets.toml");

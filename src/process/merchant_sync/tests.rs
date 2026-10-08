@@ -311,14 +311,18 @@ async fn mysql_sync_never_touches_or_deletes_merchants_upstream_did_not_return()
 
 /// 没东西可问就不调：商家域 `merchantIdList` 带 `@NotEmpty`，空列表会被拒；
 /// 账号域同理。空的那一侧上游一次都不该收到请求。
+///
+/// 群配置表里一个商家编号都没有则是**失败**：生产上这张表不会是空的，空了说明连错了库
+/// 或上游表被清空，得让 systemd 标成 failed，而不是以 0 退出悄悄过去。
 #[tokio::test]
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
 async fn mysql_sync_does_not_call_a_domain_it_has_nothing_to_ask() {
     let pool = fixture("merchant_sync_empty").await;
-    // 群配置表里一个商家编号都没有：服务发现里也没有任何实例，调了就是 Err。
+    // 服务发现里没有任何实例：调了上游也是 Err，所以靠错误文案区分是哪一步失败的。
     seed_rooms(&pool, &[None]).await;
     let none = Discovery::fixed(&[]);
-    run(&pool, &none, &nacos()).await.unwrap();
+    let error = run(&pool, &none, &nacos()).await.unwrap_err().to_string();
+    assert!(error.contains("群配置表里没有任何商家编号"), "{error}");
     assert!(table(&pool).await.is_empty());
 
     // 商家都没配经理：只问商家域，不问账号域。

@@ -378,7 +378,7 @@ journalctl -u chat2events-merchant-sync -f              # 看日志
 | `读群配置表的商家编号失败：…1142… SELECT command denied … for table 'b_wecom_merchant_group'` | 可写账号缺**上游群配置表**的 `SELECT`。跑批从不读这张表，这条授权不会因为跑批能跑就已经有了 |
 | 起不来，`解析失败 …/secrets.toml：详情已省略` | `secrets.toml` 的语法或**缺键**：多半是 `[roster]` 缺了 `username` / `password`（不需要鉴权也要写空串，不能省）。同 `deploy-webui.md` |
 | 起不来，`…/secrets.toml 权限过宽（…），执行：chmod 600 …` | 文件权限不是 0600，照提示改 |
-| 日志 `群配置表里没有商家编号，无需刷新`，退出码 0 | 不是失败，也没写任何行。群配置表里没有非空 `merchant_id`；首次部署看到它，先确认连的是不是对的库 |
+| `群配置表里没有任何商家编号：确认连的是不是对的库、上游表是否被清空` | 群配置表里没有一条非空 `merchant_id`，**按失败处理**、一行没写（生产上这张表不会是空的）。多半是 `[mysql]` 连错了库，其次是上游表被清空 |
 
 ---
 

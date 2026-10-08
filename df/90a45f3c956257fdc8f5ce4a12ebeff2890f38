@@ -1,0 +1,45 @@
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_50f3ec378fc8cc 132,134-135
+src/web/tests.rs
+  s_504c6032e731a8::t_ded9e4ee95a204 39,43,50,129,864,1458
+  s_504c6032e731a8::t_bd341f1099fe7d 32-34
+docs/architecture.md
+  s_504c6032e731a8::t_cb50a2108b0a8f 338
+CLAUDE.md
+  s_504c6032e731a8::t_cb50a2108b0a8f 57
+docs/database-conventions.md
+  s_504c6032e731a8::t_cb50a2108b0a8f 4,47,49
+src/process/merchant_sync/tests.rs
+  s_504c6032e731a8::t_4a40ea74a2376f 60
+  s_504c6032e731a8::t_5fca1e0897e1b3 67
+  s_504c6032e731a8::t_7e72f7dfb8fa85 78,171,173-174,186,358,420
+webui/src/domain/schemas.test.ts
+  s_504c6032e731a8::t_ded9e4ee95a204 24
+schema.sql
+  s_504c6032e731a8::t_cb50a2108b0a8f 8
+  s_504c6032e731a8::t_f40f34990d0457 277
+CONTEXT.md
+  s_504c6032e731a8::t_cb50a2108b0a8f 234
+  s_504c6032e731a8::t_9a43ddcb82b67c 63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "df90a45f3c956257fdc8f5ce4a12ebeff2890f38",
+  "prompts": {},
+  "humans": {
+    "h_d985390266d506": {
+      "author": "pis0sion <zihuang2010@126.com>"
+    }
+  },
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

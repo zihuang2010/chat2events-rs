@@ -1,0 +1,54 @@
+schema.sql
+  s_504c6032e731a8::t_a6bccad58337c6 8
+  s_504c6032e731a8::t_2d341198e0c04e 302
+  s_504c6032e731a8::t_590be4b8ac0fa8 277-278
+src/web/tests.rs
+  s_504c6032e731a8::t_40fe777399cbce 848
+CONTEXT.md
+  s_504c6032e731a8::t_a6bccad58337c6 234
+CLAUDE.md
+  s_504c6032e731a8::t_a6bccad58337c6 57
+  s_504c6032e731a8::t_681fceedb61afd 76
+docs/architecture.md
+  s_504c6032e731a8::t_a6bccad58337c6 338
+  s_504c6032e731a8::t_40fe777399cbce 382-384
+webui/README.md
+  s_504c6032e731a8::t_40fe777399cbce 116-117
+src/web/params.rs
+  s_504c6032e731a8::t_40fe777399cbce 256-264,266-267,367
+docs/deploy.md
+  s_504c6032e731a8::t_2d341198e0c04e 912
+src/web/cache.rs
+  s_504c6032e731a8::t_40fe777399cbce 54
+docs/database-conventions.md
+  s_504c6032e731a8::t_a6bccad58337c6 4,47,49,98-110
+  s_504c6032e731a8::t_7bfd1e66251ad3 18,29
+  s_504c6032e731a8::t_40fe777399cbce 41-42
+  s_504c6032e731a8::t_12c310ac553968 111
+src/stage/store/mod.rs
+  s_504c6032e731a8::t_bcc1e3cfffc7f9 60-61
+src/stage/store/sql.rs
+  s_504c6032e731a8::t_88a65079b33123 51
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_bcc1e3cfffc7f9 3-4,41
+webui/src/domain/metrics.ts
+  s_504c6032e731a8::t_40fe777399cbce 196-197
+src/lib.rs
+  s_504c6032e731a8::t_88a65079b33123 19,71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "167bf7ee33ddc7d4dd82558fb929ca2db9f89c0b",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

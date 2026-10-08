@@ -35,7 +35,13 @@ export function RoomInsightsDrawer({
       title={roomId ? `${analytics.roomLabel(roomId)} · 近 7 天指标` : "群聊指标"}
     >
       {roomId ? (
-        <RoomInsightsContent key={roomId} roomId={roomId} analytics={analytics} api={api} />
+        <>
+          <p className="ri-room-attribution">
+            商家分组：{analytics.roomMerchantGroup(roomId) ?? <span className="c2e-null">—</span>}
+            {" · "}业务经理：{analytics.roomManager(roomId) ?? <span className="c2e-null">—</span>}
+          </p>
+          <RoomInsightsContent key={roomId} roomId={roomId} analytics={analytics} api={api} />
+        </>
       ) : null}
     </Drawer>
   );

@@ -26,6 +26,9 @@
 //! - **商家域一批最多 1000、串行发。** 服务端上限就是 1000，超了整批报错；串行是不给上游压力
 //!   （一轮请求数 = 商家数 ÷ 1000 向上取整 ＋ 1）。**空集合不调**：商家域 `@NotEmpty`，空列表
 //!   会被拒。
+//! - **商家名称、经理姓名只有空白存 NULL，且按商家编号升序写。** 空白名等于没有名字，写入侧
+//!   清洗一次，工作台读侧不再兜底（只留这一处）；分组名不动，原样存上游的值。升序是为了两个
+//!   并发事务加锁顺序一致，不会死锁（`BTreeMap` 自带）。
 //! - **经理编号 0 当作没配经理。** 与 null 同待遇：不问账号域、编号和姓名都存 NULL。
 //! - **编号全程 `u64`。** 商家编号和经理编号都是上游的 `Long`，不经 `f64`。
 //! - **「值不变不推进 `gmt_modified_time`」靠 `ON UPDATE CURRENT_TIMESTAMP` 的同值不更新语义**，
@@ -46,7 +49,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
 use sqlx::MySqlPool;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     time::Duration,
 };
@@ -173,6 +176,12 @@ impl Upstream<'_> {
     }
 }
 
+/// 空白（trim 后为空）等于没有名字，存 NULL。名称与姓名都过这一道，工作台读侧不再兜底；
+/// 分组名不过 —— 原样存上游的值。
+fn non_blank(name: Option<String>) -> Option<String> {
+    name.filter(|n| !n.trim().is_empty())
+}
+
 /// 刷新一轮。任何一步失败都返回 `Err`、表一个字节不动。
 pub async fn run(
     pool: &MySqlPool,
@@ -200,7 +209,8 @@ pub async fn run(
         discovery,
     };
     let batches = ids.len().div_ceil(MERCHANT_BATCH);
-    let mut found: HashMap<u64, MerchantSummary> = HashMap::new();
+    // `BTreeMap`：之后按商家编号升序 upsert，两个并发事务加锁顺序一致才不会死锁。
+    let mut found: BTreeMap<u64, MerchantSummary> = BTreeMap::new();
     for (i, batch) in ids.chunks(MERCHANT_BATCH).enumerate() {
         let what = format!(
             "商家域 `{}` 第 {}/{batches} 批（{} 个编号）",
@@ -262,10 +272,12 @@ pub async fn run(
             let manager_id = s.manager_id.filter(|id| *id != 0);
             Row {
                 merchant_id,
-                name: s.merchant_name,
+                name: non_blank(s.merchant_name),
                 group: s.merchant_group_config_name,
                 manager_id,
-                manager_name: manager_id.and_then(|id| names.get(&id).cloned().flatten()),
+                manager_name: non_blank(
+                    manager_id.and_then(|id| names.get(&id).cloned().flatten()),
+                ),
             }
         })
         .collect();

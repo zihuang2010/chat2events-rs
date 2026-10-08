@@ -47,7 +47,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
          INSERT INTO b_merchant_group_merchant_summary \
          (merchant_id,merchant_name,merchant_group_config_name,business_manager_id,business_manager_name) VALUES \
          (18446744073709551615,'极限商家','华东组',9007199254740993,'李经理'), \
-         (5,'  ','未分组',NULL,NULL); \
+         (5,NULL,'未分组',NULL,NULL); \
          INSERT INTO b_merchant_group_event \
          (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary,last_msg_role,event_type,taxonomy_version,source_messages) \
          VALUES ('C','R',JSON_ARRAY('m1','m2'),'2026-08-25 23:55:00','2026-08-26 00:05:00','2026-08-26 00:05:00','2026-08-25', \
@@ -651,7 +651,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     }
     // **关联了商家但摘要表里没有它**（还没刷新过 / 上游一直没返回）—— `merchant_id` 在、
     // 商家名为 null，与上面「压根没关联」可区分，前端据此回落显示商家编号。
-    // 商家名只有空白也一样当没有名字（旧名册路径就是这么处置的）；摘要里别的列照常带出。
+    // 商家名为 NULL 也一样当没有名字（刷新进程写入时已把空白名存成 NULL）；摘要里别的列照常带出。
     let room = |id: &str| {
         uncertain["meta"]["rooms"]
             .as_array()

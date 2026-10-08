@@ -290,10 +290,10 @@ CREATE TABLE b_merchant_group_run_failure (
 CREATE TABLE b_merchant_group_merchant_summary (
     id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID。upsert写入，id稳定',
     merchant_id                BIGINT UNSIGNED NOT NULL COMMENT '商家编号，与群配置表b_wecom_merchant_group.merchant_id对得上',
-    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字',
+    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字，只有空白也存NULL',
     merchant_group_config_name VARCHAR(255)    NULL     COMMENT '商家分组名称，原样存商家域的值。字面量「未分组」是上游自己补的，表示商家没配分组或分组已被删除，它是一个普通取值不是NULL，自然形成一个桶。分组按名字识别：改名拆桶、重名合桶',
     business_manager_id        BIGINT UNSIGNED NULL     COMMENT '业务经理编号=账号域人员主键（与easyUserId/officialUserId都不可互换）。NULL=商家没配经理（上游为空或0）。与business_manager_name配合区分两种NULL',
-    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名',
+    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名（只有空白也算）',
     gmt_created_time           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间。只在值真的变了才推进，工作台缓存数据戳用它',
     PRIMARY KEY (id),

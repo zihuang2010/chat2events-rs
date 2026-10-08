@@ -184,9 +184,8 @@ pub(super) async fn read_filters(
 ) -> Result<(Vec<Room>, Vec<(String, Option<String>)>), WebError> {
     // 历史群仍读取已删除配置；商家 ID 与经理编号转字符串，避免前端丢失 BIGINT 精度。
     //
-    // 商家摘要表同样**不按任何状态过滤**：上游已删除的商家，摘要表里保留着最后一次已知的值
-    // （`merchant_sync` 只 upsert、永不删行），历史群照样显示它。
-    // 商家名只有空白等于没有名字（`NULLIF(TRIM)`），回落显示商家编号 —— 旧名册路径就这么处置。
+    // 商家摘要表同样不按任何状态过滤（理由见 `params::Filters` 的字段文档）：
+    // 摘要表里保留着上游已删除商家最后一次已知的值，历史群照样显示它。
     //
     // ⚠️ **失败那一支按 `window_since/window_until` 收敛，不是 `run_date`。**
     // `run_date` 是**跑批日**，`since/until` 是**数据日** —— T+2 之下跑批日恒比任何
@@ -200,7 +199,7 @@ pub(super) async fn read_filters(
     let (sql, binds) = Scope::new()
         .push(
             "SELECT r.roomid, NULLIF(g.group_name, ''), CAST(g.merchant_id AS CHAR), \
-             NULLIF(TRIM(s.merchant_name), ''), s.merchant_group_config_name, \
+             s.merchant_name, s.merchant_group_config_name, \
              CAST(s.business_manager_id AS CHAR), s.business_manager_name FROM (\
              SELECT DISTINCT roomid FROM b_merchant_group_metric_daily \
              WHERE corpid = ? AND dt BETWEEN ? AND ? \

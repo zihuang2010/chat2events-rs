@@ -1,0 +1,23 @@
+src/web/query.rs
+  s_504c6032e731a8::t_ffb75f75194f60 160,165-194,219-222
+src/web/tests.rs
+  s_504c6032e731a8::t_f3366a8aa213be 1016-1025,1029-1037,1047-1051,1060
+src/web/serve.rs
+  s_504c6032e731a8::t_ffb75f75194f60 141-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aa273ebd08c711dbb8362c17c57b950d20f19d10",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

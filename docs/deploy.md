@@ -464,8 +464,9 @@ ALTER TABLE b_merchant_group_run_failure
 ### 只读工作台响应缓存
 
 白天的查询走内存缓存（`src/web/cache.rs`），失效靠库里的「数据戳」：每个请求先读
-四张表各自的最后一次写，戳变了整个缓存作废；戳距现在不足 60 秒视作跑批还在写，只查不存。
-跑批不需要知道缓存存在。戳查询要走索引，已有库补这两条（新库直接用 `schema.sql`）：
+五张表各自的最后一次写，戳变了整个缓存作废；戳距现在不足 60 秒视作跑批还在写，只查不存。
+跑批不需要知道缓存存在。商家摘要表 `b_merchant_group_merchant_summary` 也在戳里 ——
+`merchant_sync` 白天写完它，工作台不用重启，下一次请求就看到新值（它的 `idx_modified` 随建表语句自带）。戳查询要走索引，已有库补这两条（新库直接用 `schema.sql`）：
 
 ```sql
 ALTER TABLE b_merchant_group_event ADD KEY idx_modified (gmt_modified_time);

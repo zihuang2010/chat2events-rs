@@ -31,6 +31,11 @@ fn config(base: &str) -> NacosConfig {
     }
 }
 
+/// 刷新进程要解析的两个服务，商家域在前。
+fn both() -> Vec<String> {
+    vec![MERCHANT.to_owned(), EMPLOYEE.to_owned()]
+}
+
 fn secrets() -> NacosSecrets {
     NacosSecrets {
         username: "nacos".into(),
@@ -109,7 +114,9 @@ async fn login_shape_token_as_query_parameter_and_only_healthy_instances() {
             {"ip": "10.0.0.3", "port": 9090, "healthy": true},
         ])),
     ]);
-    let discovery = Discovery::start(&config(&base), &secrets()).await.unwrap();
+    let discovery = Discovery::start(&config(&base), &secrets(), both())
+        .await
+        .unwrap();
     assert_eq!(discovery.pick(MERCHANT).unwrap(), "http://10.0.0.1:8080");
     // 不健康那台必须一次都选不到 —— 随机选也不能选到它。
     assert_eq!(discovery.pick(EMPLOYEE).unwrap(), "http://10.0.0.3:9090");
@@ -131,6 +138,23 @@ async fn login_shape_token_as_query_parameter_and_only_healthy_instances() {
     assert!(requests[2].0.contains(&format!("serviceName={EMPLOYEE}")));
 }
 
+/// 解析哪些服务由调用方决定：只要求账号域就**只**问账号域 —— 商家域抖动不该拖垮
+/// 不用它的进程（工作台）启动。脚本里只有一次实例查询，多问一次假 Nacos 会当场 panic。
+#[tokio::test]
+async fn startup_resolves_only_the_services_it_is_asked_for() {
+    let healthy = json!([{"ip": "10.0.0.1", "port": 8080, "healthy": true}]);
+    let (base, server) = scripted(vec![login(18000, "tok"), hosts(healthy)]);
+    let discovery = Discovery::start(&config(&base), &secrets(), vec![EMPLOYEE.to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(discovery.pick(EMPLOYEE).unwrap(), "http://10.0.0.1:8080");
+    assert!(discovery.pick(MERCHANT).is_none());
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "登录一次 + 账号域一次：{requests:?}");
+    assert!(requests[1].0.contains(&format!("serviceName={EMPLOYEE}")));
+}
+
 /// 协议：服务端没开鉴权时 `[roster].username` 留空 ⇒ **一次登录都不发**，
 /// 实例查询里也没有 `accessToken` 参数。脚本里没有 `LOGIN` 这一条，
 /// 真发了登录请求假 Nacos 会当场 panic。
@@ -142,7 +166,9 @@ async fn an_unauthenticated_nacos_skips_login_and_the_token_parameter() {
         username: String::new(),
         password: String::new(),
     };
-    Discovery::start(&config(&base), &anonymous).await.unwrap();
+    Discovery::start(&config(&base), &anonymous, both())
+        .await
+        .unwrap();
 
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2, "只该有两次实例查询：{requests:?}");
@@ -191,7 +217,7 @@ async fn an_expiring_token_is_renewed_before_the_next_lookup() {
 #[tokio::test]
 async fn an_unknown_service_name_fails_startup_with_a_locatable_error() {
     let (base, server) = scripted(vec![login(18000, "tok"), hosts(json!([]))]);
-    let error = Discovery::start(&config(&base), &secrets())
+    let error = Discovery::start(&config(&base), &secrets(), both())
         .await
         .err()
         .expect("解析不到实例必须启动失败")

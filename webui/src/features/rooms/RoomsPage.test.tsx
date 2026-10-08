@@ -121,7 +121,7 @@ it("shows_merchant_name_and_falls_back_to_merchant_id", async () => {
     return view;
   };
 
-  // ① 名册给出了店铺名 —— 群名下面挂商家名。
+  // ① 商家摘要表里有店铺名 —— 群名下面挂商家名。
   const resolved = await show(
     withMerchant({
       merchant_id: "42",
@@ -132,7 +132,7 @@ it("shows_merchant_name_and_falls_back_to_merchant_id", async () => {
   expect(resolved.container.querySelector(".ra-room-merchant")).toHaveTextContent("甲商家");
   resolved.unmount();
 
-  // ② 关联了商家但名册查不到 —— 回落显示商家 ID，**不是空白**。
+  // ② 关联了商家但表里没有名字 —— 回落显示商家 ID，**不是空白**。
   const unresolved = await show(
     withMerchant({ merchant_id: "42", merchant_name: null, merchant_name_is_authoritative: false }),
   );

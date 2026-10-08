@@ -105,7 +105,29 @@ struct MerchantSummary {
     merchant_name: Option<String>,
     /// 没配分组或分组已删时，上游自己补字面量「未分组」；原样存，不翻译成 NULL。
     merchant_group_config_name: Option<String>,
+    /// ⚠️ 上游会把它下发成**字符串**（线上实测 `"1638016126178816000"`，超过 2^53，
+    /// Java 侧为防 JS 丢精度把 `Long` 序列化成字符串）。是全部 `Long` 都转、还是只转大数
+    /// 没有权威答案，所以数字和字符串都接。
+    #[serde(default, deserialize_with = "long_id")]
     manager_id: Option<u64>,
+}
+
+/// 上游的 `Long` 编号：JSON 数字或十进制字符串都解成 `u64`，别的形状照样报错。
+fn long_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Long {
+        Num(u64),
+        Str(String),
+    }
+    Option::<Long>::deserialize(d)?
+        .map(|id| match id {
+            Long::Num(n) => Ok(n),
+            Long::Str(s) => s
+                .parse()
+                .map_err(|e| serde::de::Error::custom(format!("编号 {s:?} 不是 u64：{e}"))),
+        })
+        .transpose()
 }
 
 /// 要写进表的一行。

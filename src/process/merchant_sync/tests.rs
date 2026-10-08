@@ -55,6 +55,30 @@ fn merchant_sync_startup_needs_only_database_log_and_nacos() {
     assert!(std::panic::catch_unwind(|| load_from_dir(&dir)).is_err());
 }
 
+/// 商家域把 `managerId` 下发成字符串（线上实测，超过 2^53）—— 数字、字符串、null、缺键都得接住，
+/// 不是数字也不是十进制字符串的照样报错。
+#[test]
+fn manager_id_accepts_number_or_string() {
+    let parse = |manager: Value| {
+        serde_json::from_value::<HashMap<u64, MerchantSummary>>(
+            json!({ "1": { "managerId": manager } }),
+        )
+        .map(|m| m[&1].manager_id)
+    };
+    assert_eq!(
+        parse(json!("1638016126178816000")).unwrap(),
+        Some(1638016126178816000)
+    );
+    assert_eq!(parse(json!(u64::MAX.to_string())).unwrap(), Some(u64::MAX));
+    assert_eq!(parse(json!(7)).unwrap(), Some(7));
+    assert_eq!(parse(Value::Null).unwrap(), None);
+    let missing: HashMap<u64, MerchantSummary> =
+        serde_json::from_value(json!({ "1": { "merchantName": "店一" } })).unwrap();
+    assert_eq!(missing[&1].manager_id, None);
+    assert!(parse(json!("abc")).is_err());
+    assert!(parse(json!(1.5)).is_err());
+}
+
 /// 建库并造一张模拟的群配置表。
 ///
 /// `merchant_id` 照上游 DDL 是 `BIGINT UNSIGNED`（2026-10-07 核实）。
@@ -94,9 +118,10 @@ async fn seed_rooms(pool: &MySqlPool, merchants: &[Option<u64>]) {
 }
 
 /// 商家域 `getMap` 里一个商家的摘要。带 `merchantStatus`：它在契约里存在，但我们不用。
+/// `managerId` 照线上实测下发成**字符串**（数字形状由 `manager_id_accepts_number_or_string` 钉住）。
 fn summary(name: &str, group: &str, manager: Option<u64>) -> Value {
     json!({"merchantName": name, "merchantGroupConfigName": group,
-           "managerId": manager, "merchantStatus": 1})
+           "managerId": manager.map(|m| m.to_string()), "merchantStatus": 1})
 }
 
 fn ok(data: Value) -> Value {

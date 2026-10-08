@@ -53,7 +53,8 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
         days,
         dayset,
         labelOf: agentLabel,
-        // 事件已按摘要、群与客服统一下推筛选，不能再把关键词缩窄为仅姓名。
+        // 关键词只匹配摘要，已随 analytics.q 下推给后端；群聊与客服各自走自己的下拉参数。
+        // 这里不能再拿关键词去缩窄客服姓名。
         query: "",
       }).filter((row) => !filters.agent || row.key === filters.agent),
     [aggs.data, dataset, days, dayset, agentLabel, filters.agent],

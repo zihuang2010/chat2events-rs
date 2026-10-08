@@ -182,7 +182,7 @@ it("shows_authoritative_room_name_without_placeholder_badge", async () => {
   expect(screen.queryByText("别名 待补")).not.toBeInTheDocument();
 });
 
-it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
+it.each(["all", "room", "partial", "missing", "zero"] as const)(
   "summarizes_messages_for_visible_rooms_%s",
   async (scope) => {
     const cell = dataset.groupDaily[0]!;
@@ -209,7 +209,6 @@ it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
     };
     const search = new URLSearchParams({ from: cell.dt, to: cell.dt });
     if (scope === "room") search.set("room", room.roomid);
-    if (scope === "query") search.set("q", room.roomid);
     const view = render(
       <MemoryRouter initialEntries={[`/rooms?${search}`]}>
         <Providers>
@@ -224,7 +223,7 @@ it.each(["all", "room", "query", "partial", "missing", "zero"] as const)(
     const expected =
       scope === "missing" ? "—" : scope === "zero" ? "0" : scope === "all" ? "40" : "17";
     expect(summary).toHaveTextContent(`消息总量 ${expected} 条`);
-    const roomCount = scope === "room" || scope === "query" ? 1 : 2;
+    const roomCount = scope === "room" ? 1 : 2;
     expect(summary).toHaveTextContent(`${roomCount} 个群`);
     expect(summary).toHaveTextContent(/活跃群.*消息总量.*事件量/);
     expect(summary).toHaveTextContent(`活跃群 ${scope === "missing" ? "—" : "0"} 个`);
@@ -272,6 +271,31 @@ it("选择一个群后只显示该群指标", async () => {
   await settle(view);
   expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent(room.alias!);
+});
+
+it("关键词只看事件摘要：只命中群名的群不再出现，只保留有命中事件的群", async () => {
+  const [a, b, c] = dataset.meta.rooms as [RoomOption, RoomOption, RoomOption];
+  const eventOf = (roomid: string, summary: string) => ({
+    ...dataset.events.find((event) => event.roomid === roomid)!,
+    summary,
+  });
+  const data: TestDataset = {
+    ...dataset,
+    meta: { ...dataset.meta, rooms: [a, b, { ...c, alias: "退款专线群" }] },
+    events: [eventOf(a.roomid, "客户申请退款"), eventOf(b.roomid, "催促发货")],
+  };
+  const view = render(
+    <MemoryRouter initialEntries={["/rooms?q=退款"]}>
+      <Providers>
+        <Workbench>
+          <Harness data={data} />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  await settle(view);
+  const labels = [...view.container.querySelectorAll(".ra-room-link")].map((el) => el.textContent);
+  expect(labels).toEqual([a.alias]);
 });
 
 type RoomOption = TestDataset["meta"]["rooms"][number];

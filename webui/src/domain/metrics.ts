@@ -351,7 +351,8 @@ export function roomRollup(params: {
     const cells = cellsByRoom.get(r.roomid) ?? [];
     const agg = aggByRoom.get(r.roomid);
     const label = labelOf(r.roomid);
-    if (query && !`${label} ${r.roomid}`.toLowerCase().includes(query) && !agg) continue;
+    // 关键词只匹配事件摘要（后端已把它下推给聚合）：有关键词时，没有命中事件的群不显示。
+    if (query && !agg) continue;
 
     const cov = coverage(cells, dayset, r.roomid, [r]);
     const allFailed = cov.known === 0;

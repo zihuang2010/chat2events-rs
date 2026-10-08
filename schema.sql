@@ -5,7 +5,7 @@
 -- 不用 CREATE TABLE IF NOT EXISTS —— 它会掩盖「表结构变了但没迁移」。
 -- 不引 ORM、不引 migration 框架：跑批进程只读写数据，不碰 DDL。
 --
--- 遵循公司《数据库规范》，本仓库适用条款与**四条已取下的例外**见
+-- 遵循公司《数据库规范》，本仓库适用条款与**五条已取下的例外**见
 -- docs/database-conventions.md。要求 MySQL 8.0+。
 --
 -- **InnoDB 是承重的**（承重不变量 2）：一个群一次运行的 N 个分片必须在同一个事务里。
@@ -274,6 +274,8 @@ CREATE TABLE b_merchant_group_run_failure (
 -- ⚠️ **分组按名字识别。** 上游 getMap 不返回分组编号：分组改名会拆成两个桶，两个分组重名会合成一个桶。
 -- ⚠️ **只 upsert，永不删行。** 上游没返回的商家（已删除 / 查不到）保留最后一次已知的值，
 --    所以这里的商家比上游现存的商家多是正常的。值没变的行 gmt_modified_time 不动。
+-- ⚠️ **merchant_id 是 UNSIGNED，上游群配置表的同名列很可能是有符号 BIGINT**（无 DDL，待核实），
+--    join 类型可能不一致，已知并接受，见 docs/database-conventions.md 例外 E。
 --
 -- BI 关联路径（3 表）：群日指标 b_merchant_group_metric_daily（corpid, roomid）
 --     → 群配置表 b_wecom_merchant_group（corp_id, official_room_id → merchant_id）
@@ -297,4 +299,4 @@ CREATE TABLE b_merchant_group_merchant_summary (
     PRIMARY KEY (id),
     UNIQUE KEY uk_merchant (merchant_id) COMMENT '语义键：一个商家一行，upsert靠它触发冲突',
     KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time)走索引尾读'
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶';
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶。分组值「未分组」由商家域自己补（商家没配分组或分组已被删除），是普通取值不是NULL，自然形成一个桶';

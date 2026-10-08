@@ -54,7 +54,7 @@
 | `docs/invariants.md` | **八条承重不变量全文 —— 动它们之前必读** |
 | `CONTEXT.md` | 术语 · 业务场景 · 上游数据形状 · 领域类型契约 · 词表生命周期 |
 | `docs/architecture.md` | 七模块各自内部 · 端口上什么不许出门 · MySQL 表键的理由 · webUI |
-| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与四条已取下的例外 |
+| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与五条已取下的例外 |
 | `docs/deploy.md` | 构建 · 部署 · 目标机约束 |
 | `docs/deploy-webui.md` | 只读工作台在 39.98.175.5:30001 的 runbook（nginx · systemd · 验证） |
 
@@ -73,7 +73,7 @@
 5. **客服分类指标整群发布**：本群打标全部成功后才写新指标；事实重写时清除旧分类指标。聚合同时检查抽取、打标状态，未完成不是 0。
 6. **溯源**：`source_msg_ids` 非空且每个 ID 真实存在。**模型根本不接触 `msg_id`** —— prompt 里是段内 1-based 序号，代码映射回去，越界即校验失败。
 7. **正文脱敏**：给模型的正文必须过 `_body`。三件事同时：PII 出境 · 正文冒充行框架（**不变量 6 的绕过路径**）· 顺序依赖。**只掩锚点确定的东西**，姓名和自由文本地址一概不碰。
-8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。
+8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。业务经理编号（商家摘要表）是第四种 ID —— 账号域人员主键，与 `easyUserId` / `officialUserId` 不可互换。
 
 ## 硬规则
 

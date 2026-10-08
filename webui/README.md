@@ -113,8 +113,8 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 |---|---|
 | `from` / `to` | 日期窗口，不给用默认七天 |
 | `room` / `agent` | 群号 / 客服 easyUserId |
-| `merchant_group_config_name` | 商家分组名称，**精确匹配**上游字面值（「未分组」就是一个值，不等于 NULL）。SQL 是 `roomid IN (群配置表 ⋈ 商家摘要表)`，只缩小群范围、指标口径不变；查不到分组的群选了它不入选 |
-| `business_manager_id` | 业务经理编号（人员主键，BIGINT，前端一直当字符串传）。同上，可与分组、群聊同时给，取交集 |
+| `merchant_group_config_name` | 商家分组名称。匹配语义以 `src/web/params.rs` 里 `Filters` 的字段文档为准 |
+| `business_manager_id` | 业务经理编号（人员主键，BIGINT，前端一直当字符串传）。语义同上，可与分组、群聊同时给，取交集 |
 | `types` | 逗号分隔的 `event_type`。**父类由前端展开成子类集合再传** —— 词表在前端手上，后端不再 join 一次 |
 | `status` | `unreplied` / `replied` / `push` / `backlog`，与前端 `StatusFilter` 同名 |
 | `overdue_only` | `true` / `false`，非法值 400 不静默当假 |

@@ -1,7 +1,7 @@
 # 数据库规范 —— 本仓库适用部分
 
 上游是公司统一的《数据库规范》（根目录 `数据库规范.md`，覆盖全部应用）。
-这份文档只抽出**本仓库真正受约束的条款**，外加**四条已经取下的例外及其理由**。
+这份文档只抽出**本仓库真正受约束的条款**，外加**五条已经取下的例外及其理由**。
 
 改 `schema.sql` 之前读这里；上游规范改版时回去比对一遍。
 
@@ -15,7 +15,7 @@
 | # | 约束 | 本仓库怎么落 |
 |---|---|---|
 | 1 | MySQL **8.0+** | InnoDB + `utf8mb4`，承重不变量 2 依赖事务 |
-| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 六张表全部显式写出，不靠库级默认 |
+| 2 | 建表统一 **`CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci`** | 七张表全部显式写出，不靠库级默认 |
 | 3 | 表名 / 字段名**全小写**，不以数字开头，两个下划线之间不只有数字 | ✓ |
 | 4 | **表前缀 `b_`**（公共基础应用 `basic-public-app`） | `b_merchant_group_event` · `b_merchant_group_metric_daily` · `b_merchant_group_agent_metric_daily` · `b_merchant_group_agent_msg_daily` · `b_merchant_group_taxonomy` · `b_merchant_group_run_failure` · `b_merchant_group_merchant_summary` |
 | 5 | 非负整数必须 **`UNSIGNED`** | 自增 id、全部 `*_count`、`first_reply_p*_sec` |
@@ -26,7 +26,7 @@
 | 10 | 禁用保留字；**状态/类型字段不得裸用 `type` / `status`** | `type` → **`event_type`**；`extraction_status` 本来就带前缀 |
 | 11 | 时间字段以**业务类型 + `_time`** 结尾 | `first_msg_at` → `first_msg_time`，`last_msg_at` → `last_msg_time`，`first_agent_reply_at` → `first_agent_reply_time` |
 | 12 | 索引命名 **`uk_` / `idx_`** | `uk_group_daily` · `idx_shard` · `idx_agent` … |
-| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 六张表全加（见下方例外 A：`is_deleted` 不加） |
+| 13 | 必须字段 **`id` / `gmt_created_time` / `gmt_modified_time`** | 七张表全加（见下方例外 A：`is_deleted` 不加） |
 
 ### 落到代码里的 SQL 写法（受同一份规范管）
 
@@ -38,17 +38,15 @@
   `b_merchant_group_agent_metric_daily` join `b_merchant_group_metric_daily` 查 `extraction_status`（承重不变量 5），双表。
   ⚠️ 「处理量 ＋ 消息量 ＋ 抽取是否完整」要三张表（再加 `b_merchant_group_agent_msg_daily`），
   **正好踩在上限上**，之后再加维度就没余量了。这是把消息量单独成表买的单，已知且接受。
-  ⚠️ **按业务经理 / 商家分组看客服维度要 4 张表**：客服日指标 → 群日指标 → 群配置表
-  `b_wecom_merchant_group` → 商家摘要表 `b_merchant_group_merchant_summary`，**超出上限，已知并接受**
-  （群级指标只要 3 张：去掉客服日指标）。商家摘要表只能经群配置表的 `merchant_id` 关联到群，
-  上游没有更短的路。BI 评审时以此为据，表注释里也写了同一句。
+  ⚠️ 商家摘要表 `b_merchant_group_merchant_summary` 的 BI 关联路径，以及由此带来的超限
+  （客服维度要 4 张表）及其理由，见 `schema.sql` 里该表的表注释，这里不重复。
 - 数据订正（删除 / 修改）前先 `SELECT` 确认。
 
 ---
 
-## 四条已经取下的例外
+## 五条已经取下的例外
 
-规范里这四条与本仓库的承重语义冲突，**是有意不遵守的，不是漏了**。谁要改回去，先读完理由。
+规范里这五条（A–D 与本仓库的承重语义冲突，E 是上游表带来的类型差异）**是有意不遵守的，不是漏了**。谁要改回去，先读完理由。
 
 ### A. 不加 `is_deleted` / `deleted_time`
 
@@ -96,6 +94,20 @@
 规范要求主键索引名为 `pk_字段名`。**MySQL 的聚簇主键索引名恒为 `PRIMARY`，无法命名**——
 `CREATE TABLE ... PRIMARY KEY` 不接受索引名。这条在 MySQL 上不可执行，不是选择。
 唯一索引和普通索引的 `uk_` / `idx_` 前缀照做。
+
+### E. 商家摘要表的 `merchant_id` 与上游群配置表的 join 类型可能不一致
+
+规范要求 join 字段类型绝对一致（见上面「落到代码里的 SQL 写法」）。
+`b_merchant_group_merchant_summary.merchant_id` 按第 5 条建成 `BIGINT UNSIGNED`；
+而上游群配置表 `b_wecom_merchant_group.merchant_id` **本仓库没有它的 DDL**，对应实体是
+Java `Long`，大概率是**有符号** `BIGINT`。BI 经 `群配置表 → 商家摘要表` 关联时两边符号不同。
+
+**已知并接受，待核实上游 DDL。** 保持新表 `UNSIGNED` 是因为商家编号是非负数、
+刷新进程全程用 `u64` 不丢精度，不为一个未经核实的上游类型把本表改成有符号。
+本仓库的读侧不依赖两边类型一致：刷新进程读群配置表时 `CAST(merchant_id AS UNSIGNED)`
+（sqlx 解 `u64` 要求列带 `UNSIGNED` 标志，直接读会在生产报类型不匹配），工作台给前端的
+编号一律 `CAST(... AS CHAR)`（`BIGINT` 超出 JS 安全整数）。核实后若上游确为有符号，
+BI 侧写 join 时自行 `CAST`，本表不必动。
 
 ---
 

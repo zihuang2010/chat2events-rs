@@ -57,7 +57,8 @@ pub use read::{
 };
 pub use schema::{check_schema, refresh_statistics};
 pub use sql::Shard;
-// 表名给 `web/cache.rs` 的数据戳查询用 —— 理由见 `sql.rs` 那几个常量的文档注释。
+// 表名给 crate 内的几处引用方用（`web/cache.rs` 的数据戳 · `web/params.rs` 的筛选子查询 ·
+// `process/merchant_sync.rs` 的写表）—— 理由见 `sql.rs` 那几个常量的文档注释。
 pub(crate) use sql::{T_EVENT, T_FAILURE, T_GROUP, T_MERCHANT_SUMMARY, T_TAXONOMY};
 
 #[cfg(test)]

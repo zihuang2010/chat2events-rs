@@ -909,7 +909,7 @@ CREATE TABLE b_merchant_group_merchant_summary (
     PRIMARY KEY (id),
     UNIQUE KEY uk_merchant (merchant_id) COMMENT '语义键：一个商家一行，upsert靠它触发冲突',
     KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time)走索引尾读'
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶';
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶。分组值「未分组」由商家域自己补（商家没配分组或分组已被删除），是普通取值不是NULL，自然形成一个桶';
 ```
 
 ⚠️ **这张表不进 `store::check_schema`** —— 跑批不读它，缺表不影响跑批，所以跟「冻结区重写记录表」

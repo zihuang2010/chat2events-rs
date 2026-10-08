@@ -335,7 +335,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 
 类型由人命名并给出描述；`description` 必填，因为它与名称共同决定模型选择标签的含义。
 
-**建表**：一个手写的 `schema.sql`，人工执行一次。字段类型 / 命名 / 必须字段遵循公司《数据库规范》，适用条款与四条已取下的例外见 `database-conventions.md`。不用 `CREATE TABLE IF NOT EXISTS`（会掩盖"表结构变了但没迁移"）。**不引入 ORM 和 migration 框架。** 跑批进程只读写数据，不碰 DDL。
+**建表**：一个手写的 `schema.sql`，人工执行一次。字段类型 / 命名 / 必须字段遵循公司《数据库规范》，适用条款与五条已取下的例外见 `database-conventions.md`。不用 `CREATE TABLE IF NOT EXISTS`（会掩盖"表结构变了但没迁移"）。**不引入 ORM 和 migration 框架。** 跑批进程只读写数据，不碰 DDL。
 
 **原始 ndjson 行不入 MySQL；来源消息的渲染快照入。** 抽取时 `assemble` 把每条来源消息的
 `msg_id / at / sender_id / sender_role / text` 写进 `b_merchant_group_event.source_messages`
@@ -379,10 +379,9 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 不再调商家域（BI 要按这些维度出报表、工作台要按它们筛选，进程内缓存的名字两样都做不了）。
 **「商家分组」「业务经理」两个筛选只缩小群范围，指标算法一点没变**：`Filters::clause` 多产一段
 `e.roomid IN (SELECT … 群配置表 ⋈ 商家摘要表 WHERE corp_id = ? AND 分组 = ? AND 经理 = ?)`
-（两个条件各自可选，企业只绑一次；文本与绑定值照旧在 `scope` 里成对产出）。**精确匹配，
-查不到分组 / 经理（没关联商家 · 商家还没同步 · 没配经理）的群选了它就不入选**；「未分组」是上游字面值，
-不等于 NULL。子查询不过滤 `is_deleted` / `group_status`，已解散的群与上游已删除的商家在有数据的
-日期范围里照常能被筛到。经理编号是 BIGINT，走 `Bind::Num`，不拿字符串去比。
+（两个条件各自可选，企业只绑一次；文本与绑定值照旧在 `scope` 里成对产出）。
+匹配语义（精确匹配 · NULL 不入选 · 不滤状态）以 `web/params.rs` 里 `Filters` 的字段文档为准。
+经理编号是 BIGINT，走 `Bind::Num`，不拿字符串去比。
 前端有几块是在浏览器里按群过滤的（覆盖度 · 群消息量 · 群列表 · 概览群表），它们共用
 `useAnalytics` 算出的 `visibleRooms`（群聊 ＋ 商家分组 ＋ 业务经理三项一起），
 与聚合接口收到的是同一条件；下拉选项由 `meta.rooms` 去重得出，所以天然只含当前日期范围内的群。

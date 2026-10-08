@@ -845,7 +845,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     settle().await;
     // 失败表只增不改，戳里是 MAX(id) —— 它也让缓存作废；距最后一次 gmt 写仍超过 60 秒，所以是 MISS 不是 BYPASS
     assert_eq!(header(&http.get(&url).send().await.unwrap()), "MISS");
-    // 商家摘要表由 merchant_sync 在白天（12:10 / 22:10）写 —— 它写完，工作台**不用重启**，
+    // 商家摘要表由 merchant_sync 在白天写（时刻见 docs/deploy.md）—— 它写完，工作台**不用重启**，
     // 下一次请求就该看到新值。先让群选项装进缓存，再改一个商家名：
     // 戳里有这张表，旧响应作废；它的写入也算「最后一次写」，太新所以只查不存（BYPASS）。
     let merchant_name_of_r = |v: &Value| {

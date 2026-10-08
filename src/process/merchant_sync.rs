@@ -1,7 +1,7 @@
 //! 商家摘要刷新 —— 把商家名称 / 商家分组 / 业务经理落进 `b_merchant_group_merchant_summary`，
 //! 给 BI 直连和只读工作台用。由 systemd timer 定时拉起（`src/bin/merchant_sync.rs`），
-//! **跑完即退出**。它**不是七阶段的一环**：不碰任何阶段，**跑批不读这张表、不检查它在不在**
-//! （所以它不进 `store::check_schema`）—— 这边刷新失败永远影响不到跑批。
+//! **跑完即退出**。它**不是七阶段的一环**：不调用任何阶段的处理逻辑，只借 `stage::store` 的表名常量；
+//! **跑批不读这张表、不检查它在不在**（所以它不进 `store::check_schema`）—— 这边刷新失败永远影响不到跑批。
 //!
 //! # 链路
 //!
@@ -38,7 +38,7 @@
 
 use crate::config::{LogConfig, MysqlConfig, MysqlSecrets, load, require_owner_only};
 use crate::nacos::{Discovery, NacosConfig, NacosSecrets};
-// 只借表名常量（让数据戳读到同一个名字），不碰任何阶段。
+// 只借表名常量（让数据戳与筛选子查询读到同一个名字），不调用任何阶段的处理逻辑。
 use crate::stage::store::T_MERCHANT_SUMMARY;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;

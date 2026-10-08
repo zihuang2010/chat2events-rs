@@ -304,7 +304,6 @@ describe("概览的三块分布", () => {
       days: analytics.days,
       dayset: analytics.dayset,
       labelOf: analytics.agentLabel,
-      query: analytics.query,
     });
     expect(rows.length).toBeGreaterThan(0);
     for (const a of rows)

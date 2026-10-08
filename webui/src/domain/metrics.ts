@@ -454,9 +454,8 @@ export function agentRollup(params: {
   days: readonly string[];
   dayset: ReadonlySet<string>;
   labelOf: (agent: string) => string;
-  query: string;
 }): AgentRow[] {
-  const { aggs, groupDaily, days, dayset, labelOf, query } = params;
+  const { aggs, groupDaily, days, dayset, labelOf } = params;
   const cells = groupDaily.filter((row) => dayset.has(row.dt));
   const cellsByDay = groupBy(cells, (row) => row.dt);
   const failedByRoom = new Map<string, number>();
@@ -473,7 +472,6 @@ export function agentRollup(params: {
   const out: AgentRow[] = [];
   for (const agg of aggs) {
     const label = labelOf(agg.agent);
-    if (query && !`${label} ${agg.agent}`.toLowerCase().includes(query)) continue;
     // 只看这个人参与过的群 —— 理由见函数头。名单为空时没有判断依据，不留空。
     const unknownDays = new Set(
       days.filter((day) => {

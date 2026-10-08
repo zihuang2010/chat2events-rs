@@ -95,7 +95,6 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
     days,
     dayset: analytics.dayset,
     labelOf: analytics.agentLabel,
-    query: analytics.query,
   })
     .sort((a, b) => b.involved - a.involved)
     .slice(0, 10);

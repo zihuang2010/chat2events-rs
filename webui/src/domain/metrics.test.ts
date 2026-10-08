@@ -465,7 +465,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
     days,
     dayset: new Set(days),
     labelOf: (a) => a,
-    query: "",
   });
 
   /**
@@ -500,7 +499,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
         days,
         dayset: new Set(days),
         labelOf: (agent) => agent,
-        query: "",
       });
       // 这个人只在 R1 —— R2 好不好跟他的参与量没关系。
       expect(result[0]).toMatchObject({
@@ -539,7 +537,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
         days: twoDays,
         dayset: new Set(twoDays),
         labelOf: (agent) => agent,
-        query: "",
       });
       expect(result[0]).toMatchObject({
         roomIds: ["R1"],
@@ -582,7 +579,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
       days,
       dayset: new Set(days),
       labelOf: (agent) => agent,
-      query: "",
     });
     expect(result.find((row) => row.key === "a1")).toMatchObject({
       involved: 4,

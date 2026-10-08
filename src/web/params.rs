@@ -168,7 +168,8 @@ impl Paging {
         else {
             // 默认开始时间倒序（最新的排最前），事件 ID 倒序兜底保证键唯一。
             // ⚠️ 代价：不再与索引前缀 `(corpid, occurred_on, ...)` 同序，窗口内多一次排序；
-            // 手动点「开始时间」本来就是这个代价，默认七天窗口约 1.3 万行，可以接受。
+            // 手动点「开始时间」本来就是这个代价，默认七天窗口约 1.3 万行（出处：schema.sql
+            // `idx_overview` 注释，2026-09-19 实测 dev 库样本），可以接受。
             return Ok("e.first_msg_time DESC, e.id DESC".into());
         };
         let expr: &str = match key {

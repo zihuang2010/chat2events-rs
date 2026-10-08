@@ -273,7 +273,7 @@ it("选择一个群后只显示该群指标", async () => {
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent(room.alias!);
 });
 
-it("关键词只看事件摘要：只命中群名的群不再出现，只保留有命中事件的群", async () => {
+it("keyword_matches_only_event_summary_and_hides_rooms_without_matching_events", async () => {
   const [a, b, c] = dataset.meta.rooms as [RoomOption, RoomOption, RoomOption];
   const eventOf = (roomid: string, summary: string) => ({
     ...dataset.events.find((event) => event.roomid === roomid)!,

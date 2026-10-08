@@ -19,6 +19,7 @@ import {
   coverage,
   filterRooms,
   groupDayStatus,
+  managerLabels,
   type Coverage,
   type TaxonomyIndex,
 } from "@/domain/metrics";
@@ -134,9 +135,10 @@ export function useAnalytics(
     // 商家分组 / 业务经理来自筛选选项接口里每个群自带的元数据，表格与群详情抽屉共用。
     // 缺失统一回 null，由调用方画 `—`；不区分「没关联商家」「查不到」「没配经理」。
     const roomMerchantGroup = (id: string) => rooms.get(id)?.merchant_group_config_name || null;
+    const managers = managerLabels(dataset.meta.rooms);
     const roomManager = (id: string) => {
-      const room = rooms.get(id);
-      return room?.business_manager_name || room?.business_manager_id || null;
+      const managerId = rooms.get(id)?.business_manager_id;
+      return (managerId && managers.get(managerId)) || null;
     };
     const agentLabel = (id: string) => agents.get(id)?.alias ?? id;
     // 与 roomAliasIsAuthoritative 同形：per-项优先、回落全局。

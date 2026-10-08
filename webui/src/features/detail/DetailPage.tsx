@@ -16,7 +16,7 @@ import { useEventsPage, useSummary } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
 import { formatInt, formatPercent } from "@/lib/format";
-import { msgRollup } from "@/features/overview/overviewMetrics";
+import { msgMetric } from "@/features/overview/overviewMetrics";
 import { DataGap, DurationOrNull, NullValue, StatusTag } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import type { Analytics } from "@/features/filters/useAnalytics";
@@ -28,7 +28,6 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
   const { roomLabel, agentLabel, slaSec } = analytics;
   const { filters, patch, reset } = api;
   const source = analytics.dataset.source;
-  const messages = msgRollup(analytics);
   const summary = useSummary(source, analytics.q);
   // 翻页护栏与后端 `Paging::window` 同一组数：越界那边是 **400 不是截断**，先在这边拦住。
   // ⚠️ 这两个 `Math.min` 夹的是**请求参数**，不是页数 —— 页数由后端算好（`pages`），
@@ -57,14 +56,10 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
 
   // antd 的排序状态直接映射成 URL 上的 sort/dir。没有显式排序时后端按开始时间倒序，
   // 所以「开始时间」表头在这种情况下就显示倒序箭头（URL 上不写默认排序）。
-  const sortOrderOf = (key: EventSort) =>
-    filters.sort === key
-      ? filters.dir === "desc"
-        ? "descend"
-        : "ascend"
-      : key === "time" && filters.sort === null
-        ? "descend"
-        : null;
+  const sortOrderOf = (key: EventSort) => {
+    if (filters.sort === key) return filters.dir === "desc" ? "descend" : "ascend";
+    return key === "time" && filters.sort === null ? "descend" : null;
+  };
 
   const columns: ColumnsType<DecoratedEvent> = [
     {
@@ -75,6 +70,10 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       sortOrder: sortOrderOf("time"),
       // 先倒序再正序；正序再点一下是 antd 的「取消」，下面 onChange 把它落回默认（即倒序）。
       sortDirections: ["descend", "ascend"],
+      // antd 在正序时默认提示「点击取消排序」，但这一列取消的结果是回到倒序，按当前状态改写。
+      showSorterTooltip: {
+        title: sortOrderOf("time") === "ascend" ? "点击恢复倒序" : "点击切换为正序",
+      },
       fixed: "left",
       width: 112,
       render: (v: string) => (
@@ -277,21 +276,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             info: METRIC.rooms,
             note: "当前事件涉及的群 · 按群去重",
           },
-          {
-            key: "messages",
-            label: "消息总量",
-            value: analytics.cov.cells ? formatInt(messages.msgs) : "—",
-            unit: "条",
-            info: METRIC.msgCount,
-            unavailable: false,
-            note:
-              "仅按日期、群统计" +
-              (!analytics.cov.cells
-                ? " · 无群日记录"
-                : analytics.cov.missing || analytics.cov.unknown
-                  ? " · 仅已知量"
-                  : ""),
-          },
+          msgMetric(analytics),
           {
             key: "events",
             label: "事件量",

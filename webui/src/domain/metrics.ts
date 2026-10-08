@@ -212,6 +212,20 @@ export function filterRooms(
   );
 }
 
+/**
+ * 业务经理编号 → 显示标签。**任一群带了姓名就用姓名，否则回落编号**（姓名缺失是 null 或空串）。
+ * 业务经理下拉的选项与表格 / 抽屉里的经理列共用这一份，两处写的是同一个人。
+ */
+export function managerLabels(rooms: Meta["rooms"]): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const room of rooms) {
+    const id = room.business_manager_id;
+    const name = room.business_manager_name;
+    if (id && (name || !labels.has(id))) labels.set(id, name || id);
+  }
+  return labels;
+}
+
 /** 覆盖度。**数据完整时也要显示**，让调用方在结构上没法忘记处理它。 */
 export function coverage(
   groupDaily: readonly GroupDailyRow[],

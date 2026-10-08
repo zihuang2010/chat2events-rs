@@ -53,7 +53,10 @@ function params() {
 }
 
 describe("群聊分析筛选", () => {
-  it("关键词字段名是事件摘要，占位符给例子，没有说搜分类、群聊或客服的提示", () => {
+  // ⚠️ jsdom 不加载 CSS：字段名是否真的可见（以前第一行标签被 clip-path 视觉隐藏）、
+  // 「更多筛选 / 重置」是否落在第二行行尾，这里测不到，靠人工在浏览器里看。
+  // 下面三条测的是 DOM 里有什么、在哪个容器里，不是渲染出来的样子。
+  it("keyword_field_is_labelled_event_summary_with_example_placeholder", () => {
     mount();
     const input = screen.getByLabelText("事件摘要");
     expect(input).toHaveAttribute("placeholder", "搜索事件摘要，如：退款、改地址");
@@ -61,7 +64,7 @@ describe("群聊分析筛选", () => {
     expect(screen.queryByTitle(/分类、群聊或客服/)).toBeNull();
   });
 
-  it("商家分组与业务经理在第一行不用展开就能用，更多筛选里只有四项事件属性", async () => {
+  it("first_row_has_merchant_group_and_manager_and_more_filters_has_four_attributes", async () => {
     const user = userEvent.setup();
     mount();
     for (const name of ["日期范围", "群聊", "客服", "商家分组", "业务经理", "事件摘要"]) {
@@ -79,7 +82,7 @@ describe("群聊分析筛选", () => {
     ).toEqual(["一级分类", "二级分类", "状态", "超时条件"]);
   });
 
-  it("更多筛选的计数与收起标签只算四项事件属性，商家分组与业务经理不算", async () => {
+  it("more_filters_count_and_chips_cover_only_the_four_event_attributes", async () => {
     const user = userEvent.setup();
     const type = meta.taxonomy[0]!;
     mount(`?group=未分组&manager=1001&l2=${encodeURIComponent(type.type_id)}&overdue=0`);

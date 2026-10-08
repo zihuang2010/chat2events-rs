@@ -2,6 +2,7 @@ import { ArrowRightOutlined } from "@ant-design/icons";
 import { Drawer, Segmented, Tooltip } from "antd";
 import { useCategories, useSummary } from "@/api/queries";
 import type { CategoryAgg, SummaryRow } from "@/domain/schemas";
+import { TextOrDash } from "@/components/primitives";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -37,8 +38,10 @@ export function RoomInsightsDrawer({
       {roomId ? (
         <>
           <p className="ri-room-attribution">
-            商家分组：{analytics.roomMerchantGroup(roomId) ?? <span className="c2e-null">—</span>}
-            {" · "}业务经理：{analytics.roomManager(roomId) ?? <span className="c2e-null">—</span>}
+            商家分组：
+            <TextOrDash value={analytics.roomMerchantGroup(roomId)} />
+            {" · "}业务经理：
+            <TextOrDash value={analytics.roomManager(roomId)} />
           </p>
           <RoomInsightsContent key={roomId} roomId={roomId} analytics={analytics} api={api} />
         </>

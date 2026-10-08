@@ -10,7 +10,13 @@ import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { roomRollup, type RoomRow } from "@/domain/metrics";
 import { useRoomAggs } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
-import { DataGap, DurationOrNull, NumberOrNull, PercentOrNull } from "@/components/primitives";
+import {
+  DataGap,
+  DurationOrNull,
+  NumberOrNull,
+  PercentOrNull,
+  TextOrDash,
+} from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import { formatInt } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
@@ -77,7 +83,6 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       }
       return x.localeCompare(y, "zh");
     };
-  const nullable = (value: string | null) => value ?? <span className="c2e-null">—</span>;
 
   const columns: ColumnsType<RoomRow> = [
     {
@@ -125,14 +130,14 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       key: "merchantGroup",
       width: 110,
       sorter: compareMissingLast(roomMerchantGroup),
-      render: (_, r) => nullable(roomMerchantGroup(r.key)),
+      render: (_, r) => <TextOrDash value={roomMerchantGroup(r.key)} />,
     },
     {
       title: "业务经理",
       key: "businessManager",
       width: 110,
       sorter: compareMissingLast(roomManager),
-      render: (_, r) => nullable(roomManager(r.key)),
+      render: (_, r) => <TextOrDash value={roomManager(r.key)} />,
     },
     {
       title: <Tooltip title={METRIC.msgCount}>消息总量</Tooltip>,

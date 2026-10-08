@@ -253,10 +253,18 @@ pub(super) struct Filters {
     #[serde(default, deserialize_with = "query_bool")]
     pub(super) overdue_only: Option<bool>,
     pub(super) q: Option<String>,
-    /// 商家分组名称，**精确匹配上游字面值**（「未分组」就是字面量，不等于 NULL）。
-    /// 群在商家摘要表里查不到分组（没关联商家 · 商家还没同步）时选了它就不入选。
+    /// 商家分组名称。**两个商家筛选（分组 · 经理）共用的语义只写在这里**，
+    /// 文档、前端与测试注释都指向这一处：
+    ///
+    /// - **精确匹配**上游字面值。「未分组」就是字面量，**不等于 NULL**。
+    /// - **NULL 一律不入选**：群在商家摘要表里查不到（没关联商家 · 商家还没同步 · 商家没配经理）
+    ///   时，选了对应筛选就不入选。
+    /// - **不过滤 `is_deleted` / `group_status` / 商家状态**：已解散的群与上游已删除的商家，
+    ///   在有数据的日期范围里照常能被筛到。
+    /// - 只缩小群范围（`roomid IN (子查询)`），指标算法一点没变。
     pub(super) merchant_group_config_name: Option<String>,
-    /// 业务经理编号（人员主键，BIGINT UNSIGNED）。⚠️ 走 `query_num`：两层 flatten 之后
+    /// 业务经理编号（人员主键，BIGINT UNSIGNED），语义同 [`Filters::merchant_group_config_name`]。
+    /// ⚠️ 走 `query_num`：两层 flatten 之后
     /// serde 不肯把字符串转整数；读成数字再 `Bind::Num`，不拿字符串去比 BIGINT 列。
     #[serde(default, deserialize_with = "query_num")]
     pub(super) business_manager_id: Option<u64>,
@@ -356,9 +364,7 @@ impl Filters {
         }
         if self.merchant_group_config_name.is_some() || self.business_manager_id.is_some() {
             // 商家分组与业务经理是**商家**的属性，不在事件表上：群配置表 → 商家摘要表，
-            // 子查询交出符合条件的群。只缩小群范围，指标算法一点没变。
-            // ⚠️ 不过滤 `is_deleted` / `group_status` / 商家状态 —— 已解散的群与上游已删除的
-            // 商家，在有数据的日期范围里照常要能被筛到（`read_filters` 同款）。
+            // 子查询交出符合条件的群。匹配语义见 `Filters` 两个字段的文档。
             // 别名用 `gc` / `ms`，避开外层的 `e` / `d` / `g`。
             sql.push_str(&format!(
                 " AND e.roomid IN (SELECT gc.official_room_id FROM b_wecom_merchant_group gc \

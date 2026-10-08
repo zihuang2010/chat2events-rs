@@ -5,7 +5,7 @@
 不是聊天机器人，不是问答系统。**T+2 跑批，跳过当天和昨天，跑完即退出，没有常驻服务。**
 **webUI 是唯一旁路，且只读** —— **事实与指标只从 MySQL 取数**（原文下钻读 `source_messages`
 展示列，不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
-出站 HTTP 只有两处，都经 Nacos 找到内部服务（服务发现在内核 `nacos.rs`，两处共用）：
+出站 HTTP 只有两处，都经 Nacos 找到内部服务（服务发现在内核 `nacos.rs`，调用与成功判定在内核 `rpc.rs`，两处共用）：
 `web/roster.rs` 取**客服姓名**这一种展示别名，**取不到必须回落显示 ID** ——
 它不进指标、不进聚合键、不落库，理由在那个文件的顶注；
 `process/merchant_sync.rs`（独立的定时刷新进程，不是跑批的一环）取商家名称 / 商家分组 /
@@ -54,7 +54,7 @@
 | `docs/invariants.md` | **八条承重不变量全文 —— 动它们之前必读** |
 | `CONTEXT.md` | 术语 · 业务场景 · 上游数据形状 · 领域类型契约 · 词表生命周期 |
 | `docs/architecture.md` | 七模块各自内部 · 端口上什么不许出门 · MySQL 表键的理由 · webUI |
-| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与四条已取下的例外 |
+| `docs/database-conventions.md` | 公司《数据库规范》的适用条款与五条已取下的例外 |
 | `docs/deploy.md` | 构建 · 部署 · 目标机约束 |
 | `docs/deploy-webui.md` | 只读工作台在 39.98.175.5:30001 的 runbook（nginx · systemd · 验证） |
 
@@ -73,7 +73,7 @@
 5. **客服分类指标整群发布**：本群打标全部成功后才写新指标；事实重写时清除旧分类指标。聚合同时检查抽取、打标状态，未完成不是 0。
 6. **溯源**：`source_msg_ids` 非空且每个 ID 真实存在。**模型根本不接触 `msg_id`** —— prompt 里是段内 1-based 序号，代码映射回去，越界即校验失败。
 7. **正文脱敏**：给模型的正文必须过 `_body`。三件事同时：PII 出境 · 正文冒充行框架（**不变量 6 的绕过路径**）· 顺序依赖。**只掩锚点确定的东西**，姓名和自由文本地址一概不碰。
-8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。
+8. **标识体系**：`agent` = `easyUserId`（16 位定长），`room` = `officialRoomId`（= 文件名）。人用 easy、群用 official 是**有意为之**（各取最稳的），别「顺手统一」。业务经理编号（商家摘要表）是第四种 ID —— 账号域人员主键，与 `easyUserId` / `officialUserId` 不可互换。
 
 ## 硬规则
 

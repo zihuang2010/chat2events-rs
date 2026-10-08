@@ -193,9 +193,8 @@ export function coverageLabel(cov: Coverage): string {
  * （覆盖度 · 群消息量 · 群列表 · 概览热力图）和 mock 聚合都用它，与后端 `Filters::clause`
  * 的 `roomid = ?` 加 `roomid IN (群配置表 ⋈ 商家摘要表)` 同一条件。
  *
- * ⚠️ **分组与经理都是精确匹配，NULL 一律筛掉**：群在商家摘要表里查不到
- * （没关联商家 · 商家还没同步 · 商家没配经理）时，选了对应筛选就不入选。
- * 「未分组」是上游字面值，不等于 NULL。
+ * 分组与经理的匹配语义（精确匹配 · NULL 不入选）以后端 `src/web/params.rs` 里 `Filters`
+ * 的字段文档为准，这里只是它在浏览器里的第二份实现。
  */
 export function filterRooms(
   rooms: Meta["rooms"],

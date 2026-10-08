@@ -342,6 +342,61 @@ async fn mysql_sync_does_not_call_a_domain_it_has_nothing_to_ask() {
     testutil::drop_mysql_database(pool).await;
 }
 
+/// 商家名称、经理姓名只有空白（trim 后为空）存 NULL —— 空白名等于没有名字，工作台读侧不再兜底，
+/// 这里是唯一一处。分组名不动：原样存上游的值。
+///
+/// 同时钉住写入顺序：upsert 按商家编号升序，两个并发事务加锁顺序一致才不会死锁。
+/// 空表上 `id` 是自增的，所以「编号小的 `id` 也小」就是行按升序写的证据；
+/// 商家域返回的是 `HashMap`，不排序的话 8 个商家恰好有序的概率只有 1/40320。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_sync_stores_blank_names_as_null_and_writes_in_merchant_id_order() {
+    let pool = fixture("merchant_sync_blank").await;
+    let merchants: Vec<Option<i64>> = (1..=8).map(Some).collect();
+    seed_rooms(&pool, &merchants).await;
+    let (result, _) = sync(
+        &pool,
+        vec![
+            (
+                MERCHANTS,
+                200,
+                ok(json!({
+                    "1": summary("  ", "华东组", Some(100)),
+                    "2": summary("", "华东组", Some(200)),
+                    // 非空白的名字原样存，不 trim。
+                    "3": summary(" 店三 ", "  ", Some(300)),
+                    "4": summary("店四", "华东组", None),
+                    "5": summary("店五", "华东组", None),
+                    "6": summary("店六", "华东组", None),
+                    "7": summary("店七", "华东组", None),
+                    "8": summary("店八", "华东组", None),
+                })),
+            ),
+            (
+                MANAGERS,
+                200,
+                ok(json!({"100": "   ", "200": "", "300": "王五"})),
+            ),
+        ],
+    )
+    .await;
+    result.unwrap();
+
+    let rows = table(&pool).await;
+    assert_eq!(
+        content(&rows)[..3],
+        [
+            (1, None, Some("华东组"), Some(100), None),
+            (2, None, Some("华东组"), Some(200), None),
+            // 分组 "  " 一字不动；经理姓名非空白原样存。
+            (3, Some(" 店三 "), Some("  "), Some(300), Some("王五")),
+        ]
+    );
+    let ids: Vec<u64> = rows.iter().map(|r| r.0).collect();
+    assert!(ids.is_sorted(), "按商家编号升序写入，id 随之递增：{ids:?}");
+    testutil::drop_mysql_database(pool).await;
+}
+
 async fn pin_stamps(pool: &MySqlPool) {
     sqlx::query(
         "UPDATE b_merchant_group_merchant_summary SET gmt_modified_time = '2000-01-01 00:00:00'",
@@ -395,13 +450,26 @@ async fn mysql_sync_writes_nothing_when_any_upstream_step_fails() {
             "账号域",
         ),
         (
-            // 空 map 是合法的成功应答，所以只看 data 会把它当成「全部查无」写下去 ——
-            // 那会把所有经理姓名洗成 NULL。
+            // 上游失败时 data 是 null 还是 {} 没有权威答案，所以 code != 1 带着 {} 也得判失败：
+            // 只看 data 会把它当成「全部查无」写下去，把所有经理姓名洗成 NULL。
             "账号域 code != 1、data 为 {}",
             vec![
                 (MERCHANTS, 200, first()),
                 (MERCHANTS, 200, second()),
                 (MANAGERS, 200, with(json!({}))),
+            ],
+            3,
+            "账号域",
+        ),
+        (
+            // 请求了非空的经理编号，账号域却答 code == 1 加空对象：不是「全部查无此人」，
+            // 而是上游异常。当成成功写下去，所有经理姓名都会被洗成 NULL。
+            // （部分查到、只缺某几个编号仍是成功 —— 见上面的 fill 用例里查不到姓名的 u64::MAX。）
+            "账号域 code == 1 但 data 为 {}（请求了非空编号列表）",
+            vec![
+                (MERCHANTS, 200, first()),
+                (MERCHANTS, 200, second()),
+                (MANAGERS, 200, ok(json!({}))),
             ],
             3,
             "账号域",

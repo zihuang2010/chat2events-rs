@@ -137,17 +137,16 @@ async fn filters(
 /// `business_manager_id` 是**字符串**（保 BIGINT 精度）；它为 `null` 是商家没配经理或群没关联商家，
 /// 为字符串而 `business_manager_name` 为 `null` 是有编号但账号域查不到姓名。
 pub(super) fn room_option(room: Room) -> serde_json::Value {
-    let (roomid, alias, merchant_id, merchant_name, group, manager_id, manager_name) = room;
     serde_json::json!({
-        "roomid": roomid,
-        "alias": alias,
-        "alias_is_authoritative": alias.is_some(),
-        "merchant_id": merchant_id,
-        "merchant_name": merchant_name,
-        "merchant_name_is_authoritative": merchant_name.is_some(),
-        "merchant_group_config_name": group,
-        "business_manager_id": manager_id,
-        "business_manager_name": manager_name,
+        "roomid": room.roomid,
+        "alias": room.alias,
+        "alias_is_authoritative": room.alias.is_some(),
+        "merchant_id": room.merchant_id,
+        "merchant_name": room.merchant_name,
+        "merchant_name_is_authoritative": room.merchant_name.is_some(),
+        "merchant_group_config_name": room.merchant_group_config_name,
+        "business_manager_id": room.business_manager_id,
+        "business_manager_name": room.business_manager_name,
     })
 }
 

@@ -51,7 +51,7 @@ pub(super) const STAMP_TTL: Duration = Duration::from_secs(1);
 /// `idx_modified (gmt_modified_time)`，`MAX` 才是一次索引尾读；失败表只增不改，
 /// `MAX(id)` 走主键；词表几十行，扫一遍无所谓。
 ///
-/// **商家摘要表是唯一在白天被写的表**（`merchant_sync` 每天 12:10 / 22:10）：它写完，
+/// **商家摘要表是唯一在白天被写的表**（`merchant_sync` 每天两次，时刻见 `docs/deploy.md`）：它写完，
 /// 工作台不用重启，戳一变旧响应全部作废。它也参与「是否太新」的判断（同秒竞争，见 [`QUIET`]），
 /// 且它只在值真的变了才推进 `gmt_modified_time`，所以没有变化的刷新不会让白天的缓存白白作废。
 ///

@@ -29,25 +29,27 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .finish(),
     );
     let pool = testutil::mysql_pool("web").await;
-    // 群配置表是上游的表，这里造一张；商家摘要表是本项目自己的，`mysql_pool` 已按 schema.sql 建好，
-    // 只插数据。R 关联的商家是 18446744073709551615（BIGINT UNSIGNED 的上界）、经理编号
-    // 9007199254740993（JS 安全整数之外）—— 顺带钉住「编号全程是字符串」。
+    // 群配置表是上游的表，这里造一张（`merchant_id` 复刻上游的有符号 `BIGINT`，与摘要表的
+    // `BIGINT UNSIGNED` join，见 database-conventions 例外 E）；商家摘要表是本项目自己的，
+    // `mysql_pool` 已按 schema.sql 建好，只插数据。R 关联的商家是 9223372036854775807
+    // （`i64::MAX`，有符号 BIGINT 的上界）、经理编号 9007199254740993（JS 安全整数之外）——
+    // 顺带钉住「编号全程是字符串」。
     sqlx::raw_sql(
         "CREATE TABLE b_wecom_merchant_group (\
          corp_id VARCHAR(64) NOT NULL, official_room_id VARCHAR(128) NOT NULL, \
-         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT UNSIGNED NULL, \
+         group_name VARCHAR(255) NOT NULL DEFAULT '', merchant_id BIGINT NULL, \
          is_deleted TINYINT UNSIGNED NOT NULL DEFAULT 0, UNIQUE KEY uk_corp_room (corp_id, official_room_id)\
          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; \
          INSERT INTO b_wecom_merchant_group (corp_id,official_room_id,group_name,merchant_id,is_deleted) VALUES \
-         ('C','R','商家服务群',18446744073709551615,1), \
+         ('C','R','商家服务群',9223372036854775807,1), \
          ('other','R','其他企业群',2,0), ('C','empty-name','',NULL,0), \
          ('C','unused-room','未产生记录的群',3,0), \
          ('C','no-summary-room','摘要表里没有这个商家的群',4,0), \
          ('C','blank-name-room','商家名是空白的群',5,0); \
          INSERT INTO b_merchant_group_merchant_summary \
          (merchant_id,merchant_name,merchant_group_config_name,business_manager_id,business_manager_name) VALUES \
-         (18446744073709551615,'极限商家','华东组',9007199254740993,'李经理'), \
-         (5,'  ','未分组',NULL,NULL); \
+         (9223372036854775807,'极限商家','华东组',9007199254740993,'李经理'), \
+         (5,NULL,'未分组',NULL,NULL); \
          INSERT INTO b_merchant_group_event \
          (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary,last_msg_role,event_type,taxonomy_version,source_messages) \
          VALUES ('C','R',JSON_ARRAY('m1','m2'),'2026-08-25 23:55:00','2026-08-26 00:05:00','2026-08-26 00:05:00','2026-08-25', \
@@ -125,7 +127,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(
         data["meta"]["rooms"],
         json!([{
-            "roomid": "R", "alias": "商家服务群", "merchant_id": "18446744073709551615",
+            "roomid": "R", "alias": "商家服务群", "merchant_id": "9223372036854775807",
             "alias_is_authoritative": true,
             "merchant_name": "极限商家", "merchant_name_is_authoritative": true,
             // 商家分组与业务经理来自商家摘要表；经理编号是字符串 —— 这个值超出 JS 的安全整数。
@@ -651,7 +653,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     }
     // **关联了商家但摘要表里没有它**（还没刷新过 / 上游一直没返回）—— `merchant_id` 在、
     // 商家名为 null，与上面「压根没关联」可区分，前端据此回落显示商家编号。
-    // 商家名只有空白也一样当没有名字（旧名册路径就是这么处置的）；摘要里别的列照常带出。
+    // 商家名为 NULL 也一样当没有名字（刷新进程写入时已把空白名存成 NULL）；摘要里别的列照常带出。
     let room = |id: &str| {
         uncertain["meta"]["rooms"]
             .as_array()
@@ -845,7 +847,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     settle().await;
     // 失败表只增不改，戳里是 MAX(id) —— 它也让缓存作废；距最后一次 gmt 写仍超过 60 秒，所以是 MISS 不是 BYPASS
     assert_eq!(header(&http.get(&url).send().await.unwrap()), "MISS");
-    // 商家摘要表由 merchant_sync 在白天（12:10 / 22:10）写 —— 它写完，工作台**不用重启**，
+    // 商家摘要表由 merchant_sync 在白天写（时刻见 docs/deploy.md）—— 它写完，工作台**不用重启**，
     // 下一次请求就该看到新值。先让群选项装进缓存，再改一个商家名：
     // 戳里有这张表，旧响应作废；它的写入也算「最后一次写」，太新所以只查不存（BYPASS）。
     let merchant_name_of_r = |v: &Value| {
@@ -860,7 +862,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(merchant_name_of_r(&cached), "极限商家");
     sqlx::query(
         "UPDATE b_merchant_group_merchant_summary SET merchant_name = '改名后的商家' \
-         WHERE merchant_id = 18446744073709551615",
+         WHERE merchant_id = 9223372036854775807",
     )
     .execute(&pool)
     .await
@@ -1013,18 +1015,28 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     use serde_json::json;
     let option = |room: Room| super::serve::room_option(room);
     let some = |s: &str| Some(s.to_owned());
+    // 只写这一个用例关心的列，其余为 None。
+    let room = |roomid: &str| Room {
+        roomid: roomid.into(),
+        alias: None,
+        merchant_id: None,
+        merchant_name: None,
+        merchant_group_config_name: None,
+        business_manager_id: None,
+        business_manager_name: None,
+    };
 
     // ① 关联了商家且摘要表里有它 —— 出商家名，权威；分组与经理一并带出。
     assert_eq!(
-        option((
-            "R1".into(),
-            some("商家服务群"),
-            some("42"),
-            some("甲商家"),
-            some("华东组"),
-            some("7"),
-            some("李经理")
-        )),
+        option(Room {
+            alias: some("商家服务群"),
+            merchant_id: some("42"),
+            merchant_name: some("甲商家"),
+            merchant_group_config_name: some("华东组"),
+            business_manager_id: some("7"),
+            business_manager_name: some("李经理"),
+            ..room("R1")
+        }),
         json!({"roomid": "R1", "alias": "商家服务群", "alias_is_authoritative": true,
                "merchant_id": "42", "merchant_name": "甲商家",
                "merchant_name_is_authoritative": true,
@@ -1034,15 +1046,11 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     // ② **关联了但表里没名字** —— `merchant_id` 在、`merchant_name` 为 null，
     //    前端据此回落显示商家 ID。
     assert_eq!(
-        option((
-            "R2".into(),
-            some("另一个群"),
-            some("99"),
-            None,
-            None,
-            None,
-            None
-        )),
+        option(Room {
+            alias: some("另一个群"),
+            merchant_id: some("99"),
+            ..room("R2")
+        }),
         json!({"roomid": "R2", "alias": "另一个群", "alias_is_authoritative": true,
                "merchant_id": "99", "merchant_name": null,
                "merchant_name_is_authoritative": false,
@@ -1051,7 +1059,7 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     );
     // ③ **压根没关联商家** —— `merchant_id` 就是 null，前端什么都不显示。不报错。
     assert_eq!(
-        option(("R3".into(), None, None, None, None, None, None)),
+        option(room("R3")),
         json!({"roomid": "R3", "alias": null, "alias_is_authoritative": false,
                "merchant_id": null, "merchant_name": null,
                "merchant_name_is_authoritative": false,
@@ -1470,12 +1478,12 @@ async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
          ('C','R5','2026-08-25',1,1,1,1,1,'ok','2026-08-30 10:00:00'); \
          INSERT INTO b_merchant_group_event \
          (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,occurred_on,asker,asker_role,agents,summary) VALUES \
-         ('C','R1',JSON_ARRAY('m1'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY(),'R1 第一件'), \
-         ('C','R1',JSON_ARRAY('m2'),'2026-08-25 10:00:00','2026-08-25 10:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY(),'R1 第二件'), \
-         ('C','R2',JSON_ARRAY('m3'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000002','EXTERNAL',JSON_ARRAY(),'R2 的事件'), \
-         ('C','R3',JSON_ARRAY('m4'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000003','EXTERNAL',JSON_ARRAY(),'R3 的事件'), \
-         ('C','R4',JSON_ARRAY('m5'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000004','EXTERNAL',JSON_ARRAY(),'R4 的事件'), \
-         ('C','R5',JSON_ARRAY('m6'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000005','EXTERNAL',JSON_ARRAY(),'R5 的事件'); \
+         ('C','R1',JSON_ARRAY('m1'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'R1 第一件'), \
+         ('C','R1',JSON_ARRAY('m2'),'2026-08-25 10:00:00','2026-08-25 10:00:00','2026-08-25','merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001','agent00000000002'),'R1 第二件'), \
+         ('C','R2',JSON_ARRAY('m3'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000002','EXTERNAL',JSON_ARRAY('agent00000000002'),'R2 的事件'), \
+         ('C','R3',JSON_ARRAY('m4'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000003','EXTERNAL',JSON_ARRAY('agent00000000003'),'R3 的事件'), \
+         ('C','R4',JSON_ARRAY('m5'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000004','EXTERNAL',JSON_ARRAY('agent00000000004'),'R4 的事件'), \
+         ('C','R5',JSON_ARRAY('m6'),'2026-08-25 09:00:00','2026-08-25 09:00:00','2026-08-25','merchant00000005','EXTERNAL',JSON_ARRAY('agent00000000005'),'R5 的事件'); \
          UPDATE b_merchant_group_event SET event_type = 'reschedule', taxonomy_version = 'v1';",
     )
     .execute(&pool)
@@ -1523,6 +1531,20 @@ async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
             .collect();
         all.sort();
         all
+    };
+
+    // 事件摘要 → 它的参与者，与上面 INSERT 里的 `agents` 一一对应（夹具里写死的那份，
+    // 不从被测 SQL 里取）。`/api/agents` 的期望由它按期望的事件摘要推出来。
+    let participants = |summary: &str| -> &'static [&'static str] {
+        match summary {
+            "R1 第一件" => &["agent00000000001"],
+            "R1 第二件" => &["agent00000000001", "agent00000000002"],
+            "R2 的事件" => &["agent00000000002"],
+            "R3 的事件" => &["agent00000000003"],
+            "R4 的事件" => &["agent00000000004"],
+            "R5 的事件" => &["agent00000000005"],
+            other => panic!("夹具里没有这件事件：{other}"),
+        }
     };
 
     // (筛选, 期望的事件摘要)；空筛选是对照 —— 六件事件全在，说明下面的缩小是筛选造成的。
@@ -1608,11 +1630,34 @@ async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
             .map(|r| r["count"].as_u64().unwrap())
             .sum();
         assert_eq!(counted as usize, expected.len(), "/api/categories {label}");
-        // 客服接口同样收这一组参数：夹具里事件都没有参与者，这里只验证 SQL 跑得通
-        assert!(
-            get("/api/agents", filters).await.is_array(),
-            "/api/agents {label}"
-        );
+        // 客服接口同样收这一组参数：只含目标群里事件的参与者，且每个人的 `roomIds`
+        // 只列目标群 —— agent00000000002 同时在 R1、R2，筛掉 R2 之后它只剩 R1。
+        let mut want: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
+            Default::default();
+        for summary in *expected {
+            let room = summary.split(' ').next().unwrap();
+            for agent in participants(summary) {
+                want.entry(*agent).or_default().insert(room);
+            }
+        }
+        let agents = get("/api/agents", filters).await;
+        let got: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["agent"].as_str().unwrap(),
+                    a["roomIds"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| r.as_str().unwrap())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(got, want, "/api/agents {label}");
     }
 
     shutdown.send(()).unwrap();

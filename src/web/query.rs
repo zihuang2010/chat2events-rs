@@ -157,23 +157,41 @@ pub(super) async fn read_meta(
 /// 那张表按 `metrics::Attribution::FirstResponder` 只记首响人，而 `agents` 是**全部
 /// 参与者** —— 实测同一批数据 22 人 vs 20 人。换过去会让「参与过但从没首响过」的人
 /// 从筛选器里静默消失。JSON 列进不了索引，这条只能靠窗口把行数压住。
-/// 一个群的筛选器选项在**取数这一侧**的形状：群号 · 群名 · 关联的商家 ID · 商家名称 ·
-/// 商家分组名称 · 业务经理编号 · 业务经理姓名。
+/// 一个群的筛选器选项在**取数这一侧**的形状。
 ///
 /// ⚠️ **两个编号都是字符串**（SQL 里 `CAST(... AS CHAR)`）—— 商家与经理编号是
 /// `BIGINT UNSIGNED`，前端拿 JSON number 会丢精度。
 ///
-/// **「没关联商家」与「关联了但表里没名字」靠第三、四项区分**：前者商家 ID 就是 `None`，
-/// 后者商家 ID 有值而商家名称为 `None`（商家还没刷新进摘要表，或上游一直没给名字）。
-pub(super) type Room = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+/// **「没关联商家」与「关联了但表里没名字」靠 `merchant_id` 与 `merchant_name` 区分**：
+/// 前者商家 ID 就是 `None`，后者商家 ID 有值而商家名称为 `None`
+/// （商家还没刷新进摘要表，或上游一直没给名字）。
+///
+/// 没有 `derive(FromRow)`：sqlx 没开 `derive` 特性，为它多引一串过程宏不值。
+/// 按列名取，所以 [`read_filters`] 的 SELECT 里每列的名字都要对得上。
+pub(super) struct Room {
+    pub(super) roomid: String,
+    /// 群名（`b_wecom_merchant_group`），空串当没有。
+    pub(super) alias: Option<String>,
+    pub(super) merchant_id: Option<String>,
+    pub(super) merchant_name: Option<String>,
+    pub(super) merchant_group_config_name: Option<String>,
+    pub(super) business_manager_id: Option<String>,
+    pub(super) business_manager_name: Option<String>,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> for Room {
+    fn from_row(row: &'r sqlx::mysql::MySqlRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            roomid: row.try_get("roomid")?,
+            alias: row.try_get("alias")?,
+            merchant_id: row.try_get("merchant_id")?,
+            merchant_name: row.try_get("merchant_name")?,
+            merchant_group_config_name: row.try_get("merchant_group_config_name")?,
+            business_manager_id: row.try_get("business_manager_id")?,
+            business_manager_name: row.try_get("business_manager_name")?,
+        })
+    }
+}
 
 pub(super) async fn read_filters(
     connection: &mut MySqlConnection,
@@ -184,9 +202,8 @@ pub(super) async fn read_filters(
 ) -> Result<(Vec<Room>, Vec<(String, Option<String>)>), WebError> {
     // 历史群仍读取已删除配置；商家 ID 与经理编号转字符串，避免前端丢失 BIGINT 精度。
     //
-    // 商家摘要表同样**不按任何状态过滤**：上游已删除的商家，摘要表里保留着最后一次已知的值
-    // （`merchant_sync` 只 upsert、永不删行），历史群照样显示它。
-    // 商家名只有空白等于没有名字（`NULLIF(TRIM)`），回落显示商家编号 —— 旧名册路径就这么处置。
+    // 商家摘要表同样不按任何状态过滤（理由见 `params::Filters` 的字段文档）：
+    // 摘要表里保留着上游已删除商家最后一次已知的值，历史群照样显示它。
     //
     // ⚠️ **失败那一支按 `window_since/window_until` 收敛，不是 `run_date`。**
     // `run_date` 是**跑批日**，`since/until` 是**数据日** —— T+2 之下跑批日恒比任何
@@ -199,9 +216,10 @@ pub(super) async fn read_filters(
     // 与 `KNOWN_OK_DAYS` / `read_group_days` 同一条规矩。
     let (sql, binds) = Scope::new()
         .push(
-            "SELECT r.roomid, NULLIF(g.group_name, ''), CAST(g.merchant_id AS CHAR), \
-             NULLIF(TRIM(s.merchant_name), ''), s.merchant_group_config_name, \
-             CAST(s.business_manager_id AS CHAR), s.business_manager_name FROM (\
+            "SELECT r.roomid, NULLIF(g.group_name, '') AS alias, \
+             CAST(g.merchant_id AS CHAR) AS merchant_id, s.merchant_name, \
+             s.merchant_group_config_name, CAST(s.business_manager_id AS CHAR) AS business_manager_id, \
+             s.business_manager_name FROM (\
              SELECT DISTINCT roomid FROM b_merchant_group_metric_daily \
              WHERE corpid = ? AND dt BETWEEN ? AND ? \
              UNION SELECT DISTINCT roomid FROM b_merchant_group_run_failure \

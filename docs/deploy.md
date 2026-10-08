@@ -371,7 +371,7 @@ journalctl -u chat2events-merchant-sync -f              # 看日志
 |---|---|
 | ``Nacos 查不到服务 `merchant-app` 的健康实例：检查服务名、roster.namespace（…）、roster.group_name（…），或上游根本还没注册上来``；服务名换成 `account-app` 同理 | 刷新进程**启动期两个服务都要解析到实例**，任一个不行就在碰数据库之前退出。先核对 `config.toml` `[roster]` 的 `merchant_service` / `employee_service`（账号域就是 `employee_service`）、`namespace`、`group_name`；在 Nacos 控制台按**命名空间**筛服务列表，默认命名空间的 ID 是空串不是 `public`。分组不对时 Nacos 返回的是空列表而不是报错。服务名都对就是上游没注册上来 |
 | `Nacos 登录被拒（HTTP …）` / `Nacos 登录请求失败（检查 roster.nacos 是否可达）` | 前者是 `secrets.toml` `[roster]` 的账号密码错、或服务端没开鉴权（那就两个键都写成空串）；后者是 `roster.nacos` 地址不可达。同 `deploy-webui.md` 的对应条目 |
-| ``商家域 `merchant-app` 第 1/3 批（1000 个编号）：应答异常：code=Some(…)（成功是 1） message=…``；账号域同理（``账号域 `account-app` 查经理姓名（… 个编号）：…``） | 上游业务接口 `code != 1`（没有 `code` 时显示 `code=None`），或 `data` 是 null。**整轮失败、一行没写**，不会把「查不到」写成空值。看 `message`，去查上游服务本身；下一轮 timer 自动重试 |
+| ``商家域 `merchant-app` 第 1/3 批（1000 个编号）：应答异常：code=Some(…)（成功是 1） message=…``；账号域同理（``账号域 `account-app` 查经理姓名（… 个编号）：…``） | 上游业务接口 `code != 1`（没有 `code` 时显示 `code=None`），或 `data` 是 null；账号域另有一种：请求了经理编号却答 `code=1` 加空对象 `{}`（文案是 ``…：应答 code=1 但 data 为空对象，请求了编号却一个都没查到，按上游异常处理``）。**整轮失败、一行没写**，不会把「查不到」写成空值。看 `message` 与上游服务本身；下一轮 timer 自动重试。账号域部分编号查不到姓名（`data` 非空）不算失败，那些经理的姓名存 NULL |
 | `…：返回 HTTP 500 …（http://…）` / `…：调用失败：…` / `…：应答无法解析：…` | 前两者是上游挂了或超时：超时是 `[roster].timeout_secs`（默认 3 秒，**每个请求**一个，商家域一批多达 1000 个编号），上游慢可调大，但这个键和工作台共用；后者是打到的不是契约里的接口（环境对不上、路径不对） |
 | `写商家摘要表失败（… 个商家）：…1146… Table '…b_merchant_group_merchant_summary' doesn't exist` | **没建表**。这一步在最后（上游请求都成功之后），所以日志里前面没有别的错 |
 | `写商家摘要表失败（… 个商家）：…1142… INSERT`（或 `UPDATE` / `SELECT`）`command denied … for table 'b_merchant_group_merchant_summary'` | 可写账号缺这张表的权限，需要 `SELECT, INSERT, UPDATE` |
@@ -900,16 +900,16 @@ BI 与工作台要按商家名称 / 商家分组 / 业务经理看数，而这�
 CREATE TABLE b_merchant_group_merchant_summary (
     id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID。upsert写入，id稳定',
     merchant_id                BIGINT UNSIGNED NOT NULL COMMENT '商家编号，与群配置表b_wecom_merchant_group.merchant_id对得上',
-    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字',
+    merchant_name              VARCHAR(255)    NULL     COMMENT '商家名称（商家域merchantName）。NULL=商家域没给名字，只有空白也存NULL',
     merchant_group_config_name VARCHAR(255)    NULL     COMMENT '商家分组名称，原样存商家域的值。字面量「未分组」是上游自己补的，表示商家没配分组或分组已被删除，它是一个普通取值不是NULL，自然形成一个桶。分组按名字识别：改名拆桶、重名合桶',
     business_manager_id        BIGINT UNSIGNED NULL     COMMENT '业务经理编号=账号域人员主键（与easyUserId/officialUserId都不可互换）。NULL=商家没配经理（上游为空或0）。与business_manager_name配合区分两种NULL',
-    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名',
+    business_manager_name      VARCHAR(64)     NULL     COMMENT '业务经理姓名。NULL有两种来源：business_manager_id也为NULL=商家没配经理；business_manager_id非NULL=有编号但账号域查不到姓名（只有空白也算）',
     gmt_created_time           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     gmt_modified_time          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间。只在值真的变了才推进，工作台缓存数据戳用它',
     PRIMARY KEY (id),
     UNIQUE KEY uk_merchant (merchant_id) COMMENT '语义键：一个商家一行，upsert靠它触发冲突',
     KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time)走索引尾读'
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶';
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '商家摘要（商家名称/分组/业务经理，只存当前归属，只upsert不删行）。BI关联路径：群日指标→群配置表b_wecom_merchant_group→本表=3表；客服维度4表，超出规范3表上限，已知接受。分位数不可加不可平均，经理/分组级p50/p90要从事件明细重算，计数列可直接相加。分组按名字识别，改名拆桶、重名合桶。分组值「未分组」由商家域自己补（商家没配分组或分组已被删除），是普通取值不是NULL，自然形成一个桶';
 ```
 
 ⚠️ **这张表不进 `store::check_schema`** —— 跑批不读它，缺表不影响跑批，所以跟「冻结区重写记录表」

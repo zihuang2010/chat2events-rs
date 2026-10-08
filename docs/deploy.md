@@ -371,7 +371,7 @@ journalctl -u chat2events-merchant-sync -f              # 看日志
 |---|---|
 | ``Nacos 查不到服务 `merchant-app` 的健康实例：检查服务名、roster.namespace（…）、roster.group_name（…），或上游根本还没注册上来``；服务名换成 `account-app` 同理 | 刷新进程**启动期两个服务都要解析到实例**，任一个不行就在碰数据库之前退出。先核对 `config.toml` `[roster]` 的 `merchant_service` / `employee_service`（账号域就是 `employee_service`）、`namespace`、`group_name`；在 Nacos 控制台按**命名空间**筛服务列表，默认命名空间的 ID 是空串不是 `public`。分组不对时 Nacos 返回的是空列表而不是报错。服务名都对就是上游没注册上来 |
 | `Nacos 登录被拒（HTTP …）` / `Nacos 登录请求失败（检查 roster.nacos 是否可达）` | 前者是 `secrets.toml` `[roster]` 的账号密码错、或服务端没开鉴权（那就两个键都写成空串）；后者是 `roster.nacos` 地址不可达。同 `deploy-webui.md` 的对应条目 |
-| ``商家域 `merchant-app` 第 1/3 批（1000 个编号）：应答异常：code=Some(…)（成功是 1） message=…``；账号域同理（``账号域 `account-app` 查经理姓名（… 个编号）：…``） | 上游业务接口 `code != 1`（没有 `code` 时显示 `code=None`），或 `data` 是 null。**整轮失败、一行没写**，不会把「查不到」写成空值。看 `message`，去查上游服务本身；下一轮 timer 自动重试 |
+| ``商家域 `merchant-app` 第 1/3 批（1000 个编号）：应答异常：code=Some(…)（成功是 1） message=…``；账号域同理（``账号域 `account-app` 查经理姓名（… 个编号）：…``） | 上游业务接口 `code != 1`（没有 `code` 时显示 `code=None`），或 `data` 是 null；账号域另有一种：请求了经理编号却答 `code=1` 加空对象 `{}`（文案是 ``…：应答 code=1 但 data 为空对象，请求了编号却一个都没查到，按上游异常处理``）。**整轮失败、一行没写**，不会把「查不到」写成空值。看 `message` 与上游服务本身；下一轮 timer 自动重试。账号域部分编号查不到姓名（`data` 非空）不算失败，那些经理的姓名存 NULL |
 | `…：返回 HTTP 500 …（http://…）` / `…：调用失败：…` / `…：应答无法解析：…` | 前两者是上游挂了或超时：超时是 `[roster].timeout_secs`（默认 3 秒，**每个请求**一个，商家域一批多达 1000 个编号），上游慢可调大，但这个键和工作台共用；后者是打到的不是契约里的接口（环境对不上、路径不对） |
 | `写商家摘要表失败（… 个商家）：…1146… Table '…b_merchant_group_merchant_summary' doesn't exist` | **没建表**。这一步在最后（上游请求都成功之后），所以日志里前面没有别的错 |
 | `写商家摘要表失败（… 个商家）：…1142… INSERT`（或 `UPDATE` / `SELECT`）`command denied … for table 'b_merchant_group_merchant_summary'` | 可写账号缺这张表的权限，需要 `SELECT, INSERT, UPDATE` |

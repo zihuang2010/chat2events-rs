@@ -395,13 +395,26 @@ async fn mysql_sync_writes_nothing_when_any_upstream_step_fails() {
             "账号域",
         ),
         (
-            // 空 map 是合法的成功应答，所以只看 data 会把它当成「全部查无」写下去 ——
-            // 那会把所有经理姓名洗成 NULL。
+            // 上游失败时 data 是 null 还是 {} 没有权威答案，所以 code != 1 带着 {} 也得判失败：
+            // 只看 data 会把它当成「全部查无」写下去，把所有经理姓名洗成 NULL。
             "账号域 code != 1、data 为 {}",
             vec![
                 (MERCHANTS, 200, first()),
                 (MERCHANTS, 200, second()),
                 (MANAGERS, 200, with(json!({}))),
+            ],
+            3,
+            "账号域",
+        ),
+        (
+            // 请求了非空的经理编号，账号域却答 code == 1 加空对象：不是「全部查无此人」，
+            // 而是上游异常。当成成功写下去，所有经理姓名都会被洗成 NULL。
+            // （部分查到、只缺某几个编号仍是成功 —— 见上面的 fill 用例里查不到姓名的 u64::MAX。）
+            "账号域 code == 1 但 data 为 {}（请求了非空编号列表）",
+            vec![
+                (MERCHANTS, 200, first()),
+                (MERCHANTS, 200, second()),
+                (MANAGERS, 200, ok(json!({}))),
             ],
             3,
             "账号域",

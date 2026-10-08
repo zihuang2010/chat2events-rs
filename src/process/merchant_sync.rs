@@ -19,8 +19,10 @@
 //! - **失败一行不写、非零退出、进程内不重试。** Nacos / 商家域 / 账号域 / 数据库任何一步失败，
 //!   整轮作废；下一轮定时运行就是重试（12 小时一次，页面上的值最多旧半天）。
 //!   ⚠️ 尤其**不能拿上游失败当「全部查无」写下去**：账号域挂了而继续写，就是把所有经理姓名
-//!   洗成 NULL。成功判据沿用名册的规则 —— `code == 1` 且 `data` 不是 null；
-//!   `{}` 是合法成功（查不到的编号不进 map）。
+//!   洗成 NULL。成功判据沿用名册的规则 —— `code == 1` 且 `data` 不是 null；在此之上
+//!   **账号域多一条刷新进程自己的规则**：请求了非空经理编号却拿回 `{}`，也算失败
+//!   （名册对 `{}` 仍是合法成功，不受影响）。部分查到（`data` 非空、缺某几个编号）仍是成功，
+//!   缺的姓名存 NULL。
 //! - **商家域一批最多 1000、串行发。** 服务端上限就是 1000，超了整批报错；串行是不给上游压力
 //!   （一轮请求数 = 商家数 ÷ 1000 向上取整 ＋ 1）。**空集合不调**：商家域 `@NotEmpty`，空列表
 //!   会被拒。
@@ -234,14 +236,24 @@ pub async fn run(
             nacos.employee_service,
             managers.len()
         );
-        upstream
+        let names = upstream
             .post::<HashMap<u64, Option<String>>>(
                 &nacos.employee_service,
                 MANAGER_PATH,
                 serde_json::to_string(&managers)?,
                 &what,
             )
-            .await?
+            .await?;
+        // 上游对「查不到的编号」是不放进 map，所以 `{}` 本该是「一个都没查到」；但 `data` 在失败时
+        // 到底是 null 还是 `{}` 没有权威答案，拿它当成功写下去就会把全部经理姓名洗成 NULL。
+        // 宁可整轮失败、下一轮重试。
+        if names.is_empty() {
+            return Err(format!(
+                "{what}：应答 code={RESULT_OK} 但 data 为空对象，请求了编号却一个都没查到，按上游异常处理"
+            )
+            .into());
+        }
+        names
     };
 
     let rows: Vec<Row> = found

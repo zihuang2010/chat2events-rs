@@ -357,9 +357,9 @@ it("群表前置消息数，点击群名打开独立七天指标，关闭保留�
   const headers = [...view.container.querySelectorAll(".ra-details .ant-table-thead th")].map(
     (cell) => cell.textContent,
   );
-  expect(headers.slice(0, 3)).toEqual(["群", "消息总量", "事件量"]);
+  expect(headers.slice(0, 5)).toEqual(["群", "商家分组", "业务经理", "消息总量", "事件量"]);
   expect(headers).toContain("主要事件类型");
-  expect(headers.slice(4, 9)).toEqual(["商家发起", "首响 P50", "首响 P90", "无响应", "无响应率"]);
+  expect(headers.slice(6, 11)).toEqual(["商家发起", "首响 P50", "首响 P90", "无响应", "无响应率"]);
   expect(screen.getByRole("heading", { name: "群聊洞察" })).toBeInTheDocument();
   expect(headers).not.toContain("每日趋势");
   const button = view.container.querySelector<HTMLButtonElement>(".ra-room-link")!;
@@ -411,4 +411,125 @@ it("主要事件类型渲染四个计数标签，第四项保留群与类型的�
   await user.click(fourth);
   expect(screen.getByTestId("url")).toHaveTextContent(target.search);
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+/** 四个群覆盖三条显示规则：有值 · 经理只有编号 · 「未分组」原样 · 没关联商家。 */
+const attributionRooms = [
+  { alias: "群甲", group: "未分组", managerId: null, managerName: null },
+  { alias: "群乙", group: "华东组", managerId: "1001", managerName: "李经理" },
+  { alias: "群丙", group: "华南组", managerId: "9007199254740993", managerName: null },
+  { alias: "群丁", group: null, managerId: null, managerName: null },
+];
+const attributionData: TestDataset = {
+  ...dataset,
+  meta: {
+    ...dataset.meta,
+    rooms: dataset.meta.rooms.slice(0, 4).map((room, i) => ({
+      ...room,
+      alias: attributionRooms[i]!.alias,
+      alias_is_authoritative: true,
+      merchant_group_config_name: attributionRooms[i]!.group,
+      business_manager_id: attributionRooms[i]!.managerId,
+      business_manager_name: attributionRooms[i]!.managerName,
+    })),
+  },
+};
+
+async function renderAttribution() {
+  const view = render(
+    <MemoryRouter initialEntries={["/rooms"]}>
+      <Providers>
+        <Workbench>
+          <Harness data={attributionData} />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  await settle(view);
+  return view;
+}
+
+/** 按表头名取每一行的「群 / 商家分组 / 业务经理」三格文字，行序即页面上的顺序。 */
+function attributionRows(container: HTMLElement) {
+  const heads = [...container.querySelectorAll(".ra-details .ant-table-thead th")].map(
+    (th) => th.textContent,
+  );
+  return [...container.querySelectorAll(".ra-details .ant-table-tbody tr.ant-table-row")].map(
+    (tr) => {
+      const cells = tr.querySelectorAll("td");
+      return {
+        room: tr.querySelector(".ra-room-link")!.textContent,
+        group: cells[heads.indexOf("商家分组")]!.textContent,
+        manager: cells[heads.indexOf("业务经理")]!.textContent,
+      };
+    },
+  );
+}
+
+it("shows_merchant_group_and_manager_columns_with_fallbacks", async () => {
+  const view = await renderAttribution();
+  const byRoom = Object.fromEntries(attributionRows(view.container).map((r) => [r.room, r]));
+  // 「未分组」照原样；经理缺失显示 —
+  expect(byRoom["群甲"]).toMatchObject({ group: "未分组", manager: "—" });
+  // 有姓名用姓名
+  expect(byRoom["群乙"]).toMatchObject({ group: "华东组", manager: "李经理" });
+  // 只有编号时显示编号
+  expect(byRoom["群丙"]).toMatchObject({ group: "华南组", manager: "9007199254740993" });
+  // 没关联商家：两项都是 —
+  expect(byRoom["群丁"]).toMatchObject({ group: "—", manager: "—" });
+});
+
+it.each(["商家分组", "业务经理"] as const)(
+  "sorts_by_%s_with_missing_values_always_last",
+  async (header) => {
+    const user = userEvent.setup();
+    const view = await renderAttribution();
+    const key = header === "商家分组" ? "group" : "manager";
+    const th = () =>
+      [...view.container.querySelectorAll(".ra-details .ant-table-thead th")].find(
+        (cell) => cell.textContent === header,
+      )!;
+    const missingFlags = () => attributionRows(view.container).map((r) => r[key] === "—");
+
+    await user.click(th()); // 正序
+    expect(th()).toHaveAttribute("aria-sort", "ascending");
+    expect(missingFlags()).toEqual(
+      key === "group" ? [false, false, false, true] : [false, false, true, true],
+    );
+
+    await user.click(th()); // 倒序：缺失值仍在最后
+    expect(th()).toHaveAttribute("aria-sort", "descending");
+    expect(missingFlags()).toEqual(
+      key === "group" ? [false, false, false, true] : [false, false, true, true],
+    );
+  },
+);
+
+it("shows_merchant_group_and_manager_under_the_drawer_title", async () => {
+  const user = userEvent.setup();
+  const view = await renderAttribution();
+  const open = async (alias: string) => {
+    const button = [...view.container.querySelectorAll<HTMLButtonElement>(".ra-room-link")].find(
+      (el) => el.textContent === alias,
+    )!;
+    await user.click(button);
+    return screen.findByRole("dialog");
+  };
+
+  const resolved = await open("群乙");
+  expect(within(resolved).getByText(/商家分组/)).toHaveTextContent(
+    "商家分组：华东组 · 业务经理：李经理",
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  const bare = await open("群丙");
+  expect(within(bare).getByText(/商家分组/)).toHaveTextContent(
+    "商家分组：华南组 · 业务经理：9007199254740993",
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  const none = await open("群丁");
+  expect(within(none).getByText(/商家分组/)).toHaveTextContent("商家分组：— · 业务经理：—");
 });

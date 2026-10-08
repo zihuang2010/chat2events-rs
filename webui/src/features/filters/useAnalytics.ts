@@ -55,6 +55,10 @@ export interface Analytics {
   roomAliasIsAuthoritative: (roomId: string) => boolean;
   /** 群背后的商家：名称 → 商家 ID → `null`（没关联商家，整块不渲染） */
   roomMerchant: (roomId: string) => string | null;
+  /** 群所属的商家分组（含字面量「未分组」）；没关联商家 → `null` */
+  roomMerchantGroup: (roomId: string) => string | null;
+  /** 群的业务经理：姓名 → 编号（与业务经理下拉框的标签一致）→ `null` */
+  roomManager: (roomId: string) => string | null;
   agentLabel: (agentId: string) => string;
   agentAliasIsAuthoritative: (agentId: string) => boolean;
   typeLabel: (typeId: string) => string;
@@ -127,6 +131,13 @@ export function useAnalytics(
       const room = rooms.get(id);
       return room?.merchant_name ?? room?.merchant_id ?? null;
     };
+    // 商家分组 / 业务经理来自筛选选项接口里每个群自带的元数据，表格与群详情抽屉共用。
+    // 缺失统一回 null，由调用方画 `—`；不区分「没关联商家」「查不到」「没配经理」。
+    const roomMerchantGroup = (id: string) => rooms.get(id)?.merchant_group_config_name || null;
+    const roomManager = (id: string) => {
+      const room = rooms.get(id);
+      return room?.business_manager_name || room?.business_manager_id || null;
+    };
     const agentLabel = (id: string) => agents.get(id)?.alias ?? id;
     // 与 roomAliasIsAuthoritative 同形：per-项优先、回落全局。
     // ⚠️ 别名回落成平台账号时这里必须是 false —— `zhang.san` 是账号不是姓名。
@@ -187,6 +198,8 @@ export function useAnalytics(
       roomLabel,
       roomAliasIsAuthoritative,
       roomMerchant,
+      roomMerchantGroup,
+      roomManager,
       agentLabel,
       agentAliasIsAuthoritative,
       typeLabel,

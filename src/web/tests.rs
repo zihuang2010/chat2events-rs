@@ -1013,18 +1013,28 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     use serde_json::json;
     let option = |room: Room| super::serve::room_option(room);
     let some = |s: &str| Some(s.to_owned());
+    // 只写这一个用例关心的列，其余为 None。
+    let room = |roomid: &str| Room {
+        roomid: roomid.into(),
+        alias: None,
+        merchant_id: None,
+        merchant_name: None,
+        merchant_group_config_name: None,
+        business_manager_id: None,
+        business_manager_name: None,
+    };
 
     // ① 关联了商家且摘要表里有它 —— 出商家名，权威；分组与经理一并带出。
     assert_eq!(
-        option((
-            "R1".into(),
-            some("商家服务群"),
-            some("42"),
-            some("甲商家"),
-            some("华东组"),
-            some("7"),
-            some("李经理")
-        )),
+        option(Room {
+            alias: some("商家服务群"),
+            merchant_id: some("42"),
+            merchant_name: some("甲商家"),
+            merchant_group_config_name: some("华东组"),
+            business_manager_id: some("7"),
+            business_manager_name: some("李经理"),
+            ..room("R1")
+        }),
         json!({"roomid": "R1", "alias": "商家服务群", "alias_is_authoritative": true,
                "merchant_id": "42", "merchant_name": "甲商家",
                "merchant_name_is_authoritative": true,
@@ -1034,15 +1044,11 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     // ② **关联了但表里没名字** —— `merchant_id` 在、`merchant_name` 为 null，
     //    前端据此回落显示商家 ID。
     assert_eq!(
-        option((
-            "R2".into(),
-            some("另一个群"),
-            some("99"),
-            None,
-            None,
-            None,
-            None
-        )),
+        option(Room {
+            alias: some("另一个群"),
+            merchant_id: some("99"),
+            ..room("R2")
+        }),
         json!({"roomid": "R2", "alias": "另一个群", "alias_is_authoritative": true,
                "merchant_id": "99", "merchant_name": null,
                "merchant_name_is_authoritative": false,
@@ -1051,7 +1057,7 @@ fn a_room_option_separates_no_merchant_from_an_unnamed_one() {
     );
     // ③ **压根没关联商家** —— `merchant_id` 就是 null，前端什么都不显示。不报错。
     assert_eq!(
-        option(("R3".into(), None, None, None, None, None, None)),
+        option(room("R3")),
         json!({"roomid": "R3", "alias": null, "alias_is_authoritative": false,
                "merchant_id": null, "merchant_name": null,
                "merchant_name_is_authoritative": false,

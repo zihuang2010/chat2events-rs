@@ -158,9 +158,11 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     assert_eq!(page["total"], 2);
     assert_eq!(page["pages"], 1);
     assert_eq!(page["truncated"], false);
-    assert_eq!(page["rows"][0]["source_msg_ids"], json!(["m1", "m2"]));
-    assert_eq!(page["rows"][0]["first_msg_time"], "2026-08-25 23:55:00");
-    let id = page["rows"][0]["id"].as_u64().unwrap();
+    // 不带 sort：默认按开始时间倒序，最新的（08-26 09:00）在前。
+    assert_eq!(page["rows"][0]["first_msg_time"], "2026-08-26 09:00:00");
+    assert_eq!(page["rows"][1]["source_msg_ids"], json!(["m1", "m2"]));
+    assert_eq!(page["rows"][1]["first_msg_time"], "2026-08-25 23:55:00");
+    let id = page["rows"][1]["id"].as_u64().unwrap();
     let detail: Value = serde_json::from_str(
         &http
             .get(format!("{base}/api/event/{id}"))
@@ -172,7 +174,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(detail, page["rows"][0]);
+    assert_eq!(detail, page["rows"][1]);
     let response = http
         .get(format!("{base}/api/event/{id}/messages"))
         .send()

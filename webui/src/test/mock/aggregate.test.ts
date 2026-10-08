@@ -2,7 +2,8 @@
  * 明细排序的口径测试。**钉的是「和 SQL 排得一样」**：
  * 分页是服务端做的，两边排序一旦分家，翻页会漏行或重复行，而页面上完全看不出来。
  *
- * 对应后端 `web::query::Paging::order_by`：`(expr) IS NULL, expr [ASC|DESC], e.id`。
+ * 对应后端 `web::query::Paging::order_by`：`(expr) IS NULL, expr [ASC|DESC], e.id`；
+ * 不给排序键时是 `e.first_msg_time DESC, e.id DESC`。
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -63,8 +64,14 @@ const ids = (sorting: { sort?: string; dir?: "asc" | "desc" }) =>
   mockEventsPage(events, cells, tax, { from: DAY, to: DAY }, 1, 10, sorting).rows.map((e) => e.id);
 
 describe("明细排序", () => {
-  it("不给排序键时按归属日，id 收尾", () => {
-    expect(ids({})).toEqual([1, 2, 3]);
+  it("不给排序键时开始时间倒序，相同再按 id 倒序", () => {
+    // 三条开始时间相同，只能靠 id 倒序定序。
+    expect(ids({})).toEqual([3, 2, 1]);
+    // 1 号最晚开始，排最前；2、3 号开始时间相同，3 号在前。
+    const later = events.map((e) => (e.id === 1 ? { ...e, first_msg_time: `${DAY} 11:00:00` } : e));
+    expect(
+      mockEventsPage(later, cells, tax, { from: DAY, to: DAY }, 1, 10, {}).rows.map((e) => e.id),
+    ).toEqual([1, 3, 2]);
   });
 
   it("按首响耗时升序：60 秒在 600 秒前", () => {
@@ -173,9 +180,9 @@ describe("商家分组与业务经理筛选", () => {
   const daily = rooms.map((room) => cellOf(room.roomid));
   const window = { from: DAY, to: DAY };
   const idsOf = (f: Parameters<typeof mockSummary>[3]) =>
-    mockEventsPage(byRoom, daily, tax, { ...window, ...f }, 1, 10, {}, rooms).rows.map(
-      (e) => e.roomid,
-    );
+    mockEventsPage(byRoom, daily, tax, { ...window, ...f }, 1, 10, {}, rooms)
+      .rows.map((e) => e.roomid)
+      .sort(); // 这里只看筛出了哪些群，与默认顺序无关
 
   it("按分组精确匹配：华东组只有 R1 R2，「未分组」只有 R3，NULL 的 R4 哪个都不在", () => {
     expect(idsOf({})).toEqual(["R1", "R2", "R3", "R4"]);

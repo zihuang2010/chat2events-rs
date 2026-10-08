@@ -344,7 +344,8 @@ const MAX_PAGE = 200;
 
 /**
  * 与后端的 `ORDER BY` 逐条同序，否则翻页的内容对不上：
- * **NULL 一律排最后**（两个方向都是 —— 「没回复」不是「很快」），`id` 收尾保证唯一。
+ * 不给排序键时开始时间倒序、`id` 倒序；给了键则 **NULL 一律排最后**
+ * （两个方向都是 —— 「没回复」不是「很快」），`id` 正序收尾保证唯一。
  *
  * ⚠️ **不按已知成功群日过滤**（`select` 的 `"all"`）—— 与真接口的 `/api/events`
  * 一致。此前这里过滤了而真接口不过滤，于是 mock 下总数与行必然同集合、
@@ -391,7 +392,8 @@ export function mockEventsPage(
         const cmp = typeof x === "number" ? x - (y as number) : x.localeCompare(y as string);
         return cmp * sign || a.id - b.id;
       })
-    : [...rows].sort((a, b) => a.occurred_on.localeCompare(b.occurred_on) || a.id - b.id);
+    : // 默认：开始时间倒序，再按事件 ID 倒序（后端 `Paging::order_by` 的无 sort 分支）
+      [...rows].sort((a, b) => b.first_msg_time.localeCompare(a.first_msg_time) || b.id - a.id);
   const needed = Math.ceil(ordered.length / pageSize);
   return {
     rows: ordered.slice((page - 1) * pageSize, page * pageSize),

@@ -260,7 +260,7 @@ export const fetchRoomAggs = (
 export const fetchAgentAggs = (f: QueryFilters): Promise<AgentAgg[]> =>
   get("/agents", agentAggListSchema, params(f));
 
-/** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按归属日。 */
+/** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按开始时间倒序（后端默认）。 */
 export interface EventSorting {
   sort?: string | null;
   dir?: "asc" | "desc" | null;

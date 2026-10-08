@@ -1,0 +1,30 @@
+src/web/roster.rs
+  s_504c6032e731a8::t_980b244ddccda8 272-275
+  s_504c6032e731a8::t_697764e37eec3c 38,259-271
+src/lib.rs
+  s_504c6032e731a8::t_980b244ddccda8 84
+  s_504c6032e731a8::t_8819aba2faaf4a 21
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_96f7e591d18f34 46,49,145-147,160-168,187-195
+  s_504c6032e731a8::t_8819aba2faaf4a 22
+src/rpc.rs
+  s_504c6032e731a8::t_ecf61af7b67deb 1-73
+CLAUDE.md
+  s_504c6032e731a8::t_fa6dd9d1f97231 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "de548a219788cb6fecf4980b0d069f107d999c58",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

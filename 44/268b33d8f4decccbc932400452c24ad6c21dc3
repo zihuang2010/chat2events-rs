@@ -1,0 +1,33 @@
+Cargo.toml
+  s_504c6032e731a8::t_f6c3285d6c4731 25
+src/lib.rs
+  s_504c6032e731a8::t_e092b76f57fd4b 20,80
+src/nacos.rs
+  s_504c6032e731a8::t_97baac11674361 1-354
+src/nacos/tests.rs
+  s_504c6032e731a8::t_b1ef2ea7a369a2 1-214
+src/testutil.rs
+  s_504c6032e731a8::t_8094dec0759986 201-279
+src/web/config.rs
+  s_504c6032e731a8::t_bb6474366e8ca8 17,43-45,48-49,57,74
+src/web/mod.rs
+  s_504c6032e731a8::t_d741ff0b66bcd8 27
+src/web/roster.rs
+  s_504c6032e731a8::t_21a75b1cb49c0b 1,3-4,30-31,37,180-181,185-188,193,457,593-596,640-643,678-681,731-734,751,756-757,759
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "44268b33d8f4decccbc932400452c24ad6c21dc3",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

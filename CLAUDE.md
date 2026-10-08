@@ -137,7 +137,11 @@
 
 ## 检索代码：先走 codebase-memory-mcp
 
-本仓库已建索引（2329 节点 / 11001 边）。**结构性问题一律先查图** —— 一次几百 token，同样的问题 grep 全仓是几万。
+本仓库已于 2026-10-07 完成全量索引（5437 节点 / 23782 边）。**代码检索优先使用 codebase-memory；符号定位、调用链、架构和改动影响分析一律先查图。**
+
+- 开始检索时先用 `list_projects` / `index_status` 确认当前仓库及索引状态。
+- 优先调用 MCP 工具；会话未暴露工具时，使用本机 `codebase-memory-mcp cli <tool>`，参数格式查对应的 `--help`。
+- MCP 与本机 CLI 都不可用时，先说明限制，再用 `rg` 和源码读取完成检索，报告实际使用的依据。
 
 `search_graph`（找符号：自然语言 / `name_pattern` / `semantic_query`）· `trace_path`（谁调用了 X / X 调用了谁）·
 `get_code_snippet`（读源码）· `get_architecture`（整体结构）· `detect_changes`（改动影响面）。
@@ -146,5 +150,5 @@
 - **图里没有 ≠ 代码里没有。** 下「没有任何地方调用它」这种结论之前先 `check_index_coverage(scopes=["."])`。
   ⚠️ `schema.sql` 是 `parse_partial`（DDL 里的中文注释噎住了解析器），**建表相关的事直接读文件**，别信图。
   `webui/src/test/mock/aggregate.ts` 此前也是，原因是文件里嵌了 4 个**字面 NUL 字符**（复合键分隔符写成了真 NUL 而不是 `\0` 转义）——
-  那还让 `grep -r` **静默跳过整个文件**。2026-09-19 已改成转义，`file` 判定回到 UTF-8 文本、grep 搜得到；**索引标记待下次重新索引后确认**。
+  那还让 `grep -r` **静默跳过整个文件**。2026-09-19 已改成转义；2026-10-07 全量索引后的覆盖检查确认该文件未记录解析问题，索引元数据与源码匹配。
 - 搬模块 / 改文件名之后跑一次 `index_repository(mode="full")`；日常小改由 watch 自动刷新。

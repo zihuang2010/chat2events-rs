@@ -1,0 +1,33 @@
+schema.sql
+  s_504c6032e731a8::t_76f8dc2bfdff7e 293,296
+docs/deploy.md
+  s_504c6032e731a8::t_76f8dc2bfdff7e 903,906
+src/process/merchant_sync.rs
+  s_504c6032e731a8::t_425151e615d058 52,212-213
+  s_504c6032e731a8::t_a5e4956f273a98 179-184,275,278
+  s_504c6032e731a8::t_76f8dc2bfdff7e 29-31
+  s_504c6032e731a8::t_02dd87f7b9b9e0 279-280
+src/process/merchant_sync/tests.rs
+  s_504c6032e731a8::t_0dba5c47294c95 345-399
+src/web/query.rs
+  s_504c6032e731a8::t_76f8dc2bfdff7e 202
+  s_504c6032e731a8::t_40fe777399cbce 187-188
+src/web/tests.rs
+  s_504c6032e731a8::t_76f8dc2bfdff7e 50,654
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cdee01a8226ffeeda3fe6c87644121749aa1c2eb",
+  "prompts": {},
+  "sessions": {
+    "s_504c6032e731a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b29af1cb-408a-4741-81d5-f4be1f1e0af4",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

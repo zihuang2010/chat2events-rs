@@ -101,7 +101,7 @@ pub(super) struct Paging {
     page: Option<u64>,
     #[serde(default, deserialize_with = "query_num")]
     page_size: Option<u64>,
-    /// 排序键，取值见 [`Paging::order_by`] 的白名单。不给就按归属日。
+    /// 排序键，取值见 [`Paging::order_by`] 的白名单。不给就按开始时间倒序。
     sort: Option<String>,
     /// `asc` / `desc`。不给按 `asc`。
     dir: Option<String>,
@@ -166,8 +166,11 @@ impl Paging {
             .map(str::trim)
             .filter(|k| !k.is_empty())
         else {
-            // 默认与索引前缀同序：`(corpid, occurred_on, ...)`，连 filesort 都不用。
-            return Ok("e.occurred_on, e.id".into());
+            // 默认开始时间倒序（最新的排最前），事件 ID 倒序兜底保证键唯一。
+            // ⚠️ 代价：不再与索引前缀 `(corpid, occurred_on, ...)` 同序，窗口内多一次排序；
+            // 手动点「开始时间」本来就是这个代价，默认七天窗口约 1.3 万行（出处：schema.sql
+            // `idx_overview` 注释，2026-09-19 实测 dev 库样本），可以接受。
+            return Ok("e.first_msg_time DESC, e.id DESC".into());
         };
         let expr: &str = match key {
             "time" => "e.first_msg_time",
@@ -233,9 +236,9 @@ pub(super) enum Bind {
 /// （`/api/dataset` 就带着它）—— 让前端把父类展开成 `types=a,b,c` 传上来，
 /// 比在每条 SQL 里再 join 一次词表便宜，也不会多出一处可以和前端打架的口径。
 ///
-/// ⚠️ **`q` 只匹配 `summary`。** 前端那个搜索框还会匹配群名 / 客服名 / 类型名，
-/// 那些都是**前端的标签映射**，SQL 里没有 —— 由前端把命中的 id 集合解析出来，
-/// 走 `rooms` / `agents` / `types` 参数传上来。`LIKE '%词%'` 前导通配符任何索引都用不上，
+/// ⚠️ **`q` 只匹配 `summary`。** 前端搜索框的语义也是这一条：不匹配群名 / 客服名 / 类型名，
+/// 前端也不会把名字翻译成 id 参数；要按群、客服、分类筛，用各自的参数
+/// （`room` / `agent` / `types`）。`LIKE '%词%'` 前导通配符任何索引都用不上，
 /// 靠日期窗口把行数压住。
 #[derive(Default, Deserialize)]
 pub(super) struct Filters {
@@ -784,10 +787,10 @@ mod tests {
     /// 而页面上只是多了个能点的表头）。放行任何一个新键之前，先把列加进索引。
     #[test]
     fn sort_whitelist_is_closed_and_every_key_stays_unique() {
-        // 默认与索引前缀同序，连 filesort 都不用
+        // 默认：开始时间倒序，再按事件 ID 倒序（最新的排最前，且键唯一）
         assert_eq!(
             sorted(None, None).order_by().unwrap(),
-            "e.occurred_on, e.id"
+            "e.first_msg_time DESC, e.id DESC"
         );
 
         for key in ["time", "reply", "wait", "room", "last"] {
@@ -838,7 +841,7 @@ mod tests {
         // 空的 sort 按「没给」处理，不是错误
         assert_eq!(
             sorted(Some("  "), None).order_by().unwrap(),
-            "e.occurred_on, e.id"
+            "e.first_msg_time DESC, e.id DESC"
         );
     }
 

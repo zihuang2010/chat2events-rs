@@ -233,7 +233,7 @@ it.each(["events", "agents", "detail"] as const)(
       page === "events"
         ? ["活跃群", "消息总量", "事件量"]
         : page === "detail"
-          ? ["活跃群", "事件量", "商家发起"]
+          ? ["活跃群", "消息总量", "事件量", "商家发起"]
           : ["事件量", "首响中位时长", "事件超时率", "按时回复", "超时回复", "无响应"];
     expect(labels.slice(0, expected.length)).toEqual(expected);
   },
@@ -363,9 +363,9 @@ it.each(["events", "agents", "detail"] as const)(
     };
     const view = await mount(page, "", data);
     const values = Array.from(view.container.querySelectorAll(".ia-metrics .od-metric-value"));
-    // 明细页比另外两页少一格 —— 「来源消息数」2026-09-19 删了（见 `query.rs`）。
-    expect(values).toHaveLength(page === "detail" ? 5 : 6);
-    if (page === "events") {
+    expect(values).toHaveLength(6);
+    // 消息总量不依赖抽取，事件页与追溯页都照常显示；其余格子是「—」
+    if (page !== "agents") {
       const messageMetric = screen.getByText("消息总量", { exact: true }).parentElement!;
       expect(messageMetric.querySelector(".od-metric-value")).toHaveTextContent(
         formatInt(data.groupDaily.reduce((sum, row) => sum + row.msg_count, 0)) + "条",
@@ -775,8 +775,6 @@ it("开关抽屉保留当前页码", async () => {
 it("事件抽屉按表格顺序前后切换，原文为空时显式展示空态", async () => {
   const user = userEvent.setup();
   const view = await mount("detail", "?size=25");
-  await user.click(screen.getByRole("columnheader", { name: "开始时间" }));
-  await user.click(screen.getByRole("columnheader", { name: "开始时间" }));
   const firstTwo = [...view.container.querySelectorAll<HTMLButtonElement>(".ia-summary-link")]
     .slice(0, 2)
     .map((button) => Number(button.getAttribute("aria-label")?.match(/#(\d+)/)?.[1]));
@@ -817,7 +815,8 @@ it("loads_outside_filter_events_and_reports_missing_ids", async () => {
 it("原文加载失败保留真实原因和重试入口", async () => {
   const user = userEvent.setup();
   messages.mode = "error";
-  await mount("detail", `?drawer=${dataset.events[0]!.id}`);
+  const event = dataset.events[0]!;
+  await mount("detail", `?drawer=${event.id}`, { ...dataset, events: [event] });
   const dialog = screen.getByRole("dialog");
   expect(dialog).toHaveTextContent("原文服务暂不可用");
   await user.click(within(dialog).getByRole("button", { name: "重试消息原文" }));
@@ -831,7 +830,7 @@ it("消息按时间排序，首响标记准确，消息标识可按需展开", a
   )!;
   const source = raw.messages.get(event.id)!;
   messages.data = [...source].reverse();
-  await mount("detail", `?drawer=${event.id}`);
+  await mount("detail", `?drawer=${event.id}`, { ...dataset, events: [event] });
   const dialog = screen.getByRole("dialog");
   const rendered = dialog.querySelectorAll(".ed-message-text");
   expect([...rendered].map((node) => node.textContent)).toEqual(
@@ -852,7 +851,7 @@ it("消息不完整或首响不匹配时保留警告，禁用首响定位", asyn
   messages.data = raw.messages
     .get(event.id)!
     .filter((message) => message.sender_role !== "INTERNAL");
-  await mount("detail", `?drawer=${event.id}`);
+  await mount("detail", `?drawer=${event.id}`, { ...dataset, events: [event] });
   const dialog = screen.getByRole("dialog");
   expect(dialog).toHaveTextContent("条来源消息");
   expect(dialog).toHaveTextContent("原文中未找到匹配的首响锚点");
@@ -863,14 +862,14 @@ it("加载状态仍可核查统计依据，平台发起不标成客服首响", a
   const user = userEvent.setup();
   const event = dataset.events.find((item) => item.asker_role === "INTERNAL")!;
   messages.mode = "loading";
-  const view = await mount("detail", `?drawer=${event.id}`);
+  const view = await mount("detail", `?drawer=${event.id}`, { ...dataset, events: [event] });
   expect(screen.getByRole("status", { name: "正在加载消息原文" })).toBeVisible();
   await user.click(screen.getByRole("tab", { name: "统计依据" }));
   expect(screen.getByText("不纳入首响指标")).toBeVisible();
   view.unmount();
   messages.mode = "ready";
   messages.data = raw.messages.get(event.id)!;
-  await mount("detail", `?drawer=${event.id}`);
+  await mount("detail", `?drawer=${event.id}`, { ...dataset, events: [event] });
   expect(screen.getByRole("button", { name: "定位首响" })).toBeDisabled();
   expect(screen.queryByText("首次有效回复")).toBeNull();
   expect(screen.getByText("平台推送")).toBeVisible();
@@ -900,4 +899,137 @@ it("detail_paginates_and_changes_page_size", async () => {
   await user.click(screen.getByRole("columnheader", { name: "开始时间" }));
   expect(screen.getByTestId("url")).toHaveTextContent("sort=time");
   expect(screen.getByTestId("url")).not.toHaveTextContent("page=2");
+});
+
+/**
+ * 数据追溯默认按开始时间倒序，开始时间相同再按事件 ID 倒序（后端 `Paging::order_by`
+ * 的默认顺序；模拟后端与它同序，这里断言的是用户看见的行顺序）。
+ */
+const idsOnPage = (container: HTMLElement) =>
+  [...container.querySelectorAll(".ia-summary-link")].map((row) =>
+    Number(row.getAttribute("aria-label")!.match(/#(\d+)/)![1]),
+  );
+
+function eventsAt(...times: [number, string][]): TestDataset {
+  const source = dataset.events[0]!;
+  return {
+    ...dataset,
+    events: times.map(([id, time]) => ({
+      ...source,
+      id,
+      first_msg_time: time,
+      occurred_on: time.slice(0, 10),
+    })),
+  };
+}
+
+it("detail_defaults_to_newest_first_and_toggles_between_desc_and_asc", async () => {
+  const user = userEvent.setup();
+  const data = eventsAt(
+    [1, "2026-08-26 09:00:00"],
+    [2, "2026-08-27 09:00:00"],
+    [3, "2026-08-27 09:00:00"],
+    [4, "2026-08-25 09:00:00"],
+  );
+  const view = await mount("detail", "", data);
+  const header = () => screen.getByRole("columnheader", { name: "开始时间" });
+
+  // 默认：最新的在前；开始时间相同按事件 ID 倒序；表头直接显示倒序箭头，URL 上不写排序
+  expect(idsOnPage(view.container)).toEqual([3, 2, 1, 4]);
+  expect(header()).toHaveAttribute("aria-sort", "descending");
+  expect(screen.getByTestId("url")).not.toHaveTextContent("sort=");
+
+  // 点一下：只切到正序，不会出现「无排序」状态
+  await user.click(header());
+  expect(header()).toHaveAttribute("aria-sort", "ascending");
+  expect(screen.getByTestId("url")).toHaveTextContent("sort=time&dir=asc");
+  expect(idsOnPage(view.container)).toEqual([4, 1, 2, 3]);
+
+  // 再点一下：回到倒序，URL 上的排序参数去掉
+  await user.click(header());
+  expect(header()).toHaveAttribute("aria-sort", "descending");
+  expect(screen.getByTestId("url")).not.toHaveTextContent("sort=");
+  expect(idsOnPage(view.container)).toEqual([3, 2, 1, 4]);
+});
+
+/**
+ * 「开始时间」的悬停提示要说实话：antd 默认在正序状态提示「点击取消排序」，
+ * 但这一列的第三态不是无排序，而是回到默认倒序。
+ */
+it("detail_start_time_sorter_tooltip_describes_the_next_state", async () => {
+  const user = userEvent.setup();
+  const view = await mount("detail");
+  const sorter = () =>
+    view.container.querySelector<HTMLElement>(
+      ".ant-table-thead th[aria-sort] .ant-table-column-sorters",
+    )!;
+
+  await user.hover(sorter());
+  expect(await screen.findByText("点击切换为正序")).toBeInTheDocument();
+
+  await user.click(sorter());
+  expect(await screen.findByText("点击恢复倒序")).toBeInTheDocument();
+  expect(screen.queryByText("点击切换为正序")).toBeNull();
+  expect(screen.queryByText("点击取消排序")).toBeNull();
+});
+
+it("detail_falls_back_to_newest_first_when_another_sort_is_cancelled", async () => {
+  const user = userEvent.setup();
+  const data = eventsAt([1, "2026-08-26 09:00:00"], [2, "2026-08-27 09:00:00"]);
+  const view = await mount("detail", "", data);
+  const room = () => screen.getByRole("columnheader", { name: "群" });
+
+  // 按群排序（升 → 降 → 取消）：排序期间开始时间表头不再显示箭头，取消后回到默认倒序
+  await user.click(room());
+  expect(screen.getByTestId("url")).toHaveTextContent("sort=room");
+  expect(screen.getByRole("columnheader", { name: "开始时间" })).not.toHaveAttribute("aria-sort");
+  await user.click(room());
+  await user.click(room());
+  expect(screen.getByTestId("url")).not.toHaveTextContent("sort=");
+  expect(screen.getByRole("columnheader", { name: "开始时间" })).toHaveAttribute(
+    "aria-sort",
+    "descending",
+  );
+  expect(idsOnPage(view.container)).toEqual([2, 1]);
+});
+
+/** 数据追溯的消息总量与事件洞察那张同一口径，位置也一样（紧跟「活跃群」）。 */
+const messageCard = () => screen.getByText("消息总量", { exact: true }).parentElement!;
+
+it("detail_message_total_matches_the_events_page_card", async () => {
+  await mount("events");
+  const onEvents = messageCard().textContent;
+  expect(onEvents).toMatch(/\d/);
+  cleanup();
+  await mount("detail");
+  expect(messageCard().textContent).toBe(onEvents);
+  expect(messageCard()).toHaveTextContent("仅按日期、群统计");
+});
+
+it("detail_marks_partial_message_total_as_known_only", async () => {
+  const cell = dataset.groupDaily[0]!;
+  await mount("detail", "", {
+    ...dataset,
+    events: [],
+    groupDaily: [{ ...cell, msg_count: 17 }],
+  });
+  expect(messageCard().querySelector(".od-metric-value")).toHaveTextContent("17条");
+  expect(messageCard()).toHaveTextContent("仅已知量");
+});
+
+it("detail_keeps_missing_message_data_unknown", async () => {
+  await mount("detail", "", { ...dataset, events: [], groupDaily: [] });
+  expect(messageCard().querySelector(".od-metric-value")).toHaveTextContent("—条");
+  expect(messageCard()).toHaveTextContent("无群日记录");
+});
+
+// 消息数不依赖抽取：所有群日都抽取失败（事件类卡片不可用）时，消息总量照样显示
+it("detail_shows_message_total_even_when_every_group_day_failed_extraction", async () => {
+  const cell = dataset.groupDaily[0]!;
+  await mount("detail", "", {
+    ...dataset,
+    events: [],
+    groupDaily: [{ ...cell, extraction_status: "failed", msg_count: 17 }],
+  });
+  expect(messageCard().querySelector(".od-metric-value")).toHaveTextContent("17条");
 });

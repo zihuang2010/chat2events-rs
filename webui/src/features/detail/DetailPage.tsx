@@ -16,6 +16,7 @@ import { useEventsPage, useSummary } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
 import { formatInt, formatPercent } from "@/lib/format";
+import { msgMetric } from "@/features/overview/overviewMetrics";
 import { DataGap, DurationOrNull, NullValue, StatusTag } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import type { Analytics } from "@/features/filters/useAnalytics";
@@ -53,9 +54,12 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
   // 哪怕它不在这一页、不在你的筛选范围内，也必须能打开（`EventDrawer` 自己会拉）。
   const openedEvent = events.find((e) => e.id === filters.drawer);
 
-  // antd 的三态排序（升→降→无）直接映射成 URL 上的 sort/dir。
-  const sortOrderOf = (key: EventSort) =>
-    filters.sort === key ? (filters.dir === "desc" ? "descend" : "ascend") : null;
+  // antd 的排序状态直接映射成 URL 上的 sort/dir。没有显式排序时后端按开始时间倒序，
+  // 所以「开始时间」表头在这种情况下就显示倒序箭头（URL 上不写默认排序）。
+  const sortOrderOf = (key: EventSort) => {
+    if (filters.sort === key) return filters.dir === "desc" ? "descend" : "ascend";
+    return key === "time" && filters.sort === null ? "descend" : null;
+  };
 
   const columns: ColumnsType<DecoratedEvent> = [
     {
@@ -64,6 +68,12 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       key: "first_msg_time",
       sorter: true,
       sortOrder: sortOrderOf("time"),
+      // 先倒序再正序；正序再点一下是 antd 的「取消」，下面 onChange 把它落回默认（即倒序）。
+      sortDirections: ["descend", "ascend"],
+      // antd 在正序时默认提示「点击取消排序」，但这一列取消的结果是回到倒序，按当前状态改写。
+      showSorterTooltip: {
+        title: sortOrderOf("time") === "ascend" ? "点击恢复倒序" : "点击切换为正序",
+      },
       fixed: "left",
       width: 112,
       render: (v: string) => (
@@ -266,6 +276,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
             info: METRIC.rooms,
             note: "当前事件涉及的群 · 按群去重",
           },
+          msgMetric(analytics),
           {
             key: "events",
             label: "事件量",
@@ -336,7 +347,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
               const column = (Object.keys(EVENT_SORTS) as EventSort[]).find(
                 (name) => EVENT_SORTS[name] === key,
               );
-              // 取消排序（antd 的第三态）回到默认的归属日序，不是「保持上一列」。
+              // 取消排序（antd 的第三态）回到默认的开始时间倒序，不是「保持上一列」。
               patch(
                 picked?.order && column
                   ? { sort: column, dir: picked.order === "descend" ? "desc" : "asc", page: 1 }

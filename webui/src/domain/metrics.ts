@@ -212,6 +212,20 @@ export function filterRooms(
   );
 }
 
+/**
+ * 业务经理编号 → 显示标签。**任一群带了姓名就用姓名，否则回落编号**（姓名缺失是 null 或空串）。
+ * 业务经理下拉的选项与表格 / 抽屉里的经理列共用这一份，两处写的是同一个人。
+ */
+export function managerLabels(rooms: Meta["rooms"]): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const room of rooms) {
+    const id = room.business_manager_id;
+    const name = room.business_manager_name;
+    if (id && (name || !labels.has(id))) labels.set(id, name || id);
+  }
+  return labels;
+}
+
 /** 覆盖度。**数据完整时也要显示**，让调用方在结构上没法忘记处理它。 */
 export function coverage(
   groupDaily: readonly GroupDailyRow[],
@@ -351,7 +365,8 @@ export function roomRollup(params: {
     const cells = cellsByRoom.get(r.roomid) ?? [];
     const agg = aggByRoom.get(r.roomid);
     const label = labelOf(r.roomid);
-    if (query && !`${label} ${r.roomid}`.toLowerCase().includes(query) && !agg) continue;
+    // 关键词只匹配事件摘要（后端已把它下推给聚合）：有关键词时，没有命中事件的群不显示。
+    if (query && !agg) continue;
 
     const cov = coverage(cells, dayset, r.roomid, [r]);
     const allFailed = cov.known === 0;
@@ -439,9 +454,8 @@ export function agentRollup(params: {
   days: readonly string[];
   dayset: ReadonlySet<string>;
   labelOf: (agent: string) => string;
-  query: string;
 }): AgentRow[] {
-  const { aggs, groupDaily, days, dayset, labelOf, query } = params;
+  const { aggs, groupDaily, days, dayset, labelOf } = params;
   const cells = groupDaily.filter((row) => dayset.has(row.dt));
   const cellsByDay = groupBy(cells, (row) => row.dt);
   const failedByRoom = new Map<string, number>();
@@ -458,7 +472,6 @@ export function agentRollup(params: {
   const out: AgentRow[] = [];
   for (const agg of aggs) {
     const label = labelOf(agg.agent);
-    if (query && !`${label} ${agg.agent}`.toLowerCase().includes(query)) continue;
     // 只看这个人参与过的群 —— 理由见函数头。名单为空时没有判断依据，不留空。
     const unknownDays = new Set(
       days.filter((day) => {

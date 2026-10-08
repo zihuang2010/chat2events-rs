@@ -1,5 +1,6 @@
 /** 概览的消息级汇总与等待时长。 */
-import { addDays } from "@/lib/format";
+import { addDays, formatInt } from "@/lib/format";
+import { METRIC } from "@/domain/definitions";
 import { workSecsBetween } from "@/domain/worktime";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
@@ -53,6 +54,22 @@ export function msgRollup(a: Analytics): MsgRollup {
   return {
     msgs,
     byDay: a.days.map((d) => acc.get(d) ?? { day: d, msgs: 0, senders: 0, cells: 0, failed: 0 }),
+  };
+}
+
+/** 「消息总量」指标卡（事件洞察与数据追溯共用）：口径与 `msgRollup` 一致，覆盖不全时在说明里注明。 */
+export function msgMetric(a: Analytics) {
+  const { cov } = a;
+  return {
+    key: "messages",
+    label: "消息总量",
+    value: cov.cells ? formatInt(msgRollup(a).msgs) : "—",
+    unit: "条",
+    info: METRIC.msgCount,
+    unavailable: false,
+    note:
+      "仅按日期、群统计" +
+      (!cov.cells ? " · 无群日记录" : cov.missing || cov.unknown ? " · 仅已知量" : ""),
   };
 }
 

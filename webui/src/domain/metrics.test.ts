@@ -16,6 +16,7 @@ import {
   isBacklog,
   isOverdue,
   isUnreplied,
+  managerLabels,
   quantile,
   roomRollup,
   statusOf,
@@ -464,7 +465,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
     days,
     dayset: new Set(days),
     labelOf: (a) => a,
-    query: "",
   });
 
   /**
@@ -499,7 +499,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
         days,
         dayset: new Set(days),
         labelOf: (agent) => agent,
-        query: "",
       });
       // 这个人只在 R1 —— R2 好不好跟他的参与量没关系。
       expect(result[0]).toMatchObject({
@@ -538,7 +537,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
         days: twoDays,
         dayset: new Set(twoDays),
         labelOf: (agent) => agent,
-        query: "",
       });
       expect(result[0]).toMatchObject({
         roomIds: ["R1"],
@@ -581,7 +579,6 @@ describe("客服维度：参与量与首响归属量是两个口径", () => {
       days,
       dayset: new Set(days),
       labelOf: (agent) => agent,
-      query: "",
     });
     expect(result.find((row) => row.key === "a1")).toMatchObject({
       involved: 4,
@@ -640,5 +637,27 @@ describe("分类汇总只按主类", () => {
       2,
     );
     expect(l1.map((c) => c.key).sort()).toEqual(["履约催促", "费用结算"]);
+  });
+});
+
+describe("managerLabels", () => {
+  const room = (roomid: string, id: string | null, name: string | null) => ({
+    roomid,
+    alias: null,
+    business_manager_id: id,
+    business_manager_name: name,
+  });
+
+  it("prefers_a_name_from_any_room_and_falls_back_to_the_id", () => {
+    const labels = managerLabels([
+      room("R1", "7", null), // 先遇到没姓名的群，不能把编号固定下来
+      room("R2", "7", "张三"),
+      room("R3", "8", ""), // 空串当作没姓名
+      room("R4", null, "无编号"), // 没编号的群不产生条目
+    ]);
+    expect([...labels]).toEqual([
+      ["7", "张三"],
+      ["8", "8"],
+    ]);
   });
 });

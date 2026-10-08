@@ -3,13 +3,20 @@
 import { ArrowRightOutlined, InfoCircleOutlined } from "@ant-design/icons";
 import { Select, Table, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import type { SortOrder } from "antd/es/table/interface";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { roomRollup, type RoomRow } from "@/domain/metrics";
 import { useRoomAggs } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
-import { DataGap, DurationOrNull, NumberOrNull, PercentOrNull } from "@/components/primitives";
+import {
+  DataGap,
+  DurationOrNull,
+  NumberOrNull,
+  PercentOrNull,
+  TextOrDash,
+} from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import { formatInt } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
@@ -20,8 +27,17 @@ import "./rooms.css";
 
 export function RoomsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-  const { days, roomLabel, dayset, query, roomAliasIsAuthoritative, roomMerchant, parents } =
-    analytics;
+  const {
+    days,
+    roomLabel,
+    dayset,
+    query,
+    roomAliasIsAuthoritative,
+    roomMerchant,
+    roomMerchantGroup,
+    roomManager,
+    parents,
+  } = analytics;
   const { filters, patch, hrefWith, reset } = api;
   const groups = useMemo(() => parents.map((parent) => parent.types), [parents]);
   const aggs = useRoomAggs(analytics.dataset.source, analytics.q, groups);
@@ -55,6 +71,18 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
     ? knownEventRows.reduce((sum, row) => sum + row.events!, 0)
     : null;
   const eventsIncomplete = messagesIncomplete || rows.some((row) => row.failedDays > 0);
+
+  // 缺失值（null）不管正序倒序都排在最后。antd 在倒序时会把比较结果取反，所以这里按 order 预先反一次。
+  const compareMissingLast =
+    (valueOf: (roomId: string) => string | null) => (a: RoomRow, b: RoomRow, order?: SortOrder) => {
+      const x = valueOf(a.key);
+      const y = valueOf(b.key);
+      if (x === null || y === null) {
+        const missingLast = Number(x === null) - Number(y === null);
+        return order === "descend" ? -missingLast : missingLast;
+      }
+      return x.localeCompare(y, "zh");
+    };
 
   const columns: ColumnsType<RoomRow> = [
     {
@@ -96,6 +124,20 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
           )}
         </>
       ),
+    },
+    {
+      title: "商家分组",
+      key: "merchantGroup",
+      width: 110,
+      sorter: compareMissingLast(roomMerchantGroup),
+      render: (_, r) => <TextOrDash value={roomMerchantGroup(r.key)} />,
+    },
+    {
+      title: "业务经理",
+      key: "businessManager",
+      width: 110,
+      sorter: compareMissingLast(roomManager),
+      render: (_, r) => <TextOrDash value={roomManager(r.key)} />,
     },
     {
       title: <Tooltip title={METRIC.msgCount}>消息总量</Tooltip>,

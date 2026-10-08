@@ -171,8 +171,9 @@ export async function fetchDataset(period: DatasetWindow = {}): Promise<RawDatas
  * ⚠️ **`level1`（父类）不在这里**：词表在前端手上，父类展开成 `types=a,b,c` 再传，
  * 免得后端每条 SQL 都 join 一次词表、多出一处能和前端打架的口径。
  *
- * ⚠️ **`q` 只匹配事件摘要**。搜索框还会命中群名 / 客服名 / 类型名，那些是前端的
- * 标签映射 —— 由调用方先解析成 id 集合，走 `room` / `agent` / `types` 传。
+ * ⚠️ **`q` 只匹配事件摘要**，前端搜索框的语义也是这一条：不匹配群名 / 客服名 / 类型名，
+ * 前端也不会把名字翻译成 id 参数。要按群、客服、分类筛，用各自的下拉框
+ * （对应 `room` / `agent` / `types`）。
  */
 export interface QueryFilters {
   from?: string | null;
@@ -260,7 +261,7 @@ export const fetchRoomAggs = (
 export const fetchAgentAggs = (f: QueryFilters): Promise<AgentAgg[]> =>
   get("/agents", agentAggListSchema, params(f));
 
-/** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按归属日。 */
+/** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按开始时间倒序（后端默认）。 */
 export interface EventSorting {
   sort?: string | null;
   dir?: "asc" | "desc" | null;

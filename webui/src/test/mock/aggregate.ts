@@ -86,8 +86,8 @@ function matches(event: DecoratedEvent, f: QueryFilters, lastDay: string): boole
   if (f.overdueOnly !== null && f.overdueOnly !== undefined) {
     if (isOverdue(event, sla) !== f.overdueOnly) return false;
   }
-  // ⚠️ **只匹配摘要**，与后端的 `e.summary LIKE ?` 一致。群名 / 客服名的匹配
-  // 由页面在**已经返回的聚合行**上本地做 —— 那些行数有界，不需要下推。
+  // ⚠️ **只匹配摘要**，与后端的 `e.summary LIKE ?` 一致。前端没有别的关键词匹配：
+  // 群名 / 客服名 / 类型名都不参与，要按它们筛就用各自的下拉框。
   if (f.q && !event.summary.toLowerCase().includes(f.q.toLowerCase())) return false;
   return true;
 }
@@ -344,7 +344,8 @@ const MAX_PAGE = 200;
 
 /**
  * 与后端的 `ORDER BY` 逐条同序，否则翻页的内容对不上：
- * **NULL 一律排最后**（两个方向都是 —— 「没回复」不是「很快」），`id` 收尾保证唯一。
+ * 不给排序键时开始时间倒序、`id` 倒序；给了键则 **NULL 一律排最后**
+ * （两个方向都是 —— 「没回复」不是「很快」），`id` 正序收尾保证唯一。
  *
  * ⚠️ **不按已知成功群日过滤**（`select` 的 `"all"`）—— 与真接口的 `/api/events`
  * 一致。此前这里过滤了而真接口不过滤，于是 mock 下总数与行必然同集合、
@@ -391,7 +392,8 @@ export function mockEventsPage(
         const cmp = typeof x === "number" ? x - (y as number) : x.localeCompare(y as string);
         return cmp * sign || a.id - b.id;
       })
-    : [...rows].sort((a, b) => a.occurred_on.localeCompare(b.occurred_on) || a.id - b.id);
+    : // 默认：开始时间倒序，再按事件 ID 倒序（后端 `Paging::order_by` 的无 sort 分支）
+      [...rows].sort((a, b) => b.first_msg_time.localeCompare(a.first_msg_time) || b.id - a.id);
   const needed = Math.ceil(ordered.length / pageSize);
   return {
     rows: ordered.slice((page - 1) * pageSize, page * pageSize),

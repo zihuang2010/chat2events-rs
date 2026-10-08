@@ -10,6 +10,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
+import { managerLabels } from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
 import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
 import type { FilterPatch, FiltersApi } from "@/features/filters/useFilters";
@@ -36,8 +37,9 @@ export function RoomFilters({
     setSearch({ applied: filters.query, draft: filters.query });
   }
   const untypedLabel = meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去";
-  // 折叠区里生效的条件在收起时也要看得见：看不见的筛选会把读数悄悄改掉，
+  // 折叠区（只有四项事件属性）里生效的条件在收起时也要看得见：看不见的筛选会把读数悄悄改掉，
   // 而用户只看到一个「看起来合理」的数字。每个条件一颗可点掉的筹码。
+  // 商家分组 / 业务经理在第一行常驻可见，不算折叠区的条件。
   const level2 = meta.taxonomy.find((type) => type.type_id === filters.level2);
   const moreChips: { key: string; label: string; clear: FilterPatch }[] = [];
   if (filters.level1) {
@@ -66,34 +68,21 @@ export function RoomFilters({
   const groupNames = [
     ...new Set(meta.rooms.map((room) => room.merchant_group_config_name).filter(Boolean)),
   ].sort((a, b) => a!.localeCompare(b!, "zh"));
-  const managerLabels = new Map<string, string>();
-  for (const room of meta.rooms) {
-    const id = room.business_manager_id;
-    const name = room.business_manager_name;
-    if (id && (name || !managerLabels.has(id))) managerLabels.set(id, name || id);
-  }
-  const managerOptions = [...managerLabels]
+  const managerOptions = [...managerLabels(meta.rooms)]
     .map(([value, label]) => ({ value, label }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh"));
-  if (filters.merchantGroup) {
-    moreChips.push({
-      key: "商家分组",
-      label: filters.merchantGroup,
-      clear: { merchantGroup: null },
-    });
-  }
-  if (filters.businessManager) {
-    moreChips.push({
-      key: "业务经理",
-      label: managerLabels.get(filters.businessManager) ?? filters.businessManager,
-      clear: { businessManager: null },
-    });
-  }
   const moreCount = moreChips.length;
   const active =
     from !== defaults.from ||
     to !== defaults.to ||
-    Boolean(filters.room || filters.agent || filters.query.trim() || moreCount) ||
+    Boolean(
+      filters.room ||
+      filters.agent ||
+      filters.merchantGroup ||
+      filters.businessManager ||
+      filters.query.trim() ||
+      moreCount,
+    ) ||
     filters.slaSec !== DEFAULT_SLA_SEC;
   const preset =
     from === to && to === last
@@ -117,14 +106,114 @@ export function RoomFilters({
       aria-label={label}
     >
       <div className="ra-filter-primary">
+        {/* 第一行：圈范围的条件 */}
+        <div className="ra-filter-scope">
+          <div className="ra-filter-dates">
+            <Form.Item label="日期范围" htmlFor="room-filter-from">
+              <DatePicker.RangePicker
+                classNames={{ popup: { root: "ra-range-popup" } }}
+                id={{ start: "room-filter-from", end: "room-filter-to" }}
+                aria-label="日期范围"
+                value={[dayjs(from), dayjs(to)]}
+                allowClear={false}
+                disabledDate={disabledDate}
+                onChange={(range) => {
+                  const [a, b] = range ?? [];
+                  if (a && b) patch({ from: a.format("YYYY-MM-DD"), to: b.format("YYYY-MM-DD") });
+                }}
+              />
+            </Form.Item>
+            <Form.Item label="快捷时间" htmlFor="room-filter-period">
+              <Segmented
+                id="room-filter-period"
+                aria-label="快捷时间"
+                value={preset}
+                options={[
+                  { label: "最后 1 天", value: "1d" },
+                  { label: "近 3 天", value: "3d" },
+                  { label: "近 7 天", value: "7d" },
+                ]}
+                onChange={(value) => {
+                  if (value === "7d") patch(defaults);
+                  if (value === "3d") patch({ from: threeDaysFrom, to: last });
+                  if (value === "1d") patch({ from: last, to: last });
+                }}
+              />
+            </Form.Item>
+          </div>
+          <Form.Item label="群聊" htmlFor="room-filter-room" className="ra-filter-select">
+            <Select
+              id="room-filter-room"
+              aria-label="群聊"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder={`全部群（${meta.rooms.length}）`}
+              value={filters.room}
+              onChange={(value: string | undefined) => patch({ room: value ?? null })}
+              options={meta.rooms.map((room) => ({
+                value: room.roomid,
+                label: room.alias ?? room.roomid,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="客服" htmlFor="room-filter-agent" className="ra-filter-select">
+            <Select
+              id="room-filter-agent"
+              aria-label="客服"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder={`全部客服（${meta.agents.length}）`}
+              value={filters.agent}
+              onChange={(value: string | undefined) =>
+                patch({ agent: value ?? null, focusAgent: value ?? null })
+              }
+              options={meta.agents.map((agent) => ({
+                value: agent.agent,
+                label: agent.alias ?? agent.agent,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item
+            label="商家分组"
+            htmlFor="room-filter-merchant-group"
+            className="ra-filter-select"
+          >
+            <Select
+              id="room-filter-merchant-group"
+              aria-label="商家分组"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="全部分组"
+              value={filters.merchantGroup}
+              onChange={(value: string | undefined) => patch({ merchantGroup: value ?? null })}
+              options={groupNames.map((value) => ({ value, label: value }))}
+            />
+          </Form.Item>
+          <Form.Item label="业务经理" htmlFor="room-filter-manager" className="ra-filter-select">
+            <Select
+              id="room-filter-manager"
+              aria-label="业务经理"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="全部经理"
+              value={filters.businessManager}
+              onChange={(value: string | undefined) => patch({ businessManager: value ?? null })}
+              options={managerOptions}
+            />
+          </Form.Item>
+        </div>
+        {/* 第二行：事件摘要关键词；更多筛选与重置在行尾 */}
         <div className="ra-filter-search-actions">
-          <Form.Item label="关键词" htmlFor="room-filter-query" className="ra-filter-search">
+          <Form.Item label="事件摘要" htmlFor="room-filter-query" className="ra-filter-search">
             <Input.Search
               id="room-filter-query"
-              aria-label="关键词"
+              aria-label="事件摘要"
               allowClear={{ clearIcon: <CloseCircleOutlined aria-label="清除" /> }}
-              placeholder="搜索关键词"
-              title="事件摘要、分类、群聊或客服"
+              placeholder="搜索事件摘要，如：退款、改地址"
               enterButton={<Button aria-label="搜索" title="搜索" icon={<SearchOutlined />} />}
               value={search.draft}
               onChange={(event) => setSearch({ applied: filters.query, draft: event.target.value })}
@@ -159,75 +248,6 @@ export function RoomFilters({
               重置
             </Button>
           </div>
-        </div>
-        <div className="ra-filter-dates">
-          <Form.Item label="日期范围" htmlFor="room-filter-from">
-            <DatePicker.RangePicker
-              classNames={{ popup: { root: "ra-range-popup" } }}
-              id={{ start: "room-filter-from", end: "room-filter-to" }}
-              aria-label="日期范围"
-              value={[dayjs(from), dayjs(to)]}
-              allowClear={false}
-              disabledDate={disabledDate}
-              onChange={(range) => {
-                const [a, b] = range ?? [];
-                if (a && b) patch({ from: a.format("YYYY-MM-DD"), to: b.format("YYYY-MM-DD") });
-              }}
-            />
-          </Form.Item>
-          <Form.Item label="快捷时间" htmlFor="room-filter-period">
-            <Segmented
-              id="room-filter-period"
-              aria-label="快捷时间"
-              value={preset}
-              options={[
-                { label: "最后 1 天", value: "1d" },
-                { label: "近 3 天", value: "3d" },
-                { label: "近 7 天", value: "7d" },
-              ]}
-              onChange={(value) => {
-                if (value === "7d") patch(defaults);
-                if (value === "3d") patch({ from: threeDaysFrom, to: last });
-                if (value === "1d") patch({ from: last, to: last });
-              }}
-            />
-          </Form.Item>
-        </div>
-        <div className="ra-filter-people">
-          <Form.Item label="群聊" htmlFor="room-filter-room">
-            <Select
-              id="room-filter-room"
-              aria-label="群聊"
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder={`全部群（${meta.rooms.length}）`}
-              value={filters.room}
-              onChange={(value: string | undefined) => patch({ room: value ?? null })}
-              options={meta.rooms.map((room) => ({
-                value: room.roomid,
-                label: room.alias ?? room.roomid,
-              }))}
-            />
-          </Form.Item>
-          <Form.Item label="客服" htmlFor="room-filter-agent">
-            <Select
-              id="room-filter-agent"
-              aria-label="客服"
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder={`全部客服（${meta.agents.length}）`}
-              value={filters.agent}
-              onChange={(value: string | undefined) =>
-                patch({ agent: value ?? null, focusAgent: value ?? null })
-              }
-              options={meta.agents.map((agent) => ({
-                value: agent.agent,
-                label: agent.alias ?? agent.agent,
-              }))}
-            />
-          </Form.Item>
         </div>
       </div>
       {!expanded && moreCount > 0 ? (
@@ -314,32 +334,6 @@ export function RoomFilters({
               { value: "1", label: "仅超时" },
               { value: "0", label: "仅未超时" },
             ]}
-          />
-        </Form.Item>
-        <Form.Item label="商家分组" htmlFor="room-filter-merchant-group">
-          <Select
-            id="room-filter-merchant-group"
-            aria-label="商家分组"
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="全部分组"
-            value={filters.merchantGroup}
-            onChange={(value: string | undefined) => patch({ merchantGroup: value ?? null })}
-            options={groupNames.map((value) => ({ value, label: value }))}
-          />
-        </Form.Item>
-        <Form.Item label="业务经理" htmlFor="room-filter-manager">
-          <Select
-            id="room-filter-manager"
-            aria-label="业务经理"
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="全部经理"
-            value={filters.businessManager}
-            onChange={(value: string | undefined) => patch({ businessManager: value ?? null })}
-            options={managerOptions}
           />
         </Form.Item>
       </div>

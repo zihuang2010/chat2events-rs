@@ -18,14 +18,13 @@ import { EventTrends } from "./EventTrends";
 import { formatInt, formatPercent } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi, FilterPatch } from "@/features/filters/useFilters";
-import { msgRollup } from "@/features/overview/overviewMetrics";
+import { msgMetric } from "@/features/overview/overviewMetrics";
 import "./events.css";
 
 export function EventsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const { cov, taxIndex, dataset, parents } = analytics;
   const { filters, hrefWith, reset } = api;
   const source = dataset.source;
-  const messages = msgRollup(analytics);
   const [level, setLevel] = useState<"level1" | "level2">("level1");
   const summary = useSummary(source, analytics.q);
   // ⚠️ **一级和二级是两次请求，不能由一次拆出来** —— 分位数不可加，
@@ -250,17 +249,7 @@ export function EventsPage({ analytics, api }: { analytics: Analytics; api: Filt
             info: METRIC.rooms,
             note: "当前事件涉及的群 · 按群去重",
           },
-          {
-            key: "messages",
-            label: "消息总量",
-            value: cov.cells ? formatInt(messages.msgs) : "—",
-            unit: "条",
-            info: METRIC.msgCount,
-            unavailable: false,
-            note:
-              "仅按日期、群统计" +
-              (!cov.cells ? " · 无群日记录" : cov.missing || cov.unknown ? " · 仅已知量" : ""),
-          },
+          msgMetric(analytics),
           {
             key: "events",
             label: "事件量",

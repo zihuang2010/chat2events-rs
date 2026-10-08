@@ -16,6 +16,11 @@ export function NullValue({ reason = "NULL：没算出来，不是 0" }: { reaso
   );
 }
 
+/** 文本或空值。空值显示成一条 `—`（只表示「没有这项信息」，不带「不是 0」的提示）。 */
+export function TextOrDash({ value }: { value: string | null }) {
+  return value ?? <span className="c2e-null">—</span>;
+}
+
 export function DataGap({
   label = "待补数据",
   detail,

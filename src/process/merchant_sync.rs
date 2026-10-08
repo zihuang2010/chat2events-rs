@@ -19,7 +19,7 @@
 //! - **失败一行不写、非零退出、进程内不重试。** Nacos / 商家域 / 账号域 / 数据库任何一步失败，
 //!   整轮作废；下一轮定时运行就是重试（12 小时一次，页面上的值最多旧半天）。
 //!   ⚠️ 尤其**不能拿上游失败当「全部查无」写下去**：账号域挂了而继续写，就是把所有经理姓名
-//!   洗成 NULL。成功判据沿用名册的规则 —— `code == 1` 且 `data` 不是 null；在此之上
+//!   洗成 NULL。成功判据与名册共用 [`crate::rpc`] 的一份 —— `code == 1` 且 `data` 不是 null；在此之上
 //!   **账号域多一条刷新进程自己的规则**：请求了非空经理编号却拿回 `{}`，也算失败
 //!   （名册对 `{}` 仍是合法成功，不受影响）。部分查到（`data` 非空、缺某几个编号）仍是成功，
 //!   缺的姓名存 NULL。
@@ -43,9 +43,10 @@
 
 use crate::config::{LogConfig, MysqlConfig, MysqlSecrets, load, require_owner_only};
 use crate::nacos::{Discovery, NacosConfig, NacosSecrets};
+use crate::rpc::{self, RESULT_OK};
 // 只借表名常量（让数据戳与筛选子查询读到同一个名字），不调用任何阶段的处理逻辑。
 use crate::stage::store::T_MERCHANT_SUMMARY;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 use std::{
@@ -65,9 +66,6 @@ const MERCHANT_BATCH: usize = 1000;
 
 /// 一条 upsert 语句最多几行（5 列 × 1000 = 5000 个占位符，远低于 MySQL 的 65535）。
 const UPSERT_BATCH: usize = 1000;
-
-/// 统一包装 `Result` 的成功码。**是 1，不是 0 也不是 200**，与 `web::roster` 同一份契约。
-const RESULT_OK: i64 = 1;
 
 #[derive(Deserialize)]
 pub struct SyncConfig {
@@ -98,14 +96,6 @@ pub fn load_from_dir(dir: &Path) -> (SyncConfig, SyncSecrets) {
     (config, load(&secrets, true))
 }
 
-/// 外层包装 `Result<T>`。`code` / `message` 只在失败时有意义。
-#[derive(Deserialize)]
-struct Envelope<T> {
-    code: Option<i64>,
-    message: Option<String>,
-    data: Option<T>,
-}
-
 /// 商家域给的摘要。只取三个字段；`merchantStatus` 在契约里有，但不进表（表里只存当前值，
 /// 以后要再加也不会丢什么），serde 默认忽略多余键。
 #[derive(Deserialize)]
@@ -124,56 +114,6 @@ struct Row {
     group: Option<String>,
     manager_id: Option<u64>,
     manager_name: Option<String>,
-}
-
-struct Upstream<'a> {
-    http: reqwest::Client,
-    discovery: &'a Discovery,
-}
-
-impl Upstream<'_> {
-    /// POST 一次 JSON，返回 `data`。`what` 是「哪个域、哪一步、几个编号」，原样进错误文案 ——
-    /// 这就是失败日志（进程非零退出，错误由入口打到 stderr）。
-    ///
-    /// 不用 `.json()` / `Response::json()`：reqwest 的 `json` 特性是别的依赖顺手开的，
-    /// 别新依赖这个隐式开启（同 `web::roster`）。
-    async fn post<T: DeserializeOwned>(
-        &self,
-        service: &str,
-        path: &str,
-        body: String,
-        what: &str,
-    ) -> crate::Result<T> {
-        let instance = self
-            .discovery
-            .pick(service)
-            .ok_or_else(|| format!("{what}：Nacos 尚无服务 `{service}` 的健康实例"))?;
-        let response = self
-            .http
-            .post(format!("{instance}{path}"))
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| format!("{what}：调用失败：{e}"))?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(format!("{what}：返回 HTTP {status}（{instance}）").into());
-        }
-        let answer: Envelope<T> =
-            serde_json::from_str(&text).map_err(|e| format!("{what}：应答无法解析：{e}"))?;
-        // `code != 1` 或 `data` 缺席都是失败，绝不当成「全部查无」。
-        Ok(answer
-            .data
-            .filter(|_| answer.code == Some(RESULT_OK))
-            .ok_or_else(|| {
-                format!(
-                    "{what}：应答异常：code={:?}（成功是 {RESULT_OK}） message={:?}",
-                    answer.code, answer.message
-                )
-            })?)
-    }
 }
 
 /// 空白（trim 后为空）等于没有名字，存 NULL。名称与姓名都过这一道，工作台读侧不再兜底；
@@ -202,12 +142,9 @@ pub async fn run(
         return Ok(());
     }
 
-    let upstream = Upstream {
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(nacos.timeout_secs))
-            .build()?,
-        discovery,
-    };
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(nacos.timeout_secs))
+        .build()?;
     let batches = ids.len().div_ceil(MERCHANT_BATCH);
     // `BTreeMap`：之后按商家编号升序 upsert，两个并发事务加锁顺序一致才不会死锁。
     let mut found: BTreeMap<u64, MerchantSummary> = BTreeMap::new();
@@ -220,14 +157,15 @@ pub async fn run(
         );
         let body = serde_json::to_string(&json!({ "merchantIdList": batch }))?;
         found.extend(
-            upstream
-                .post::<HashMap<u64, MerchantSummary>>(
-                    &nacos.merchant_service,
-                    MERCHANT_PATH,
-                    body,
-                    &what,
-                )
-                .await?,
+            rpc::post::<HashMap<u64, MerchantSummary>>(
+                &http,
+                discovery,
+                &nacos.merchant_service,
+                MERCHANT_PATH,
+                body,
+                &what,
+            )
+            .await?,
         );
     }
 
@@ -246,14 +184,15 @@ pub async fn run(
             nacos.employee_service,
             managers.len()
         );
-        let names = upstream
-            .post::<HashMap<u64, Option<String>>>(
-                &nacos.employee_service,
-                MANAGER_PATH,
-                serde_json::to_string(&managers)?,
-                &what,
-            )
-            .await?;
+        let names = rpc::post::<HashMap<u64, Option<String>>>(
+            &http,
+            discovery,
+            &nacos.employee_service,
+            MANAGER_PATH,
+            serde_json::to_string(&managers)?,
+            &what,
+        )
+        .await?;
         // 上游对「查不到的编号」是不放进 map，所以 `{}` 本该是「一个都没查到」；但 `data` 在失败时
         // 到底是 null 还是 `{}` 没有权威答案，拿它当成功写下去就会把全部经理姓名洗成 NULL。
         // 宁可整轮失败、下一轮重试。

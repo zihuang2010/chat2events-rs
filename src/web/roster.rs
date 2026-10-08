@@ -35,7 +35,7 @@
 
 use super::config::RosterConfig;
 use crate::nacos::{Discovery, NacosSecrets};
-use serde::Deserialize;
+use crate::rpc;
 use serde_json::Value;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -88,16 +88,6 @@ const EMPLOYEE_PATH: &str = "/rpc/v2/work/wechat/emp/getWechatEmpInfoMapByCorpId
 /// 一次请求最多几个 `userId` —— 服务端 `@Size(max = 100)`，超了整批被校验拦下，
 /// **分批是调用方的责任**。
 const EMPLOYEE_BATCH: usize = 100;
-
-/// 统一包装 `Result` 的成功码。**是 1，不是 0 也不是 200**（`ResultEnum.SUCCESS`）。
-/// `process::merchant_sync` 对商家域和账号域用的是同一份契约。
-///
-/// ⚠️ **必须同时要求 `code == 1` 和 `data` 非空**，两道一起才闭环：
-/// 上游「失败时 `data` 是 null 还是 `{}`」没有权威答案（`Result` 来自外部依赖
-/// `com.jdd.integration:jdd-common-resultvo`，源码不在手上）。而空 map 是**合法的成功
-/// 响应**（查不到的 ID 不放进 map），所以万一失败时 `data` 也是 `{}`，只看 `data`
-/// 就会把一批人当成「查无此人」负缓存住 —— 那是失败不该有的待遇。`code` 这一道先拦住它。
-const RESULT_OK: i64 = 1;
 
 /// 上游调不通之后冷却多久再试。
 ///
@@ -263,44 +253,26 @@ impl Upstream {
             } => {
                 let mut found = HashMap::new();
                 for batch in ids.chunks(EMPLOYEE_BATCH) {
-                    // 每一批各选一次实例：实例列表按 `cacheMillis` 在后台刷新，
-                    // 用最新那份没坏处，也顺手把负载摊开。
-                    let instance = discovery
-                        .pick(service)
-                        .ok_or_else(|| format!("Nacos 尚无服务 `{service}` 的健康实例"))?;
-                    let response = http
-                        .post(format!("{instance}{EMPLOYEE_PATH}"))
-                        .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .body(serde_json::to_string(
-                            &serde_json::json!({"corpId": corp, "userIdSet": batch}),
-                        )?)
-                        .send()
-                        .await
-                        .map_err(|e| format!("{LABEL} `{service}` 调用失败：{e}"))?;
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    if !status.is_success() {
-                        return Err(format!(
-                            "{LABEL} `{service}` 返回 HTTP {status}（{instance}）"
-                        )
-                        .into());
-                    }
-                    let answer: Envelope = serde_json::from_str(&body)
-                        .map_err(|e| format!("{LABEL} `{service}` 的应答无法解析：{e}"))?;
                     // ⚠️ **`code != 1` 或 `data` 缺席都当「调不通」**，绝不当成
                     // 「这一批全部查无此人」—— 后者会把他们负缓存住一整个 TTL，
                     // 而那是**失败**不该有的待遇。空 map 才是合法的「全都没查到」
-                    // （服务端对查不到的 ID 是不放进 map，不是报错）。判据见 [`RESULT_OK`]。
-                    let data = answer
-                        .data
-                        .filter(|_| answer.code == Some(RESULT_OK))
-                        .ok_or_else(|| {
-                            format!(
-                                "{LABEL} `{service}` 应答异常：code={:?}（成功是 {RESULT_OK}）\
-                                 message={:?}",
-                                answer.code, answer.message
-                            )
-                        })?;
+                    // （服务端对查不到的 ID 是不放进 map，不是报错）。判据见 [`rpc::RESULT_OK`]。
+                    // 每一批各选一次实例，也在 [`rpc::post`] 里。
+                    let data: HashMap<String, Value> = rpc::post(
+                        http,
+                        discovery,
+                        service,
+                        EMPLOYEE_PATH,
+                        serde_json::to_string(
+                            &serde_json::json!({"corpId": corp, "userIdSet": batch}),
+                        )?,
+                        &format!("{LABEL} `{service}`"),
+                    )
+                    .await?;
+                    // `data` 的值是 `WorkWechatEmpCorpInfoRespDTO`（对象），用 `Value` 装着、
+                    // **只取 `name` 那一个字段**：那个 DTO 有二十来个字段（`position` /
+                    // `mainDepartment` / `deptIds` …），端口上每多一个死字段，就是向未来每一个
+                    // 适配器收一次税（`CONTEXT.md` 的领域契约同一条规矩）。key = `officialUserId`。
                     for id in batch {
                         // map 里缺 key = 不存在。空名字跟没有名字一样没用，
                         // 一并当查不到，回落显示 ID。
@@ -321,23 +293,6 @@ impl Upstream {
                 .collect()),
         }
     }
-}
-
-/// 账号域 `Result<Map<K, V>>` 的外层包装。
-///
-/// 成功判据是 **`code == 1` 且 `data` 非空**，理由见 [`RESULT_OK`]。
-/// `data` 的值是 `WorkWechatEmpCorpInfoRespDTO`（对象，取 `name`），用 `Value` 装着。
-///
-/// ⚠️ **只取名字那一个字段。** 那个 DTO 有二十来个字段
-/// （`position` / `mainDepartment` / `deptIds` / `city` …），
-/// **端口上每多一个死字段，就是向未来每一个适配器收一次税**
-/// （`CONTEXT.md` 的领域契约同一条规矩）。
-#[derive(Deserialize)]
-struct Envelope {
-    code: Option<i64>,
-    message: Option<String>,
-    /// key = `officialUserId`。**查不到的 ID 根本不出现**。
-    data: Option<HashMap<String, Value>>,
 }
 
 #[cfg(test)]

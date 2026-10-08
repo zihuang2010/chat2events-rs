@@ -104,6 +104,9 @@
 
 - **`agent` = `easyUserId`**（16 位定长，内外统一）。`officialUserId` 形态混杂（手机号 / 字母账号），**不可用作主键** —— 换号即腰斩。
 - **`room` = `officialRoomId`**（= 文件名，路径可直接解析）。
+- **业务经理编号 = 账号域的人员主键**（商家摘要表 `business_manager_id`，上游 `Long`）。
+  它是**第四种 ID，与 `easyUserId` / `officialUserId` 都不可互换** —— 别拿它去关联客服维度的
+  `agent`，也别拿 `agent` 去账号域查经理姓名；两边的编号空间互不相通，混用不会报错，只会查出别人。
 
 人用 `easy` 系、群用 `official` 系，两套混用是**有意为之**（各取最稳的那个），不要"顺手统一"。
 

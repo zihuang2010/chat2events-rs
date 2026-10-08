@@ -21,8 +21,8 @@
 
 ## 模块布局
 
-`src/` 分四层：`stage/`（六个阶段模块）· `process/`（三个进程编排）· `web/`（只读旁路）·
-crate 根（内核：`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）。
+`src/` 分四层：`stage/`（六个阶段模块）· `process/`（四个进程编排）· `web/`（只读旁路）·
+crate 根（内核：`boot` · `config` · `llm` · `nacos` · `window` · `worktime` · `rejection`）。
 下面的路径都省掉这一层前缀之外的部分，完整判据在 `src/lib.rs` 顶注。
 
 ### ① 摄取 ingest ＋ ② 会话 conversation
@@ -259,7 +259,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 - 拉取或读取失败时，`daily` 仅尝试追加 `run_failure`，不修改事实与指标；读取阶段的上游版本错误仍整轮退出。
   记录写入自身失败时保留原始原因并报错，不对非幂等的失败记录追加做重试。
 
-### 四个进程
+### 五个进程
 
 | 进程 | 触发 | 干什么 | 失败语义 |
 |---|---|---|---|
@@ -267,6 +267,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 | `daily` | 每日定时 | 抽取保存 → channel → 独立打标与指标发布 | **群 × 日分阶段隔离**，整轮继续 |
 | `taxonomy` | **人工触发** | **只产词表，不写 `b_merchant_group_event` 表** | 失败无所谓，不阻塞任何人 |
 | `recompute` | **人工触发**（词表升版后） | 按新词表重打标：只写标注列 + 重算 `agent_metric_daily` | **群隔离**，一个群一个事务，整轮继续 |
+| `merchant_sync` | 定时（每天两次），**不是跑批的一环** | 群配置表取商家编号 → 商家域查摘要 → 账号域查经理姓名 → 一个事务 upsert 商家摘要表 | **整轮一个事务**：任一步失败一行不写、非零退出，下一轮定时运行即重试 |
 
 ---
 
@@ -282,6 +283,7 @@ HDBSCAN + LLM 命名，2026-09-03 删）。B 真跑出过一版 16 个类的词�
 | `b_merchant_group_agent_msg_daily` | `uk_agent_msg_daily (corpid, room, agent, dt)` **四列** REPLACE 覆盖 | 客服自己发了多少条，用来对冲「只看处理量」。**跟着事实阶段走**，见下 |
 | `b_merchant_group_taxonomy` | `uk_taxonomy (version, type_id)` | `name` 必填 · `description` **必填** · 词表由人定稿，不含向量列。从 ⑤ v1 起进 `check_schema` —— **查表不查行**，v0 期没有行是正常状态 |
 | `b_merchant_group_run_failure` | 追加 | `(run_date, corpid, roomid, reason)` |
+| `b_merchant_group_merchant_summary` | `uk_merchant (merchant_id)` **一列** upsert，永不删行 | 商家名称 / 商家分组 / 业务经理，**只存当前归属**。由独立进程 `merchant_sync` 每天两次刷新，**跑批不读、不进 `check_schema`**。BI 关联路径 群日指标 → 群配置表 → 本表，见 `schema.sql` 表头 |
 
 **`b_merchant_group_agent_msg_daily` 为什么是另一张表，不是上面那张表的一列**
 

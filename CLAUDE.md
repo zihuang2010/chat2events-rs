@@ -5,15 +5,18 @@
 不是聊天机器人，不是问答系统。**T+2 跑批，跳过当天和昨天，跑完即退出，没有常驻服务。**
 **webUI 是唯一旁路，且只读** —— **事实与指标只从 MySQL 取数**（原文下钻读 `source_messages`
 展示列，不碰文件系统、没有 `raw_root`），不写表、不调模型，跑批不知道它存在。
-唯一的出站 HTTP 是 `web/roster.rs`：**展示别名**（客服姓名 / 商家名称）走 Nacos 找到的内部
-服务，**取不到必须回落显示 ID** —— 别名不进指标、不进聚合键、不落库，理由在那个文件的顶注。
+出站 HTTP 只有两处，都经 Nacos 找到内部服务（服务发现在内核 `nacos.rs`，两处共用）：
+`web/roster.rs` 取**展示别名**（客服姓名 / 商家名称），**取不到必须回落显示 ID** ——
+别名不进指标、不进聚合键、不落库，理由在那个文件的顶注；
+`process/merchant_sync.rs`（独立的定时刷新进程，不是跑批的一环）取商家名称 / 商家分组 /
+业务经理，落进商家摘要表，**跑批不读这张表**。
 
 ## 七个阶段
 
 `OSS → mirror → ingest → extract/assemble → 保存事实 → channel → classify → 更新标签与分类指标 → webUI(只读)`
 
-**六个阶段模块全在 `src/stage/` 下**，三个进程编排在 `src/process/`，只读旁路 `src/web/`，
-内核（`boot` · `config` · `llm` · `window` · `worktime` · `rejection`）留 crate 根 ——
+**六个阶段模块全在 `src/stage/` 下**，四个进程编排在 `src/process/`，只读旁路 `src/web/`，
+内核（`boot` · `config` · `llm` · `nacos` · `window` · `worktime` · `rejection`）留 crate 根 ——
 四类东西写在路径上，不靠注释区分。判据见 `src/lib.rs` 顶注。
 
 | # | 阶段 | 模块 | 端口 | 出口类型 |
@@ -33,6 +36,8 @@
 另有两个**人工触发**进程，都不写 `b_merchant_group_event`、不参与跑批：
 `process/taxonomy/`（**词表由人手写** → `review` 试打 → `emit-sql` → 人工执行；机器归纳两条路都已放弃）·
 `process/recompute.rs`（升版重打标，只写标注列）。
+再有一个**定时**进程 `process/merchant_sync.rs`（商家摘要刷新：群配置表 → 商家域 / 账号域 →
+商家摘要表，一个事务 upsert，每天两次；**不是七阶段的一环**，任一步失败一行不写、非零退出）。
 入口在 `src/bin/`（写生产库的运维入口，随 release 发布）；`examples/` 只剩
 `dry` / `smoke` / `tzcheck` 三个不写库的诊断工具。**编排住在 lib 里**，
 入口只负责 `boot::Boot` 起进程再调它 —— `Boot::llms()` 建两队模型时一并打启动日志。

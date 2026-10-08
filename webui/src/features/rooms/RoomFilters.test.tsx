@@ -171,6 +171,66 @@ describe("群聊分析筛选", () => {
     view.unmount();
   });
 
+  // 选项从 meta.rooms 去重得出（天然只含当前日期范围内的群）：
+  // 「未分组」是上游字面值、照常是一项；没关联商家（NULL）的群不产生选项；
+  // 经理姓名缺失（null）或是空串时显示编号。
+  it("商家分组与业务经理下拉：选项由群选项去重得出，姓名缺失时回落显示编号", async () => {
+    const user = userEvent.setup();
+    // 每个下拉用一份新挂载：收起的下拉不会从 DOM 里摘掉，同屏读会把两个下拉的选项混在一起
+    const optionsOf = async (name: string) => {
+      const view = mount();
+      await user.click(screen.getByRole("button", { name: "更多筛选" }));
+      await user.click(screen.getByRole("combobox", { name }));
+      const texts = [...document.querySelectorAll(".ant-select-item-option-content")].map(
+        (el) => el.textContent,
+      );
+      view.unmount();
+      return texts;
+    };
+    expect(await optionsOf("商家分组")).toEqual(["华北组", "华东组", "华南组", "未分组"]);
+    // 同一个经理名下多个群只出一项；姓名 null / 空串的回落成编号
+    expect(await optionsOf("业务经理")).toEqual(["1003", "9007199254740993", "李经理", "王经理"]);
+  });
+
+  it("选商家分组与业务经理写进 URL，与其他条件叠加并复位页码，重置一并清掉", async () => {
+    const user = userEvent.setup();
+    const view = mount("?room=R-test&page=3");
+    await user.click(screen.getByRole("button", { name: "更多筛选" }));
+    await user.click(screen.getByRole("combobox", { name: "商家分组" }));
+    await user.click(
+      screen.getByText("华东组", { exact: true, selector: ".ant-select-item-option-content" }),
+    );
+    await waitFor(() => expect(params().get("group")).toBe("华东组"));
+    expect(params().get("room")).toBe("R-test");
+    expect(params().has("page")).toBe(false);
+    await user.click(screen.getByRole("combobox", { name: "业务经理" }));
+    await user.click(
+      screen.getByText("李经理", { exact: true, selector: ".ant-select-item-option-content" }),
+    );
+    await waitFor(() => expect(params().get("manager")).toBe("1001"));
+    expect(params().get("group")).toBe("华东组");
+    expect(screen.getByRole("button", { name: "重置" })).toHaveAttribute("data-active", "true");
+    await user.click(screen.getByRole("button", { name: "重置" }));
+    await waitFor(() => expect(params().toString()).toBe(""));
+    view.unmount();
+  });
+
+  it("折叠时两个条件各是一颗可点掉的筹码；经理筹码显示姓名，查不到姓名时显示编号", async () => {
+    const user = userEvent.setup();
+    const view = mount("?group=未分组&manager=9007199254740993");
+    expect(screen.getByRole("button", { name: "更多筛选（2）" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "清除业务经理筛选：9007199254740993" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清除商家分组筛选：未分组" }));
+    await waitFor(() => expect(params().has("group")).toBe(false));
+    expect(params().get("manager")).toBe("9007199254740993");
+    view.unmount();
+  });
+
   it("collapsed_filters_show_removable_chips", async () => {
     const user = userEvent.setup();
     const type = meta.taxonomy[0]!;

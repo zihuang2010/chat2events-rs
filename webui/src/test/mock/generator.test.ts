@@ -38,6 +38,23 @@ describe("模拟数据符合领域契约", () => {
     expect(data.meta.alias_is_authoritative).toBe(false);
   });
 
+  it("群选项覆盖商家筛选的各种形状：同组多经理、姓名缺失、姓名空串、未分组、没关联商家", () => {
+    const rooms = data.meta.rooms;
+    const groups = new Set(rooms.map((r) => r.merchant_group_config_name));
+    expect(groups).toContain("未分组");
+    expect([...groups].filter((g) => g && g !== "未分组").length).toBeGreaterThanOrEqual(2);
+    // 同一个经理名下不止一个群
+    const managers = rooms.map((r) => r.business_manager_id).filter(Boolean);
+    expect(new Set(managers).size).toBeLessThan(managers.length);
+    // 编号有值而姓名 null / 空串 —— 下拉框都要回落显示编号
+    expect(rooms.some((r) => r.business_manager_id && r.business_manager_name === null)).toBe(true);
+    expect(rooms.some((r) => r.business_manager_id && r.business_manager_name === "")).toBe(true);
+    // 没关联商家的群：分组与经理都是 null（不属于任何下拉选项）
+    expect(
+      rooms.some((r) => r.merchant_group_config_name === null && r.business_manager_id === null),
+    ).toBe(true);
+  });
+
   it("确定性：同一个种子跑两遍必须完全一致", () => {
     expect(buildMockDataset().events.length).toBe(data.events.length);
     expect(buildMockDataset().events[0]?.summary).toBe(data.events[0]?.summary);

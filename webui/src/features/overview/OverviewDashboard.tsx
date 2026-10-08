@@ -74,7 +74,7 @@ export function OverviewDashboard({ analytics, api }: OverviewProps) {
   const allRooms = roomRollup({
     aggs: roomsQuery.data ?? [],
     groupDaily: analytics.dataset.groupDaily,
-    rooms: analytics.dataset.meta.rooms,
+    rooms: analytics.visibleRooms,
     days,
     dayset: analytics.dayset,
     labelOf: roomLabel,

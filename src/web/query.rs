@@ -365,6 +365,7 @@ fn event_page_sql(
         )
         .window(corp, since, until)
         .filters(
+            corp,
             &paging.filters,
             paging.sla_sec.unwrap_or(DEFAULT_SLA_SEC),
             until,
@@ -1214,6 +1215,7 @@ fn count_events_sql(
         .push("SELECT COUNT(*) FROM b_merchant_group_event e", [])
         .window(corp, since, until)
         .filters(
+            corp,
             &paging.filters,
             paging.sla_sec.unwrap_or(DEFAULT_SLA_SEC),
             until,
@@ -1243,7 +1245,7 @@ fn summary_counts_sql(
         )
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .finish()
 }
 
@@ -1258,7 +1260,7 @@ fn summary_quantiles_sql(
         .push(&SUMMARY_QUANTILES, [])
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(
             " AND e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NOT NULL) q",
             [],
@@ -1284,7 +1286,7 @@ fn summary_agents_sql(
             [],
         )
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .finish()
 }
 
@@ -1310,7 +1312,7 @@ fn summary_by_day_sql(
     )
     .known_ok_days(corp, since, until)
     .window(corp, since, until)
-    .filters(filters, sla_sec, until)
+    .filters(corp, filters, sla_sec, until)
     .push(
         &format!(
             ") SELECT c.occurred_on, c.events, c.merchant, c.unreplied, c.overdue, p.p50, p.p90 \
@@ -1348,7 +1350,7 @@ fn summary_by_hour_sql(
         )
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(" GROUP BY h ORDER BY h", [])
         .finish()
 }
@@ -1378,7 +1380,7 @@ fn reply_buckets_sql(
         )
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(
             " AND e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NOT NULL) b \
          GROUP BY b.bucket ORDER BY b.bucket",
@@ -1409,7 +1411,7 @@ fn rooms_sql(
     )
     .known_ok_days(corp, since, until)
     .window(corp, since, until)
-    .filters(filters, sla_sec, until)
+    .filters(corp, filters, sla_sec, until)
     .push(
         &format!(
             ") SELECT c.roomid, c.events, c.merchant, c.unreplied, c.overdue, c.backlog, p.p50, p.p90 \
@@ -1440,7 +1442,7 @@ fn room_cells_sql(
         )
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(
             " GROUP BY e.roomid, e.occurred_on ORDER BY e.roomid, e.occurred_on",
             [],
@@ -1471,7 +1473,7 @@ fn room_top_groups_sql(
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
         .push(" AND e.event_type IS NOT NULL", [])
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(
             " GROUP BY e.roomid, k) c WHERE c.k IS NOT NULL) r \
          WHERE r.rn <= 4 ORDER BY r.roomid, r.rn",
@@ -1508,7 +1510,7 @@ fn agent_inv_scope(
             [],
         )
         .window(corp, since, until)
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(") ", [])
 }
 
@@ -1599,7 +1601,7 @@ fn category_ev_scope(
         .known_ok_days(corp, since, until)
         .window(corp, since, until)
         .push(" AND e.event_type IS NOT NULL", [])
-        .filters(filters, sla_sec, until)
+        .filters(corp, filters, sla_sec, until)
         .push(") ", [])
 }
 
@@ -1674,6 +1676,8 @@ mod binding_tests {
             status: Some("backlog".into()),
             overdue_only: Some(true),
             q: Some("改期".into()),
+            merchant_group_config_name: Some("华东组".into()),
+            business_manager_id: Some(9007199254740993),
         }
     }
 

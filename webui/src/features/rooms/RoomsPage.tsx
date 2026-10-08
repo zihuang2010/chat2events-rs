@@ -31,16 +31,14 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       roomRollup({
         aggs: aggs.data ?? [],
         groupDaily: analytics.dataset.groupDaily,
-        rooms: analytics.dataset.meta.rooms.filter(
-          (room) => !filters.room || room.roomid === filters.room,
-        ),
+        rooms: analytics.visibleRooms,
         days,
         dayset,
         labelOf: roomLabel,
         parents,
         query,
       }),
-    [aggs.data, analytics.dataset, days, dayset, roomLabel, parents, query, filters.room],
+    [aggs.data, analytics.dataset, analytics.visibleRooms, days, dayset, roomLabel, parents, query],
   );
   // 表格行数是群数（有界），所以翻页与排序都还留在前端 —— 与明细表不同。
   const pageSize = Math.min(200, filters.pageSize);

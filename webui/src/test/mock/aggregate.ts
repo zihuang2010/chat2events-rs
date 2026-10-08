@@ -19,6 +19,7 @@ import type { EventSorting, QueryFilters } from "@/api/client";
 import {
   aggregate,
   decorate,
+  filterRooms,
   groupDayStatus,
   isMerchant,
   isOverdue,
@@ -33,6 +34,7 @@ import type {
   EventRow,
   EventsPage,
   GroupDailyRow,
+  Meta,
   RoomAgg,
   SummaryRow,
 } from "@/domain/schemas";
@@ -103,13 +105,24 @@ function select(
   tax: TaxonomyIndex,
   f: QueryFilters,
   scope: "known-ok-days" | "all" = "known-ok-days",
+  rooms?: Meta["rooms"],
 ): { rows: DecoratedEvent[]; lastDay: string } {
   const ok = okDays(groupDaily);
   const lastDay = f.to ?? "9999-12-31";
+  // 商家分组 / 业务经理是群的属性，事件上没有 —— 要靠群元数据解析出符合条件的群。
+  // 缺了元数据不能当成没筛（那会让模拟数据比真接口多算一批群，两边都看起来正常）。
+  if ((f.merchantGroup || f.businessManager) && !rooms) {
+    throw new Error("按商家分组 / 业务经理筛选需要群元数据（rooms）");
+  }
+  const allowed =
+    f.merchantGroup || f.businessManager
+      ? new Set(filterRooms(rooms!, f).map((room) => room.roomid))
+      : null;
   const inWindow = decorate(events, tax).filter(
     (event) =>
       (!f.from || event.occurred_on >= f.from) &&
       (!f.to || event.occurred_on <= f.to) &&
+      (!allowed || allowed.has(event.roomid)) &&
       (scope === "all" || ok.has(`${event.roomid}\0${event.occurred_on}`)),
   );
   return { rows: inWindow.filter((event) => matches(event, f, lastDay)), lastDay };
@@ -137,8 +150,9 @@ export function mockSummary(
   groupDaily: readonly GroupDailyRow[],
   tax: TaxonomyIndex,
   f: QueryFilters,
+  rooms?: Meta["rooms"],
 ): SummaryRow {
-  const { rows, lastDay } = select(events, groupDaily, tax, f);
+  const { rows, lastDay } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
   const agg = aggregate(rows, f.slaSec ?? 1800, lastDay);
   const perDay = byKey(rows, (e) => e.occurred_on);
   const perHour = byKey(rows, (e) => e.first_msg_time.slice(11, 13));
@@ -186,8 +200,9 @@ export function mockRoomAggs(
   tax: TaxonomyIndex,
   f: QueryFilters,
   groups?: readonly (readonly string[])[],
+  rooms?: Meta["rooms"],
 ): RoomAgg[] {
-  const { rows, lastDay } = select(events, groupDaily, tax, f);
+  const { rows, lastDay } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
   return [...byKey(rows, (e) => e.roomid)]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([roomid, mine]) => {
@@ -233,8 +248,9 @@ export function mockAgentAggs(
   groupDaily: readonly GroupDailyRow[],
   tax: TaxonomyIndex,
   f: QueryFilters,
+  rooms?: Meta["rooms"],
 ): AgentAgg[] {
-  const { rows } = select(events, groupDaily, tax, f);
+  const { rows } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
   const perAgent = new Map<string, DecoratedEvent[]>();
   for (const event of rows) {
     for (const agent of new Set(event.agents)) {
@@ -282,8 +298,9 @@ export function mockCategories(
   tax: TaxonomyIndex,
   f: QueryFilters,
   groups?: readonly (readonly string[])[],
+  rooms?: Meta["rooms"],
 ): CategoryAgg[] {
-  const { rows } = select(events, groupDaily, tax, f);
+  const { rows } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
   // 打标未完成的整个排除，与后端 `e.event_type IS NOT NULL` 一致。
   const typed = rows.filter((e) => e.event_type !== null);
   const keyOf = (event: DecoratedEvent): string | null => {
@@ -343,8 +360,9 @@ export function mockEventsPage(
   page: number,
   pageSize: number,
   sorting: EventSorting = {},
+  rooms?: Meta["rooms"],
 ): EventsPage {
-  const { rows } = select(events, groupDaily, tax, f, "all");
+  const { rows } = select(events, groupDaily, tax, f, "all", rooms);
   const key = sorting.sort;
   const sign = sorting.dir === "desc" ? -1 : 1;
   const pick = (e: DecoratedEvent): string | number | null => {

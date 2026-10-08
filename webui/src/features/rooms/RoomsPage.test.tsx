@@ -73,6 +73,7 @@ function useTestAnalytics(...args: Parameters<typeof useAnalytics>) {
     events: data.events,
     groupDaily: data.groupDaily,
     tax: data.taxIndex,
+    rooms: data.meta.rooms,
   });
   return useAnalytics(...args);
 }
@@ -271,6 +272,33 @@ it("选择一个群后只显示该群指标", async () => {
   await settle(view);
   expect(view.container.querySelectorAll(".ra-room-link")).toHaveLength(1);
   expect(view.container.querySelector(".ra-room-link")).toHaveTextContent(room.alias!);
+});
+
+type RoomOption = TestDataset["meta"]["rooms"][number];
+it.each<[string, (r: RoomOption) => boolean]>([
+  ["group=华东组", (r) => r.merchant_group_config_name === "华东组"],
+  ["manager=1003", (r) => r.business_manager_id === "1003"],
+  [
+    "group=华南组&manager=1002",
+    (r) => r.merchant_group_config_name === "华南组" && r.business_manager_id === "1002",
+  ],
+])("商家分组与业务经理筛选收敛群列表，指标只看这些群（%s）", async (search, pick) => {
+  const expected = dataset.meta.rooms.filter(pick);
+  expect(expected.length).toBeGreaterThan(0);
+  expect(expected.length).toBeLessThan(dataset.meta.rooms.length);
+  const view = render(
+    <MemoryRouter initialEntries={[`/rooms?${search}`]}>
+      <Providers>
+        <Workbench>
+          <Harness />
+        </Workbench>
+      </Providers>
+    </MemoryRouter>,
+  );
+  await settle(view);
+  const labels = [...view.container.querySelectorAll(".ra-room-link")].map((el) => el.textContent);
+  expect(labels.sort()).toEqual(expected.map((r) => r.alias).sort());
+  expect(screen.getByLabelText("群指标摘要")).toHaveTextContent(`${expected.length} 个群`);
 });
 
 it("子路径部署的分类下钻链接包含 basename", async () => {

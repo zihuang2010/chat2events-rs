@@ -70,8 +70,14 @@ impl Scope {
     /// 预置片段：**动态筛选**。片段与绑定由 [`Filters::clause`] 一次产出，
     /// 所以一条语句里只构造一次 —— 此前同一个函数里它被重复构造五六次，
     /// 每次重新分配，而文本只取第一次那份。
-    pub(super) fn filters(self, filters: &Filters, sla_sec: u32, last_day: NaiveDate) -> Self {
-        let (clause, binds) = filters.clause(sla_sec, last_day);
+    pub(super) fn filters(
+        self,
+        corp: &str,
+        filters: &Filters,
+        sla_sec: u32,
+        last_day: NaiveDate,
+    ) -> Self {
+        let (clause, binds) = filters.clause(corp, sla_sec, last_day);
         self.push(&clause, binds)
     }
 

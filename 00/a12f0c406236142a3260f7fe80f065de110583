@@ -1,0 +1,49 @@
+src/web/serve.rs
+  s_9d84dc0c93e029::t_752bc1f7b45cbd 295
+  s_9d84dc0c93e029::t_9cd1dbe41518e1 72
+  s_9d84dc0c93e029::t_8be9d7f5ce935c 293-294,296-321
+  s_9d84dc0c93e029::t_bf972c375f7451 19-20
+webui/src/api/source.ts
+  s_9d84dc0c93e029::t_b1fca81f3f0375 14
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_9d84dc0c93e029::t_68dc53318899d9 8,25-28,31-34,36-39,42,569-571,574,576-579
+webui/src/api/client.ts
+  s_9d84dc0c93e029::t_ae285ec032eacd 17,23
+  s_9d84dc0c93e029::t_6c94454f691718 262-270
+src/web/tests.rs
+  s_9d84dc0c93e029::t_bf972c375f7451 1678-1715,1717-1724,1726-1806
+  s_9d84dc0c93e029::t_0aefeb73e9a9f2 322-331
+  s_9d84dc0c93e029::t_78a2b33292a4e3 1716,1725
+src/web/query.rs
+  s_9d84dc0c93e029::t_7d1b9fe3165902 889-901,903-920
+  s_9d84dc0c93e029::t_536bd13c033acf 1534-1549,1554-1555
+  s_9d84dc0c93e029::t_7816788e69a653 902
+  s_9d84dc0c93e029::t_bf972c375f7451 1550-1553
+  s_9d84dc0c93e029::t_9b1dbf2cdef1b5 1779
+  s_9d84dc0c93e029::t_6a60d9b6137c9c 1775
+webui/src/features/rooms/exportRooms.ts
+  s_9d84dc0c93e029::t_edb425e20c985f 9-12,18,25,48-59,113-174,212-230
+webui/src/domain/schemas.ts
+  s_9d84dc0c93e029::t_1eabba084258dd 353-364
+webui/src/features/rooms/RoomsPage.tsx
+  s_9d84dc0c93e029::t_30d6456fde4738 12,25,282-292
+webui/src/features/rooms/exportRooms.test.ts
+  s_9d84dc0c93e029::t_3ce592f2eb2ee7 155
+  s_9d84dc0c93e029::t_68dc53318899d9 5,119-154,156-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "00a12f0c406236142a3260f7fe80f065de110583",
+  "prompts": {},
+  "sessions": {
+    "s_9d84dc0c93e029": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01ea1151-1552-4533-8ccf-9be1a829aa17",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -16,10 +16,13 @@ import {
   isBacklog,
   isOverdue,
   isUnreplied,
+  level2Label,
   managerLabels,
   quantile,
+  roomCoverageLabel,
   roomRollup,
   statusOf,
+  type RoomRow,
 } from "./metrics";
 // 聚合口径已经搬进 SQL；`mock/aggregate` 是它在前端的对照实现，
 // 也是这些测试的输入来源 —— 于是「拼接」和「口径」各自被测到。
@@ -659,5 +662,50 @@ describe("managerLabels", () => {
       ["7", "张三"],
       ["8", "8"],
     ]);
+  });
+});
+
+describe("level2Label", () => {
+  it("joins_parent_and_name_and_treats_anything_outside_the_taxonomy_as_untyped", () => {
+    const meta = { taxonomy: TAX, taxonomy_version: "v1" };
+    expect(level2Label(meta, "urge_visit")).toBe("履约催促 / 催上门");
+    expect(level2Label(meta, "__untyped__")).toBe("未归类 / 归不上去");
+    expect(level2Label(meta, "legacy_code")).toBe("未归类 / 归不上去");
+    expect(level2Label({ taxonomy: [], taxonomy_version: "v0" }, "__untyped__")).toBe("未建词表");
+  });
+});
+
+describe("roomCoverageLabel", () => {
+  const row = (patch: Partial<RoomRow>) =>
+    ({
+      failedDays: 0,
+      pendingLabels: 0,
+      failedLabels: 0,
+      missingDays: 0,
+      unknownDays: 0,
+      totalDays: 7,
+      ...patch,
+    }) as RoomRow;
+
+  it("reports_the_worst_gap_first_and_only_calls_a_room_complete_when_nothing_is_missing", () => {
+    expect(roomCoverageLabel(row({ unknownDays: 1, missingDays: 2, failedDays: 3 }))).toEqual({
+      text: "1 日最新结果未知",
+      state: "incomplete",
+    });
+    expect(roomCoverageLabel(row({ missingDays: 2, failedDays: 3 }))).toEqual({
+      text: "2 日无记录，完整性未知 · 3 日失败",
+      state: "incomplete",
+    });
+    expect(roomCoverageLabel(row({ missingDays: 2 })).text).toBe("2 日无记录，完整性未知");
+    expect(roomCoverageLabel(row({ failedDays: 3, pendingLabels: 1 }))).toEqual({
+      text: "3 / 7 日失败",
+      state: "failed",
+    });
+    expect(roomCoverageLabel(row({ pendingLabels: 1, failedLabels: 2 }))).toEqual({
+      text: "1 日待打标 · 2 日打标失败",
+      state: "incomplete",
+    });
+    expect(roomCoverageLabel(row({ failedLabels: 2 })).text).toBe("2 日打标失败");
+    expect(roomCoverageLabel(row({}))).toEqual({ text: "7 日完整", state: "complete" });
   });
 });

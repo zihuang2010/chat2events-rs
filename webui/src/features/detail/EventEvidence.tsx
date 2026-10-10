@@ -137,9 +137,11 @@ export function EventBasis({ event, analytics }: EvidenceProps) {
               按 first_responder 归属至 agent_metric_daily；缺少首响客服时不分摊处理量。
             </span>
           </Field>
-          <Field label="活跃量">
+          <Field label="参与事件数">
             {event.agents.length} 位客服各自计入
-            <span className="ed-field-note">agents[] 记录参与方，不能用活跃量代替首响处理量。</span>
+            <span className="ed-field-note">
+              agents[] 记录参与方，不能用参与事件数代替首响处理量。
+            </span>
           </Field>
           <Field label="溯源依据">
             {event.source_msg_ids.length} 条 source_msg_ids

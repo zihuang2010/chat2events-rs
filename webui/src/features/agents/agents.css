@@ -5,6 +5,12 @@
  * pre-emit critique: P4 H5 E4 S5 R5 V4
  */
 
+.ag-toolbar-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-sm);
+}
 .ag-chart-meta {
   display: flex;
   align-items: center;

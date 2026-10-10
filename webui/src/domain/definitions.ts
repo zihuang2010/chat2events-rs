@@ -98,7 +98,7 @@ export const METRIC = {
     "last_msg_time 与 occurred_on 不在同一天的事件。它仍只按开始日计一次，不会在两天各算一次。",
   tail: "末条来源消息发送方角色。EXTERNAL＝商家说完没人接，INTERNAL＝客服收的尾。与 asker_role 同源同形，只是取末条而非首条，确定性计算不经模型。它只说「谁讲了最后一句」，不说这件事办没办完——库里没有解决口径。加这一列之前抽取的历史行是 NULL，冻结区不可回填。",
   involved:
-    "活跃量：按事件 ID 去重，从 agents[] 现算。多客服参与同一事件时各自计入，所以各人相加会大于事件总数；全局事件数仍以事件明细去重为准。",
+    "参与事件数：按事件 ID 去重，从 agents[] 现算。多客服参与同一事件时各自计入，所以各人相加会大于事件总数；全局事件数仍以事件明细去重为准。",
   owned:
     "first_responder 归属的事件数，等于 agent_metric_daily.event_count 的合计（生产口径就是 FirstResponder）。无响应的事件不落在任何人头上，所以它也不等于事件总数。它不是解决量。",
   agentReply:

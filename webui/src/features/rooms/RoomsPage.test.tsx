@@ -11,6 +11,7 @@ import { queryClient } from "@/app/queryClient";
 import { Workbench } from "@/components/layout/Workbench";
 import { useFilters } from "@/features/filters/useFilters";
 import { useAnalytics } from "@/features/filters/useAnalytics";
+import type * as ExportRooms from "./exportRooms";
 import { RoomsPage } from "./RoomsPage";
 
 vi.mock("@/components/charts/EChart", () => ({
@@ -25,6 +26,12 @@ vi.mock("@/api/source", async (importOriginal) => {
   const { sourceStub } = await import("@/test/aggregateStub");
   return sourceStub(await importOriginal(), stub);
 });
+// 下载本身（浏览器里写文件）替换掉，只验证页面交给它的那张表。
+const download = vi.hoisted(() => vi.fn<(sheet: unknown[]) => Promise<void>>());
+vi.mock("./exportRooms", async (importOriginal) => ({
+  ...(await importOriginal<typeof ExportRooms>()),
+  downloadRoomSheet: download,
+}));
 afterEach(cleanup);
 // 缓存是模块级单例，用例之间不清就会读到上一个用例的数字。
 afterEach(() => queryClient.clear());
@@ -532,4 +539,26 @@ it("shows_merchant_group_and_manager_under_the_drawer_title", async () => {
 
   const none = await open("群丁");
   expect(within(none).getByText(/商家分组/)).toHaveTextContent("商家分组：— · 业务经理：—");
+});
+
+it("exports_every_filtered_room_not_only_the_current_page", async () => {
+  const user = userEvent.setup();
+  await settle(
+    render(
+      <MemoryRouter initialEntries={["/rooms?size=10"]}>
+        <Providers>
+          <Workbench>
+            <Harness />
+          </Workbench>
+        </Providers>
+      </MemoryRouter>,
+    ),
+  );
+  const total = Number(/共 (\d+) 个群/.exec(screen.getByText(/共 \d+ 个群/).textContent)![1]);
+  expect(total).toBeGreaterThan(10);
+
+  await user.click(screen.getByRole("button", { name: /导出 Excel/ }));
+  await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
+  // 摘要 · 空行 · 表头之后，每个群一行 —— 不受当前页大小限制。
+  expect(download.mock.calls[0]![0]).toHaveLength(3 + total);
 });

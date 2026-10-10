@@ -2,17 +2,22 @@
  * 客服效能：**工作量与服务质量并排，绝不用单一数字排名。**
  *
  * 两个口径必须同时出现，因为互相不能替代：
- *   活跃量     从 agents[] 现算，多人协作各自计入，相加会大于事件总数
+ *   参与事件数     从 agents[] 现算，多人协作各自计入，相加会大于事件总数
  *   首响归属事件数 agent_metric_daily 的生产口径，无响应的事件不落在任何人头上
  * 两者都不是解决量 —— 库里根本没有解决量。
  */
 
 import { MetricInfo as InsightInfo } from "@/components/Metric";
-import { ArrowRightOutlined, DotChartOutlined, TableOutlined } from "@ant-design/icons";
-import { Alert, Button, Drawer, Table, Tabs } from "antd";
+import {
+  ArrowRightOutlined,
+  DotChartOutlined,
+  DownloadOutlined,
+  TableOutlined,
+} from "@ant-design/icons";
+import { Alert, App, Button, Drawer, Table, Tabs } from "antd";
 import { Link } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { METRIC } from "@/domain/definitions";
 import { agentRollup, type AgentRow } from "@/domain/metrics";
 import { useAgentAggs, useRoomAggs, useSummary } from "@/api/queries";
@@ -26,6 +31,7 @@ import { formatDuration, formatInt, formatPercent, shortId } from "@/lib/format"
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
 import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
+import { agentSheet, downloadAgentSheet } from "./exportAgents";
 import "./agents.css";
 
 export function AgentsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
@@ -40,6 +46,8 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
     dataset,
   } = analytics;
   const { filters, patch, go, hrefWith, reset } = api;
+  const [exporting, setExporting] = useState(false);
+  const { message } = App.useApp();
   const unavailable = analytics.cov.known === 0;
   const source = dataset.source;
   const summary = useSummary(source, analytics.q);
@@ -331,6 +339,18 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
 
   const perRoom = focusRooms;
 
+  const exportXlsx = async () => {
+    setExporting(true);
+    try {
+      const sheet = agentSheet(rows, analytics, dataset.meta, filters, new Date());
+      await downloadAgentSheet(sheet, analytics);
+    } catch (error) {
+      void message.error(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <InsightsLayout
       title="客服效能"
@@ -410,12 +430,18 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                   <InsightInfo label="客服表现对照口径" text={METRIC.agentReply} />
                 </div>
                 <DefaultTabBar {...props} />
-                <Link
-                  className="od-link ia-tabs-extra"
-                  to={hrefWith({ focusAgent: null }, "/detail")}
-                >
-                  事件明细 <ArrowRightOutlined aria-hidden="true" />
-                </Link>
+                <div className="ia-tabs-extra ag-toolbar-actions">
+                  <Button
+                    icon={<DownloadOutlined aria-hidden="true" />}
+                    loading={exporting}
+                    onClick={() => void exportXlsx()}
+                  >
+                    导出 Excel
+                  </Button>
+                  <Link className="od-link" to={hrefWith({ focusAgent: null }, "/detail")}>
+                    事件明细 <ArrowRightOutlined aria-hidden="true" />
+                  </Link>
+                </div>
               </div>
             )}
             items={[
@@ -634,7 +660,7 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
                       values: focus.ownedSeries,
                     },
                   ]}
-                  ariaLabel={`${focus.label} 每日活跃量与首响归属事件数`}
+                  ariaLabel={`${focus.label} 每日参与事件数与首响归属事件数`}
                   onPickDay={(day) =>
                     go("/detail", { agent: focus.key, focusAgent: null, from: day, to: day })
                   }

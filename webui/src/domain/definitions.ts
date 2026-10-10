@@ -5,6 +5,8 @@
 
 export const UNTYPED = "__untyped__";
 export const DEFAULT_SLA_SEC = 1800;
+/** 日期范围的最大跨度（含首尾）。后端 `web::params::MAX_SPAN_DAYS` 有同名一份，超了回 400 */
+export const MAX_SPAN_DAYS = 31;
 
 export const SLA_OPTIONS = [
   { value: 900, label: "15 分钟" },

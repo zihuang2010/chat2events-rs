@@ -257,7 +257,8 @@ it("真实数据深链接按 ID 加载当前窗口之外的事件", async () => 
 });
 
 it("bounds_calendar_expansion_to_the_loaded_date_range", () => {
-  const filters = parseFilters(new URLSearchParams("from=0100-01-01&to=9999-12-31"));
+  // 31 天以内、两端都越出已加载范围（超过 31 天的链接会先被 parseFilters 收紧起点）
+  const filters = parseFilters(new URLSearchParams("from=2026-08-10&to=2026-09-09"));
   const { result } = renderHook(() => useTestAnalytics(dataset, filters));
   expect(result.current.days).toEqual(dataset.meta.days);
   // Analytics 不再持有事件明细，它现在产出的是**下推给聚合接口的那组参数**。

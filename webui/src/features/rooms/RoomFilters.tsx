@@ -12,7 +12,13 @@ import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
 import { level2Label, managerLabels } from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
-import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
+import {
+  DEFAULT_SLA_SEC,
+  EVENT_STATUS,
+  MAX_SPAN_DAYS,
+  STATUS_FILTERS,
+  UNTYPED,
+} from "@/domain/definitions";
 import type { FilterPatch, FiltersApi } from "@/features/filters/useFilters";
 
 export function RoomFilters({
@@ -90,9 +96,13 @@ export function RoomFilters({
         : to === last && from === defaults.from
           ? "7d"
           : "custom";
-  const disabledDate = (date: Dayjs) => {
+  // 选了一端之后，另一端只能落在跨度上限内。只管日面板：月 / 年面板是翻页用的，置灰会翻不过去。
+  const disabledDate = (date: Dayjs, info: { type: string; from?: Dayjs }) => {
     const value = date.format("YYYY-MM-DD");
-    return value < first || value > last;
+    if (value < first || value > last) return true;
+    if (!info.from || info.type !== "date") return false;
+    const picked = info.from.format("YYYY-MM-DD");
+    return value > addDays(picked, MAX_SPAN_DAYS - 1) || value < addDays(picked, 1 - MAX_SPAN_DAYS);
   };
 
   return (
@@ -115,6 +125,7 @@ export function RoomFilters({
                 value={[dayjs(from), dayjs(to)]}
                 allowClear={false}
                 disabledDate={disabledDate}
+                renderExtraFooter={() => `最多可选 ${MAX_SPAN_DAYS} 天`}
                 onChange={(range) => {
                   const [a, b] = range ?? [];
                   if (a && b) patch({ from: a.format("YYYY-MM-DD"), to: b.format("YYYY-MM-DD") });

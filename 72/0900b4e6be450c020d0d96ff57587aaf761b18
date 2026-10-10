@@ -1,0 +1,40 @@
+src/web/params.rs
+  s_ab2a7e248d3c75::t_96b38e77aac3c7 93-98
+  s_ab2a7e248d3c75::t_d90f2cd57b6ed4 886-892,894
+  s_ab2a7e248d3c75::t_c3b0988d97f34e 49-54
+CONTEXT.md
+  s_ab2a7e248d3c75::t_eedaf61000d77d 62
+webui/src/features/filters/useFilters.test.ts
+  s_ab2a7e248d3c75::t_2952ae61fcf160 15-24
+webui/src/features/filters/useFilters.ts
+  s_ab2a7e248d3c75::t_55ce5bb72a8f54 90-96,99
+  s_ab2a7e248d3c75::t_678310a7633ccc 13
+webui/src/domain/definitions.ts
+  s_ab2a7e248d3c75::t_4a79887e38b969 8-9
+webui/src/api/queries.ts
+  s_ab2a7e248d3c75::t_d05617af4aaf59 46-49
+  s_ab2a7e248d3c75::t_0df8d230438d2e 18
+webui/src/features/rooms/RoomFilters.tsx
+  s_ab2a7e248d3c75::t_de388986f1ec34 99-100,102-104
+  s_ab2a7e248d3c75::t_d17b19e1710a9a 105
+  s_ab2a7e248d3c75::t_58e0d4e17ed0e7 15-21
+  s_ab2a7e248d3c75::t_754da43b42f78d 128
+webui/src/features/insights/InsightsPages.test.tsx
+  s_ab2a7e248d3c75::t_b687923d688697 260-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "720900b4e6be450c020d0d96ff57587aaf761b18",
+  "prompts": {},
+  "sessions": {
+    "s_ab2a7e248d3c75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69e2e354-75d2-4c7a-ba14-603dafc51932",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

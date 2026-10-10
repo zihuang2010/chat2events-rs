@@ -11,6 +11,7 @@ export {
   fetchEventsPage as loadEventsPage,
   fetchMessages as loadMessages,
   fetchRoomAggs as loadRoomAggs,
+  fetchRoomCategories as loadRoomCategories,
   fetchSummary as loadSummary,
 } from "./client";
 

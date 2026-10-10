@@ -10,6 +10,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   DEFAULT_SLA_SEC,
   EVENT_SORTS,
+  MAX_SPAN_DAYS,
   STATUS_FILTERS,
   type EventSort,
   type StatusFilter,
@@ -86,11 +87,16 @@ export function parseFilters(sp: URLSearchParams): Filters {
   const dir = sp.get(KEYS.dir);
   const overdue = sp.get(KEYS.overdueOnly);
   const drawer = sp.get(KEYS.drawer);
-  const from = readDate(sp.get(KEYS.from));
-  const to = readDate(sp.get(KEYS.to));
+  const rawFrom = readDate(sp.get(KEYS.from));
+  const rawTo = readDate(sp.get(KEYS.to));
+  const to = rawFrom && rawTo && rawTo < rawFrom ? rawFrom : rawTo;
+  // 超长的旧链接：结束日不动，起点收紧到上限内。改后的范围在日期选择器与导出条件行上都看得见。
+  // 只有起点没有终点的链接这里收不了（终点要等数据回来才知道），交给后端的 400。
+  const earliest = to && addDays(to, 1 - MAX_SPAN_DAYS);
+  const from = rawFrom && earliest && rawFrom < earliest ? earliest : rawFrom;
   return {
     from,
-    to: from && to && to < from ? from : to,
+    to,
     room: sp.get(KEYS.room),
     agent: sp.get(KEYS.agent),
     merchantGroup: sp.get(KEYS.merchantGroup),

@@ -226,6 +226,19 @@ export function managerLabels(rooms: Meta["rooms"]): Map<string, string> {
   return labels;
 }
 
+/**
+ * 二级分类筛选值的显示名，筛选区与导出摘要共用。词表里找不到的就是「未归类」那一项
+ * （`__untyped__` 与词表外的历史编码都落在这里）。
+ */
+export function level2Label(
+  meta: Pick<Meta, "taxonomy" | "taxonomy_version">,
+  typeId: string,
+): string {
+  const type = meta.taxonomy.find((t) => t.type_id === typeId);
+  if (type) return `${type.parent_name} / ${type.name}`;
+  return meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去";
+}
+
 /** 覆盖度。**数据完整时也要显示**，让调用方在结构上没法忘记处理它。 */
 export function coverage(
   groupDaily: readonly GroupDailyRow[],
@@ -404,6 +417,36 @@ export function roomRollup(params: {
     });
   }
   return out;
+}
+
+/** 群表按事件量比较，缺失（null）当 -1，倒序时排最后。页面表头与导出共用。 */
+export const compareRoomEvents = (a: RoomRow, b: RoomRow): number =>
+  (a.events ?? -1) - (b.events ?? -1);
+
+/**
+ * 群表「数据完整性」一格的文字。**页面与 xlsx 导出共用这一份**，两边说法不能分家。
+ * `failed` 是唯一要加粗、挂提示的那一种，所以连同文字一起交给调用方。
+ */
+export function roomCoverageLabel(r: RoomRow): {
+  text: string;
+  state: "complete" | "failed" | "incomplete";
+} {
+  if (r.unknownDays > 0) return { text: `${r.unknownDays} 日最新结果未知`, state: "incomplete" };
+  if (r.missingDays > 0) {
+    const failed = r.failedDays ? ` · ${r.failedDays} 日失败` : "";
+    return { text: `${r.missingDays} 日无记录，完整性未知${failed}`, state: "incomplete" };
+  }
+  if (r.failedDays > 0) return { text: `${r.failedDays} / ${r.totalDays} 日失败`, state: "failed" };
+  if (r.pendingLabels || r.failedLabels) {
+    const text = [
+      r.pendingLabels ? `${r.pendingLabels} 日待打标` : "",
+      r.failedLabels ? `${r.failedLabels} 日打标失败` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return { text, state: "incomplete" };
+  }
+  return { text: `${r.totalDays} 日完整`, state: "complete" };
 }
 
 export interface AgentRow {

@@ -15,6 +15,7 @@ import {
   type SourceKind,
 } from "./source";
 import type { MessageRow } from "@/domain/schemas";
+import { parseFilters } from "@/features/filters/useFilters";
 import type { EventSorting, QueryFilters } from "./client";
 
 /**
@@ -42,7 +43,10 @@ export function useDataset(): UseQueryResult<LoadedDataset, Error> {
   const [params] = useSearchParams();
   const { pathname } = useLocation();
   const overview = pathname === "/" || pathname.endsWith("/overview");
-  return useWindowDataset(overview ? null : params.get("from"), overview ? null : params.get("to"));
+  // 用解析后的范围而不是 URL 原值：倒挂、超长的链接原样发出去是 400，
+  // 而 dataset 一失败整页只剩「重试」，连改日期的筛选栏都没有。
+  const { from, to } = parseFilters(params);
+  return useWindowDataset(overview ? null : from, overview ? null : to);
 }
 
 /** 主视图按 URL 范围取数；群抽屉用默认七天，共用同一份查询缓存。 */

@@ -31,6 +31,12 @@
   padding-block: var(--space-lg);
   min-width: 0;
 }
+.ra-section-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-sm);
+}
 .ra-summary {
   display: flex;
   flex-wrap: wrap;

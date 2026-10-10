@@ -12,6 +12,16 @@ describe("筛选状态的 URL 编码", () => {
       to: "2026-08-31",
     });
   });
+  it("超过 31 天的旧链接保留结束日、收紧起点", () => {
+    expect(parseFilters(new URLSearchParams("from=2026-07-01&to=2026-07-31"))).toMatchObject({
+      from: "2026-07-01",
+      to: "2026-07-31",
+    });
+    expect(parseFilters(new URLSearchParams("from=2026-06-01&to=2026-08-31"))).toMatchObject({
+      from: "2026-08-01",
+      to: "2026-08-31",
+    });
+  });
   it("空查询串解析出全空条件与默认值", () => {
     const f = parseFilters(new URLSearchParams());
     expect(f.room).toBeNull();

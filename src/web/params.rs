@@ -46,6 +46,12 @@ pub(super) struct DateRange {
 /// 群数往上走之前，要么调小它，要么把概览改成只取聚合（后者才是根治）。
 const DEFAULT_DAYS: i64 = 7;
 
+/// 日期范围的最大跨度（含首尾）。31 天放得下任何一个完整自然月。
+///
+/// ⚠️ 前端 `webui/src/domain/definitions.ts` 有同名的一份：选择器靠它置灰、
+/// 超长链接靠它收紧起点。两边不一致时是这里的 400，不是静默错数。
+const MAX_SPAN_DAYS: i64 = 31;
+
 /// 明细翻页的上限 —— **护栏，不是产能规划**。
 ///
 /// 延迟关联把每页的常数压小了一个数量级，但没有消掉「偏移量越大扫得越多」。
@@ -83,6 +89,12 @@ impl Period {
         };
         if since > until {
             return Err(WebError(StatusCode::BAD_REQUEST, "日期范围倒挂".into()));
+        }
+        if (until - since).num_days() >= MAX_SPAN_DAYS {
+            return Err(WebError(
+                StatusCode::BAD_REQUEST,
+                format!("日期范围最多 {MAX_SPAN_DAYS} 天，请缩小范围"),
+            ));
         }
         Ok((since, until))
     }
@@ -871,7 +883,15 @@ mod tests {
             "2026-08-25"
         );
 
+        // 跨度恰好 MAX_SPAN_DAYS 天（含首尾）放行
+        let p = Period {
+            from: Some("2026-07-01".into()),
+            to: Some("2026-07-31".into()),
+        };
+        assert!(p.bounds(&m).is_ok());
+
         for bad in [
+            ("2026-07-01", "2026-08-01"), // 32 天
             ("2026-08-26", "2026-08-25"), // 倒挂
             ("2026-8-1", "2026-08-26"),   // 长度不对
             ("not-a-date", "2026-08-26"),

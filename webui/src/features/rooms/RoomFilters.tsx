@@ -10,9 +10,15 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { Meta } from "@/domain/schemas";
-import { managerLabels } from "@/domain/metrics";
+import { level2Label, managerLabels } from "@/domain/metrics";
 import { addDays, windowBounds } from "@/lib/format";
-import { DEFAULT_SLA_SEC, EVENT_STATUS, STATUS_FILTERS, UNTYPED } from "@/domain/definitions";
+import {
+  DEFAULT_SLA_SEC,
+  EVENT_STATUS,
+  MAX_SPAN_DAYS,
+  STATUS_FILTERS,
+  UNTYPED,
+} from "@/domain/definitions";
 import type { FilterPatch, FiltersApi } from "@/features/filters/useFilters";
 
 export function RoomFilters({
@@ -36,11 +42,9 @@ export function RoomFilters({
   if (search.applied !== filters.query) {
     setSearch({ applied: filters.query, draft: filters.query });
   }
-  const untypedLabel = meta.taxonomy_version === "v0" ? "未建词表" : "未归类 / 归不上去";
   // 折叠区（只有四项事件属性）里生效的条件在收起时也要看得见：看不见的筛选会把读数悄悄改掉，
   // 而用户只看到一个「看起来合理」的数字。每个条件一颗可点掉的筹码。
   // 商家分组 / 业务经理在第一行常驻可见，不算折叠区的条件。
-  const level2 = meta.taxonomy.find((type) => type.type_id === filters.level2);
   const moreChips: { key: string; label: string; clear: FilterPatch }[] = [];
   if (filters.level1) {
     moreChips.push({ key: "一级", label: filters.level1, clear: { level1: null } });
@@ -48,7 +52,7 @@ export function RoomFilters({
   if (filters.level2) {
     moreChips.push({
       key: "二级",
-      label: level2 ? `${level2.parent_name} / ${level2.name}` : untypedLabel,
+      label: level2Label(meta, filters.level2),
       clear: { level2: null },
     });
   }
@@ -92,9 +96,13 @@ export function RoomFilters({
         : to === last && from === defaults.from
           ? "7d"
           : "custom";
-  const disabledDate = (date: Dayjs) => {
+  // 选了一端之后，另一端只能落在跨度上限内。只管日面板：月 / 年面板是翻页用的，置灰会翻不过去。
+  const disabledDate = (date: Dayjs, info: { type: string; from?: Dayjs }) => {
     const value = date.format("YYYY-MM-DD");
-    return value < first || value > last;
+    if (value < first || value > last) return true;
+    if (!info.from || info.type !== "date") return false;
+    const picked = info.from.format("YYYY-MM-DD");
+    return value > addDays(picked, MAX_SPAN_DAYS - 1) || value < addDays(picked, 1 - MAX_SPAN_DAYS);
   };
 
   return (
@@ -117,6 +125,7 @@ export function RoomFilters({
                 value={[dayjs(from), dayjs(to)]}
                 allowClear={false}
                 disabledDate={disabledDate}
+                renderExtraFooter={() => `最多可选 ${MAX_SPAN_DAYS} 天`}
                 onChange={(range) => {
                   const [a, b] = range ?? [];
                   if (a && b) patch({ from: a.format("YYYY-MM-DD"), to: b.format("YYYY-MM-DD") });
@@ -296,11 +305,10 @@ export function RoomFilters({
               patch({ level2: value ?? null, ...(value ? { level1: null } : {}) })
             }
             options={[
-              ...meta.taxonomy.map((type) => ({
-                value: type.type_id,
-                label: `${type.parent_name} / ${type.name}`,
+              ...[...meta.taxonomy.map((type) => type.type_id), UNTYPED].map((value) => ({
+                value,
+                label: level2Label(meta, value),
               })),
-              { value: UNTYPED, label: untypedLabel },
             ]}
           />
         </Form.Item>

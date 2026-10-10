@@ -1,14 +1,15 @@
 /** 群聊洞察：筛选、比较群维度指标，并下钻事件明细。 */
 
-import { ArrowRightOutlined, InfoCircleOutlined } from "@ant-design/icons";
-import { Select, Table, Tooltip } from "antd";
+import { ArrowRightOutlined, DownloadOutlined, InfoCircleOutlined } from "@ant-design/icons";
+import { App, Button, Select, Table, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { SortOrder } from "antd/es/table/interface";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
-import { roomRollup, type RoomRow } from "@/domain/metrics";
+import { compareRoomEvents, roomCoverageLabel, roomRollup, type RoomRow } from "@/domain/metrics";
 import { useRoomAggs } from "@/api/queries";
+import { loadRoomCategories } from "@/api/source";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import {
   DataGap,
@@ -21,12 +22,15 @@ import { EmptyState } from "@/components/states";
 import { formatInt } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
+import { downloadRoomSheets, roomSheet, roomTypeSheet } from "./exportRooms";
 import { RoomFilters } from "./RoomFilters";
 import { RoomInsightsDrawer } from "./RoomInsightsDrawer";
 import "./rooms.css";
 
 export function RoomsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const { message } = App.useApp();
   const {
     days,
     roomLabel,
@@ -157,7 +161,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       align: "right",
       width: 92,
       defaultSortOrder: "descend",
-      sorter: (a, b) => (a.events ?? -1) - (b.events ?? -1),
+      sorter: compareRoomEvents,
       render: (v: number | null) => <NumberOrNull value={v} />,
     },
     {
@@ -253,33 +257,45 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       title: "数据完整性",
       key: "coverage",
       width: 116,
-      render: (_, r) =>
-        r.unknownDays > 0 ? (
-          <span style={{ color: "var(--c2e-critical-ink)" }}>{r.unknownDays} 日最新结果未知</span>
-        ) : r.missingDays > 0 ? (
-          <span style={{ color: "var(--c2e-critical-ink)" }}>
-            {r.missingDays} 日无记录，完整性未知{r.failedDays ? ` · ${r.failedDays} 日失败` : ""}
-          </span>
-        ) : r.failedDays > 0 ? (
+      render: (_, r) => {
+        const { text, state } = roomCoverageLabel(r);
+        return state === "failed" ? (
           <Tooltip title={`${r.failedDays} 个「群 × 日」抽取失败，这一行的事件级数字不含它们`}>
-            <span style={{ color: "var(--c2e-critical-ink)", fontWeight: 600 }}>
-              {r.failedDays} / {r.totalDays} 日失败
-            </span>
+            <span style={{ color: "var(--c2e-critical-ink)", fontWeight: 600 }}>{text}</span>
           </Tooltip>
-        ) : r.pendingLabels || r.failedLabels ? (
-          <span style={{ color: "var(--c2e-critical-ink)" }}>
-            {[
-              r.pendingLabels ? `${r.pendingLabels} 日待打标` : "",
-              r.failedLabels ? `${r.failedLabels} 日打标失败` : "",
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
         ) : (
-          <span style={{ color: "var(--c2e-good-ink)" }}>{r.totalDays} 日完整</span>
-        ),
+          <span
+            style={{
+              color: state === "complete" ? "var(--c2e-good-ink)" : "var(--c2e-critical-ink)",
+            }}
+          >
+            {text}
+          </span>
+        );
+      },
     },
   ];
+
+  const exportXlsx = async () => {
+    setExporting(true);
+    try {
+      // 第二个 sheet 的数据只在导出时才取（行数是群数 × 类型数，页面用不到）。
+      const cells = await loadRoomCategories(analytics.q);
+      const now = new Date();
+      const { meta } = analytics.dataset;
+      await downloadRoomSheets(
+        {
+          metrics: roomSheet(rows, analytics, meta, filters, now),
+          types: roomTypeSheet(rows, cells, analytics, meta, filters, now),
+        },
+        analytics,
+      );
+    } catch (error) {
+      void message.error(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (aggs.isError) return <ErrorState error={aggs.error} onRetry={() => void aggs.refetch()} />;
   if (!aggs.data) return <PageSkeleton />;
@@ -363,9 +379,18 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
                 ) : null}
               </p>
             </div>
-            <Link className="od-link" to={hrefWith({}, "/detail")}>
-              事件明细 <ArrowRightOutlined />
-            </Link>
+            <div className="ra-section-actions">
+              <Button
+                icon={<DownloadOutlined aria-hidden="true" />}
+                loading={exporting}
+                onClick={() => void exportXlsx()}
+              >
+                导出 Excel
+              </Button>
+              <Link className="od-link" to={hrefWith({}, "/detail")}>
+                事件明细 <ArrowRightOutlined />
+              </Link>
+            </div>
           </div>
           <Table<RoomRow>
             size="small"

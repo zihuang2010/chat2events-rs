@@ -886,6 +886,38 @@ async fn read_room_top_groups(
     Ok(out)
 }
 
+/// 群 × 二级类型的事件数 —— 给群聊洞察 xlsx 导出的第二个 sheet，页面本身不调它。
+///
+/// 范围与 [`rooms_sql`] 完全相同（已知成功群日 · 窗口 · 筛选），所以同一组筛选下
+/// 每个群各类型（含 `NULL`）相加恒等于 `/api/rooms` 的 `events`；
+/// `mysql_room_categories_add_up_to_room_events` 钉住这一点。
+///
+/// ⚠️ **`event_type IS NULL`（打标未完成）不排除，以 `key: null` 出行** —— 与
+/// [`room_top_groups_sql`] 相反：那条要的是「有标签的前几名」，这里要的是对得上事件量的全集。
+/// 未完成是 `null`，不是 `__untyped__`，更不是 0（承重不变量 4）。
+///
+/// ⚠️ **行数是「实际出现过的 (群, 类型) 组合数」，没有天然上界**，与上面
+/// [`read_room_top_groups`] 的注释说的是同一件事 —— 那条为此在库里截前四，这条是有意的
+/// 例外：导出要全集，超出 `web.max_rows` 由 handler 显式 413，不截断。
+pub(super) async fn read_room_categories(
+    connection: &mut MySqlConnection,
+    corp: &str,
+    since: NaiveDate,
+    until: NaiveDate,
+    sla_sec: u32,
+    filters: &Filters,
+) -> Result<Vec<Value>, WebError> {
+    let (sql, binds) = room_categories_sql(corp, since, until, sla_sec, filters);
+    let rows: Vec<(String, Option<String>, i64)> =
+        bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
+            .fetch_all(&mut *connection)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(roomid, key, count)| json!({"roomid": roomid, "key": key, "count": count}))
+        .collect())
+}
+
 /// 按客服一行 —— 行数是客服数，几百。
 ///
 /// ⚠️ **这里混着两个口径，前端 `agentRollup` 就是这么定的，不能自作主张统一：**
@@ -1499,6 +1531,28 @@ fn room_top_groups_sql(
         )
         .finish()
 }
+
+fn room_categories_sql(
+    corp: &str,
+    since: NaiveDate,
+    until: NaiveDate,
+    sla_sec: u32,
+    filters: &Filters,
+) -> (String, Vec<Bind>) {
+    Scope::new()
+        .push(
+            "SELECT e.roomid, e.event_type, COUNT(*) AS n FROM b_merchant_group_event e",
+            [],
+        )
+        .known_ok_days(corp, since, until)
+        .window(corp, since, until)
+        .filters(corp, filters, sla_sec, until)
+        .push(
+            " GROUP BY e.roomid, e.event_type ORDER BY e.roomid, e.event_type",
+            [],
+        )
+        .finish()
+}
 /// 三条按客服的查询共用的 CTE —— **共用文本，不共用绑定**：它们是三条独立语句，
 /// 每条各建一个 [`Scope`]，文本与绑定一起再走一遍。
 ///
@@ -1718,10 +1772,11 @@ mod binding_tests {
                 summary_by_day_sql(c, s, u, sla, &filters);
                 summary_by_hour_sql(c, s, u, sla, &filters);
                 reply_buckets_sql(c, s, u, sla, &filters, &[60, 300, 900]);
-                // ② 按群三条
+                // ② 按群四条
                 rooms_sql(c, s, u, sla, &filters);
                 room_cells_sql(c, s, u, sla, &filters);
                 room_top_groups_sql(c, s, u, sla, &filters, &groups);
+                room_categories_sql(c, s, u, sla, &filters);
                 // ③ 按客服三条
                 agents_sql(c, s, u, sla, &filters);
                 agent_cells_sql(c, s, u, sla, &filters);

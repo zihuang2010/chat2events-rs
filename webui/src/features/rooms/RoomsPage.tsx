@@ -9,6 +9,7 @@ import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { compareRoomEvents, roomCoverageLabel, roomRollup, type RoomRow } from "@/domain/metrics";
 import { useRoomAggs } from "@/api/queries";
+import { loadRoomCategories } from "@/api/source";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import {
   DataGap,
@@ -21,7 +22,7 @@ import { EmptyState } from "@/components/states";
 import { formatInt } from "@/lib/format";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
-import { downloadRoomSheet, roomSheet } from "./exportRooms";
+import { downloadRoomSheets, roomSheet, roomTypeSheet } from "./exportRooms";
 import { RoomFilters } from "./RoomFilters";
 import { RoomInsightsDrawer } from "./RoomInsightsDrawer";
 import "./rooms.css";
@@ -278,8 +279,17 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
   const exportXlsx = async () => {
     setExporting(true);
     try {
-      const sheet = roomSheet(rows, analytics, analytics.dataset.meta, filters, new Date());
-      await downloadRoomSheet(sheet, analytics);
+      // 第二个 sheet 的数据只在导出时才取（行数是群数 × 类型数，页面用不到）。
+      const cells = await loadRoomCategories(analytics.q);
+      const now = new Date();
+      const { meta } = analytics.dataset;
+      await downloadRoomSheets(
+        {
+          metrics: roomSheet(rows, analytics, meta, filters, now),
+          types: roomTypeSheet(rows, cells, analytics, meta, filters, now),
+        },
+        analytics,
+      );
     } catch (error) {
       void message.error(`导出失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {

@@ -14,11 +14,13 @@ import {
   messageListSchema,
   summarySchema,
   roomAggListSchema,
+  roomCategoryAggListSchema,
   agentAggListSchema,
   categoryAggListSchema,
   eventsPageSchema,
   type SummaryRow,
   type RoomAgg,
+  type RoomCategoryAgg,
   type AgentAgg,
   type CategoryAgg,
   type EventRow,
@@ -256,6 +258,15 @@ export const fetchRoomAggs = (
     ...params(f),
     ...(groups?.length ? { groups: groups.map((g) => g.join("|")).join(",") } : {}),
   });
+
+/**
+ * 群 × 二级类型的事件数 —— 只有 xlsx 导出会调，点了才请求。
+ *
+ * ⚠️ 行数是「群数 × 出现过的类型数」，**没有天然上界**；超过后端 `web.max_rows`
+ * 会收到 413（不截断），由调用方把错误报给用户，缩短日期或加筛选再导。
+ */
+export const fetchRoomCategories = (f: QueryFilters): Promise<RoomCategoryAgg[]> =>
+  get("/room-categories", roomCategoryAggListSchema, params(f));
 
 /** 按客服一行，最多「客服数」行。 */
 export const fetchAgentAggs = (f: QueryFilters): Promise<AgentAgg[]> =>

@@ -1,0 +1,24 @@
+webui/src/features/rooms/rooms.css
+  s_0f2af886e341fc::t_ed76e9bd738dd0 253
+webui/src/features/rooms/RoomsPage.tsx
+  s_0f2af886e341fc::t_ed76e9bd738dd0 121
+  s_0f2af886e341fc::t_cc1214be4f5ace 99,137,144,154,164,172,184,201,211,220,229,245,255,262
+webui/src/features/detail/detail.css
+  s_0f2af886e341fc::t_4ca09b1514a08e 40,42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "607dfdac7959182533138ebe1e9b9fff2f039fa0",
+  "prompts": {},
+  "sessions": {
+    "s_0f2af886e341fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adb799bf-3540-44f7-9a7b-54ac8e9ac62d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

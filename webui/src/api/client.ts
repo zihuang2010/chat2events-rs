@@ -16,12 +16,14 @@ import {
   roomAggListSchema,
   roomCategoryAggListSchema,
   agentAggListSchema,
+  agentCategoryAggListSchema,
   categoryAggListSchema,
   eventsPageSchema,
   type SummaryRow,
   type RoomAgg,
   type RoomCategoryAgg,
   type AgentAgg,
+  type AgentCategoryAgg,
   type CategoryAgg,
   type EventRow,
   type EventsPage,
@@ -281,6 +283,13 @@ export const fetchRoomCategories = (f: QueryFilters): Promise<RoomCategoryAgg[]>
 /** 按客服一行，最多「客服数」行。 */
 export const fetchAgentAggs = (f: QueryFilters): Promise<AgentAgg[]> =>
   get("/agents", agentAggListSchema, params(f));
+
+/**
+ * 客服 × 二级分类的事件数（参与口径），一个客服一行 —— 只有客服效能的 xlsx 导出会调，点了才请求。
+ * 行数封顶在客服数上，与 `/agents` 同一个上界；超限 413 的处置同 `fetchRoomCategories`。
+ */
+export const fetchAgentCategories = (f: QueryFilters): Promise<AgentCategoryAgg[]> =>
+  get("/agent-categories", agentCategoryAggListSchema, params(f));
 
 /** 明细表的排序。`sort` 的取值见 `EVENT_SORTS`；不给就按开始时间倒序（后端默认）。 */
 export interface EventSorting {

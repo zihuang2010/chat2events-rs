@@ -1,12 +1,17 @@
 import { expect, it } from "vitest";
 import type { AgentRow } from "@/domain/metrics";
+import type { AgentCategoryAgg } from "@/domain/schemas";
+import type { WorkbookSheet } from "@/features/export/workbook";
+import { parentGroups } from "@/features/filters/useAnalytics";
 import { parseFilters } from "@/features/filters/useFilters";
 import { buildMockDataset } from "@/test/mock/generator";
 import { column, headers, record } from "@/test/workbook";
-import { agentSheet, type AgentSheetView } from "./exportAgents";
+import { agentPivotSheet, agentSheet, type AgentSheetView } from "./exportAgents";
 
-const { meta } = buildMockDataset();
-const view: AgentSheetView = {
+const raw = buildMockDataset();
+const { meta } = raw;
+const parents = parentGroups({ ...raw, taxIndex: new Map(), source: "api", loadedAt: 0 });
+const baseView: AgentSheetView = {
   days: ["2026-10-01", "2026-10-02", "2026-10-03"],
   lastDay: "2026-10-03",
   roomLabel: (id) => `群${id}`,
@@ -58,7 +63,7 @@ it("describes the agent sheet with rows by involved count and gaps left empty", 
       overdueRate: 0.2,
     }),
   ];
-  const sheet = agentSheet(rows, view, meta, filters, now);
+  const sheet = agentSheet(rows, baseView, meta, filters, now);
 
   expect(sheet.name).toBe("客服效能");
   expect(sheet.stickyColumns).toBeUndefined();
@@ -100,7 +105,7 @@ it("describes the agent sheet with rows by involved count and gaps left empty", 
 });
 
 it("summary counts people and flags incomplete ones only when there are any", () => {
-  expect(agentSheet([row({ key: "a1" })], view, meta, filters, now).caption).toBe(
+  expect(agentSheet([row({ key: "a1" })], baseView, meta, filters, now).caption).toBe(
     "日期 2026-10-01 ~ 2026-10-03（3 天，UTC+8）｜首响阈值 30 分钟｜共 1 人｜导出于 2026-10-09 18:30",
   );
 
@@ -109,7 +114,65 @@ it("summary counts people and flags incomplete ones only when there are any", ()
     row({ key: "a2", coverageUnknown: true }),
     row({ key: "a3" }),
   ];
-  expect(agentSheet(rows, view, meta, filters, now).caption).toBe(
+  expect(agentSheet(rows, baseView, meta, filters, now).caption).toBe(
     "日期 2026-10-01 ~ 2026-10-03（3 天，UTC+8）｜首响阈值 30 分钟｜共 3 人｜其中 2 人数据不完整，数字只含已知量｜导出于 2026-10-09 18:30",
   );
+});
+
+/** 宽表第 i 行里「参与事件数」之后的格子：各分类列 + 未归类 + 打标未完成。 */
+const tallies = (sheet: WorkbookSheet, i: number) =>
+  sheet.rows[i]!.slice(headers(sheet).indexOf("参与事件数") + 1);
+
+it("pivot sheets keep the agent sheet order and add up to each person's involved count", () => {
+  const rows = [
+    row({ key: "a3", involved: 0 }),
+    row({ key: "a2", label: "zhangsan", involved: 3, failedCells: 1 }),
+    row({ key: "a1", label: "李四", involved: 5 }),
+  ];
+  // a1、a2 共同参与的那件催接单在两人那里各计一次
+  const aggs: AgentCategoryAgg[] = [
+    { agent: "a1", counts: { urge_accept: 2, tech_reassign: 1, __untyped__: 1 }, unlabeled: 1 },
+    { agent: "a2", counts: { urge_accept: 1, retired_code: 2 }, unlabeled: 0 },
+  ];
+  const view = { ...baseView, parents, q: {} };
+  const l1 = agentPivotSheet("level1", rows, aggs, view, meta, filters, now);
+  const l2 = agentPivotSheet("level2", rows, aggs, view, meta, filters, now);
+
+  expect(l1.name).toBe("客服×一级分类");
+  expect(l2.name).toBe("客服×二级分类");
+  for (const sheet of [l1, l2]) {
+    expect(sheet.stickyColumns).toBe(1);
+    expect(sheet.caption).toBe(
+      "日期 2026-10-01 ~ 2026-10-03（3 天，UTC+8）｜首响阈值 30 分钟｜共 3 人｜其中 1 人数据不完整，数字只含已知量｜多人参与的事件各计一次，按列相加大于事件量｜导出于 2026-10-09 18:30",
+    );
+    expect(headers(sheet).slice(0, 2)).toEqual(["客服名称", "参与事件数"]);
+    expect(headers(sheet).slice(-2)).toEqual(["未归类", "打标未完成"]);
+    // 与第一个 sheet 同人同序同名
+    expect(column(sheet, "客服名称")).toEqual(["李四", "zhangsan（企微账号）", "a3"]);
+    for (const [i, involved] of [5, 3, 0].entries()) {
+      expect((tallies(sheet, i) as number[]).reduce((a, b) => a + b, 0)).toBe(involved);
+    }
+  }
+  expect(record(l1, 0)).toMatchObject({ 履约催促: 2, 师傅调度: 1, 未归类: 1, 打标未完成: 1 });
+  expect(record(l1, 1)).toMatchObject({ 履约催促: 1, 师傅调度: 0, 未归类: 2, 打标未完成: 0 });
+  expect(record(l2, 0)).toMatchObject({ 催接单: 2, 改派师傅: 1, 未归类: 1, 打标未完成: 1 });
+});
+
+it("pivot sheets refuse to export when the category data no longer matches the agent sheet", () => {
+  const view = { ...baseView, parents, q: {} };
+  const build = (rows: AgentRow[], aggs: AgentCategoryAgg[]) => () =>
+    agentPivotSheet("level1", rows, aggs, view, meta, filters, now);
+
+  expect(
+    build(
+      [row({ key: "a1", label: "李四", involved: 3 })],
+      [{ agent: "a1", counts: { urge_accept: 2 }, unlabeled: 0 }],
+    ),
+  ).toThrow("数据刚有更新（客服「李四」分类合计 2，参与事件数 3），请刷新页面后重新导出");
+  expect(
+    build(
+      [row({ key: "a1", involved: 0 })],
+      [{ agent: "a9", counts: { urge_accept: 1 }, unlabeled: 0 }],
+    ),
+  ).toThrow("数据刚有更新（分类数据里多出 1 个客服），请刷新页面后重新导出");
 });

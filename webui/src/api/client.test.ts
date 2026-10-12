@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   errorText,
   fetchAgentAggs,
+  fetchAgentCategories,
   fetchDataset,
   fetchEvent,
   fetchMessages,
@@ -78,6 +79,20 @@ describe("只读接口边界", () => {
     expect(first!.get("business_manager_id")).toBe("9007199254740993");
     expect(second!.has("merchant_group_config_name")).toBe(false);
     expect(second!.has("business_manager_id")).toBe(false);
+  });
+
+  it("客服分类计数走 /agent-categories，查询串与 /agents 同一套", async () => {
+    const row = { agent: "a1", counts: { urge_accept: 2 }, unlabeled: 1 };
+    const fetch = vi.fn((url: URL) =>
+      Promise.resolve(Response.json(url.pathname === "/api/agent-categories" ? [row] : [])),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const f = { from: "2026-10-01", to: "2026-10-03", agent: "a1", types: ["urge_accept"] };
+    expect(await fetchAgentCategories(f)).toEqual([row]);
+    await fetchAgentAggs(f);
+    const [categories, agents] = fetch.mock.calls.map((call) => (call as unknown[])[0] as URL);
+    expect(categories!.pathname).toBe("/api/agent-categories");
+    expect(categories!.search).toBe(agents!.search);
   });
 
   it.each([

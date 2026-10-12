@@ -364,6 +364,18 @@ export const roomCategoryAggSchema = z.object({
 });
 export type RoomCategoryAgg = z.infer<typeof roomCategoryAggSchema>;
 export const roomCategoryAggListSchema = z.array(roomCategoryAggSchema);
+/**
+ * 一个客服一行的二级分类事件数（参与口径），只有客服效能的 xlsx 导出用。`counts` 与
+ * `unlabeled` 的含义同 `roomCategoryAggSchema`；每人相加等于 `/api/agents` 的 `involved`，
+ * 多人参与的事件在每人那里各计一次。
+ */
+export const agentCategoryAggSchema = z.object({
+  agent: z.string(),
+  counts: z.record(z.string(), z.number()),
+  unlabeled: z.number(),
+});
+export type AgentCategoryAgg = z.infer<typeof agentCategoryAggSchema>;
+export const agentCategoryAggListSchema = z.array(agentCategoryAggSchema);
 export const agentAggListSchema = z.array(agentAggSchema);
 
 export const eventListSchema = z.array(eventSchema);

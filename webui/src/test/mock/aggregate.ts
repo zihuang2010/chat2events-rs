@@ -29,6 +29,7 @@ import {
 } from "@/domain/metrics";
 import type {
   AgentAgg,
+  AgentCategoryAgg,
   CategoryAgg,
   DecoratedEvent,
   EventRow,
@@ -314,6 +315,33 @@ export function mockAgentAggs(
         roomIds: [...new Set(mine.map((e) => e.roomid))].sort(),
       };
     });
+}
+
+/**
+ * `/api/agent-categories` 的对照：一个客服一行，参与口径，范围与 `mockAgentAggs` 同一个
+ * `select`，所以每人 `counts` 相加再加 `unlabeled` 等于他的 `involved`（后端
+ * `mysql_agent_categories_add_up_to_agent_involved` 钉的是同一件事）。
+ */
+export function mockAgentCategories(
+  events: readonly EventRow[],
+  groupDaily: readonly GroupDailyRow[],
+  tax: TaxonomyIndex,
+  f: QueryFilters,
+  rooms?: Meta["rooms"],
+): AgentCategoryAgg[] {
+  const { rows } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
+  const perAgent = new Map<string, { counts: Record<string, number>; unlabeled: number }>();
+  for (const e of rows) {
+    for (const agent of new Set(e.agents)) {
+      const tally = perAgent.get(agent) ?? { counts: {}, unlabeled: 0 };
+      if (e.event_type === null) tally.unlabeled += 1;
+      else tally.counts[e.event_type] = (tally.counts[e.event_type] ?? 0) + 1;
+      perAgent.set(agent, tally);
+    }
+  }
+  return [...perAgent]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([agent, tally]) => ({ agent, ...tally }));
 }
 
 export function mockCategories(

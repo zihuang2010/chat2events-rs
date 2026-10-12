@@ -911,16 +911,42 @@ pub(super) async fn read_room_categories(
         bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
             .fetch_all(&mut *connection)
             .await?;
-    Ok(fold_room_categories(rows))
+    Ok(fold_categories("roomid", rows))
 }
 
-/// 把 `(群, 类型, 事件数)` 折成每群一行，按 `roomid` 排序。`NULL` 类型进 `unlabeled`，
-/// 其余（含 `__untyped__` 与词表外的历史编码）原样做 `counts` 的键。
-fn fold_room_categories(rows: Vec<(String, Option<String>, i64)>) -> Vec<Value> {
-    let mut rooms: std::collections::BTreeMap<String, (serde_json::Map<String, Value>, i64)> =
+/// 客服 × 二级分类的事件数，一个客服一行 —— 给客服效能 xlsx 导出的两张分类宽表，页面本身不调它。
+///
+/// 口径是**参与**：范围与 [`agents_sql`] 同一段 [`agent_inv_scope`]，按事件去重，
+/// 所以同一组筛选下每人 `counts` 各项加 `unlabeled` 恒等于 `/api/agents` 的 `involved`；
+/// `mysql_agent_categories_add_up_to_agent_involved` 钉住这一点。多人参与的事件各计一次，
+/// 一个分类往下加会大于事件量 —— 与 `involved` 同一个性质。
+///
+/// `NULL`（打标未完成）的处置同 [`read_room_categories`]：折成 `unlabeled`，不进 `counts`。
+///
+/// 行数是客服数，与 [`read_agents`] 同一个上界，超出 `web.max_rows` 由 handler 显式 413。
+pub(super) async fn read_agent_categories(
+    connection: &mut MySqlConnection,
+    corp: &str,
+    since: NaiveDate,
+    until: NaiveDate,
+    sla_sec: u32,
+    filters: &Filters,
+) -> Result<Vec<Value>, WebError> {
+    let (sql, binds) = agent_categories_sql(corp, since, until, sla_sec, filters);
+    let rows: Vec<(String, Option<String>, i64)> =
+        bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
+            .fetch_all(&mut *connection)
+            .await?;
+    Ok(fold_categories("agent", rows))
+}
+
+/// 把 `(群或客服, 类型, 事件数)` 折成每个键一行，按键排序，键名由调用方给（`roomid` / `agent`）。
+/// `NULL` 类型进 `unlabeled`，其余（含 `__untyped__` 与词表外的历史编码）原样做 `counts` 的键。
+fn fold_categories(key: &str, rows: Vec<(String, Option<String>, i64)>) -> Vec<Value> {
+    let mut folded: std::collections::BTreeMap<String, (serde_json::Map<String, Value>, i64)> =
         std::collections::BTreeMap::new();
-    for (roomid, event_type, count) in rows {
-        let (counts, unlabeled) = rooms.entry(roomid).or_default();
+    for (id, event_type, count) in rows {
+        let (counts, unlabeled) = folded.entry(id).or_default();
         match event_type {
             Some(event_type) => {
                 counts.insert(event_type, json!(count));
@@ -928,11 +954,9 @@ fn fold_room_categories(rows: Vec<(String, Option<String>, i64)>) -> Vec<Value> 
             None => *unlabeled = count,
         }
     }
-    rooms
+    folded
         .into_iter()
-        .map(|(roomid, (counts, unlabeled))| {
-            json!({"roomid": roomid, "counts": counts, "unlabeled": unlabeled})
-        })
+        .map(|(id, (counts, unlabeled))| json!({key: id, "counts": counts, "unlabeled": unlabeled}))
         .collect()
 }
 
@@ -1571,7 +1595,7 @@ fn room_categories_sql(
         )
         .finish()
 }
-/// 三条按客服的查询共用的 CTE —— **共用文本，不共用绑定**：它们是三条独立语句，
+/// 四条按客服的查询共用的 CTE —— **共用文本，不共用绑定**：它们是四条独立语句，
 /// 每条各建一个 [`Scope`]，文本与绑定一起再走一遍。
 ///
 /// ⚠️ **`JSON_TABLE` 必须和基表同一层 `JOIN`**，不能引用 CTE 或派生表的列
@@ -1587,7 +1611,7 @@ fn agent_inv_scope(
         .push(
             &format!(
                 "WITH inv AS (SELECT a.agent, e.id, e.roomid, e.occurred_on, e.asker_role, \
-                   e.first_agent_reply_time, \
+                   e.event_type, e.first_agent_reply_time, \
                    (e.first_responder = a.agent COLLATE utf8mb4_general_ci) AS owned, \
                    {sec} AS secs FROM b_merchant_group_event e",
                 sec = *FIRST_REPLY_SEC
@@ -1661,6 +1685,22 @@ fn agent_memberships_sql(
     agent_inv_scope(corp, since, until, sla_sec, filters)
         .push(
             "SELECT DISTINCT agent, roomid FROM inv ORDER BY agent, roomid",
+            [],
+        )
+        .finish()
+}
+
+fn agent_categories_sql(
+    corp: &str,
+    since: NaiveDate,
+    until: NaiveDate,
+    sla_sec: u32,
+    filters: &Filters,
+) -> (String, Vec<Bind>) {
+    agent_inv_scope(corp, since, until, sla_sec, filters)
+        .push(
+            "SELECT agent, event_type, COUNT(DISTINCT id) AS n FROM inv \
+             GROUP BY agent, event_type ORDER BY agent, event_type",
             [],
         )
         .finish()
@@ -1795,10 +1835,11 @@ mod binding_tests {
                 room_cells_sql(c, s, u, sla, &filters);
                 room_top_groups_sql(c, s, u, sla, &filters, &groups);
                 room_categories_sql(c, s, u, sla, &filters);
-                // ③ 按客服三条
+                // ③ 按客服四条
                 agents_sql(c, s, u, sla, &filters);
                 agent_cells_sql(c, s, u, sla, &filters);
                 agent_memberships_sql(c, s, u, sla, &filters);
+                agent_categories_sql(c, s, u, sla, &filters);
                 // ④ 分类两条
                 categories_sql(c, s, u, sla, &filters, &groups);
                 category_cells_sql(c, s, u, sla, &filters, &groups);
@@ -1806,19 +1847,22 @@ mod binding_tests {
         }
     }
 
-    /// 折叠成每群一行：`NULL` 只进 `unlabeled`，不并进 `__untyped__`，也不进 `counts`；
-    /// 词表外的历史编码原样做键；没有事件的群不出行；按 `roomid` 排序。
+    /// 折叠成每个键一行：`NULL` 只进 `unlabeled`，不并进 `__untyped__`，也不进 `counts`；
+    /// 词表外的历史编码原样做键；没有事件的键不出行；按键排序，键名由调用方给。
     #[test]
-    fn room_categories_fold_into_one_row_per_room() {
+    fn categories_fold_into_one_row_per_key() {
         let row =
             |room: &str, ty: Option<&str>, n: i64| (room.to_owned(), ty.map(str::to_owned), n);
-        let got = fold_room_categories(vec![
-            row("R1", None, 1),
-            row("R1", Some("__untyped__"), 1),
-            row("R1", Some("urge_accept"), 3),
-            row("R1", Some("retired_code"), 2),
-            row("R2", Some("refund"), 4),
-        ]);
+        let got = fold_categories(
+            "roomid",
+            vec![
+                row("R1", None, 1),
+                row("R1", Some("__untyped__"), 1),
+                row("R1", Some("urge_accept"), 3),
+                row("R1", Some("retired_code"), 2),
+                row("R2", Some("refund"), 4),
+            ],
+        );
         assert_eq!(
             got,
             vec![
@@ -1827,7 +1871,11 @@ mod binding_tests {
                 json!({"roomid": "R2", "unlabeled": 0, "counts": {"refund": 4}}),
             ]
         );
-        assert!(fold_room_categories(Vec::new()).is_empty());
+        assert!(fold_categories("roomid", Vec::new()).is_empty());
+        assert_eq!(
+            fold_categories("agent", vec![row("A1", Some("refund"), 2)]),
+            vec![json!({"agent": "A1", "unlabeled": 0, "counts": {"refund": 2}})]
+        );
     }
 
     /// 明细那两条走的是同一条内层 `WHERE`，总数与行因此必然同集合。

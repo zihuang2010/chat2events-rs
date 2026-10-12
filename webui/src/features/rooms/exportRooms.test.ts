@@ -290,4 +290,11 @@ it("pivot sheets refuse to export when category tallies no longer add up to the 
   expect(build([row({ key: "r1", events: 2 })], [])).toThrow("分类合计 0，事件量 2");
   // 整行没算出来的群两张表都留空，不比
   expect(build([row({ key: "r0", events: null, failedDays: 3 })], [])).not.toThrow();
+  // 分类数据里冒出第一个 sheet 没有的群：两次取数之间新进来的，不能静默丢掉
+  expect(
+    build(
+      [row({ key: "r1", events: 0 })],
+      [{ roomid: "r9", counts: { urge_accept: 1 }, unlabeled: 0 }],
+    ),
+  ).toThrow("数据刚有更新（分类数据里多出 1 个群），请刷新页面后重新导出");
 });

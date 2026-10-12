@@ -22,6 +22,7 @@ import { METRIC } from "@/domain/definitions";
 import { agentRollup, type AgentRow } from "@/domain/metrics";
 import { errorText } from "@/api/client";
 import { useAgentAggs, useRoomAggs, useSummary } from "@/api/queries";
+import { loadAgentCategories } from "@/api/source";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
 import { DurationOrNull, PercentOrNull } from "@/components/primitives";
@@ -33,7 +34,7 @@ import { downloadWorkbook } from "@/features/export/workbook";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
 import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
-import { agentSheet } from "./exportAgents";
+import { agentPivotSheet, agentSheet } from "./exportAgents";
 import "./agents.css";
 
 export function AgentsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
@@ -344,8 +345,23 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
   const exportXlsx = async () => {
     setExporting(true);
     try {
-      const sheet = agentSheet(rows, analytics, dataset.meta, filters, new Date());
-      await downloadWorkbook([sheet], analytics);
+      // 两张分类宽表的数据只在导出时才取（行数是客服数 × 二级分类数，页面用不到）。
+      // 选了客服时 `/api/agent-categories` 与 `/api/agents` 一样会带回同事件的其他参与者，
+      // 而表格行只留被选中的那个人（见上面 `rows`）—— 这里同样只留他，否则核对会把
+      // 那些人当成「两次取数之间新冒出来的客服」。
+      const aggs = (await loadAgentCategories(analytics.q)).filter(
+        (agg) => !filters.agent || agg.agent === filters.agent,
+      );
+      const now = new Date();
+      const { meta } = dataset;
+      await downloadWorkbook(
+        [
+          agentSheet(rows, analytics, meta, filters, now),
+          agentPivotSheet("level1", rows, aggs, analytics, meta, filters, now),
+          agentPivotSheet("level2", rows, aggs, analytics, meta, filters, now),
+        ],
+        analytics,
+      );
     } catch (error) {
       void message.error(`导出失败：${errorText(error)}`);
     } finally {

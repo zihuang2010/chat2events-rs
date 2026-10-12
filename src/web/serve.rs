@@ -15,8 +15,8 @@ use super::{
     config::WebLimits,
     params::{Grouping, Paging, Period, Sla},
     query::{
-        Room, available_range, count_events, has_mixed_version, read_agents, read_categories,
-        read_event, read_event_page, read_filters, read_group_days, read_meta,
+        Room, available_range, count_events, has_mixed_version, read_agent_categories, read_agents,
+        read_categories, read_event, read_event_page, read_filters, read_group_days, read_meta,
         read_room_categories, read_rooms, read_source_messages, read_summary, snapshot,
     },
     roster::Roster,
@@ -71,6 +71,7 @@ pub(super) fn router(state: WebState) -> Router {
         .route("/api/rooms", get(rooms))
         .route("/api/room-categories", get(room_categories))
         .route("/api/agents", get(agents))
+        .route("/api/agent-categories", get(agent_categories))
         .route("/api/categories", get(categories))
         .route("/api/events", get(events))
         .route("/api/event/{id}", get(event))
@@ -331,6 +332,34 @@ async fn agents(
     let range = available_range(&mut tx, &state.corp, &state.limits).await?;
     let (since, until) = sla.period.bounds(&range)?;
     let rows = read_agents(
+        &mut tx,
+        &state.corp,
+        since,
+        until,
+        sla.sla_sec(),
+        &sla.filters,
+    )
+    .await?;
+    tx.commit().await?;
+    if rows.len() > state.limits.max_rows {
+        return Err(too_large());
+    }
+    bounded_json(&rows, &state.limits)
+}
+
+/// 客服 × 二级分类的事件数（参与口径），一个客服一行 —— 只有客服效能的 xlsx 导出会调（点了才请求）。
+///
+/// 行数封顶在客服数上，与 `agents` 同一个上界；超过 `max_rows` 一律 413，不截断，理由同 `room_categories`。
+async fn agent_categories(
+    State(state): State<WebState>,
+    Query(sla): Query<Sla>,
+) -> Result<Response, WebError> {
+    let mut connection = state.pool.acquire().await?;
+    let mut tx = snapshot(&mut connection).await?;
+    // 只取日期两端、不造 `Meta`，理由同 `rooms`。
+    let range = available_range(&mut tx, &state.corp, &state.limits).await?;
+    let (since, until) = sla.period.bounds(&range)?;
+    let rows = read_agent_categories(
         &mut tx,
         &state.corp,
         since,

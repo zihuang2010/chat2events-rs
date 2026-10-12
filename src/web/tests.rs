@@ -367,6 +367,17 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     // 参与过的群 —— 抽屉的分群明细与「数据完整性」那一列要它。
     // 走独立查询而不是 `GROUP_CONCAT`：后者有 1KB 的**静默截断**。
     assert_eq!(agents[0]["roomIds"], json!(["R"]));
+    // 客服 × 二级分类（客服效能 xlsx 导出的两张分类宽表），一人一行：
+    // `counts` 各项加 `unlabeled` 等于上面的 involved。
+    let agent_categories: Value = get_json(
+        &http,
+        format!("{base}/api/agent-categories?from=2026-08-25&to=2026-08-26&sla_sec=300"),
+    )
+    .await;
+    assert_eq!(
+        agent_categories,
+        json!([{"agent": "agent00000000001", "counts": {"reschedule": 2}, "unlabeled": 0}])
+    );
 
     // ── 分类汇总：后端不认识词表，只按调用方给的分组键数数 ──────────────────
     let by_type: Value = serde_json::from_str(
@@ -1793,6 +1804,134 @@ async fn mysql_room_categories_add_up_to_room_events() {
         assert_eq!(
             by_room, rooms,
             "counts 加 unlabeled 应等于 /api/rooms 的 events"
+        );
+    }
+
+    drop(connection);
+    testutil::drop_mysql_database(pool).await;
+}
+
+/// **每人 `counts` 各项加 `unlabeled`，必须等于 `/api/agents` 的 `involved`** —— 客服分类宽表的对账口径。
+///
+/// 夹具在群那条的四种事件之外，多了**多人参与**：同一个事件在每个参与者那里各计一次，
+/// 所以一个分类往下加大于事件量，但每人那一行仍然对得上自己的参与事件数。
+/// 再带 `types` / `agent` 筛选各对一遍。
+#[tokio::test]
+#[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+async fn mysql_agent_categories_add_up_to_agent_involved() {
+    use super::params::Filters;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    let pool = testutil::mysql_pool("agent_categories").await;
+    const A1: &str = "agent00000000001";
+    const A2: &str = "agent00000000002";
+    const A3: &str = "agent00000000003";
+    //   R1  08-25 ok：reschedule[A1,A2] · __untyped__[A1] · NULL[A2]；08-26 ok：refund[A1]
+    //   R2  08-25 **抽取失败**，库里残留一条 A3 参与的旧事件，A3 不该出现
+    let event = |room: &str, n: u32, day: &str, ty: &str, agents: &[&str]| {
+        let ty = if ty.is_empty() {
+            "NULL".to_owned()
+        } else {
+            format!("'{ty}'")
+        };
+        let agents = agents
+            .iter()
+            .map(|a| format!("'{a}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "('C','{room}',JSON_ARRAY('{room}-{n}'),'{day} 09:00:00','{day} 09:00:00','{day}',\
+             'merchant00000001','EXTERNAL',JSON_ARRAY({agents}),'{room} 的事件 {n}',{ty})"
+        )
+    };
+    let events = [
+        event("R1", 1, "2026-08-25", "reschedule", &[A1, A2]),
+        event("R1", 2, "2026-08-25", "__untyped__", &[A1]),
+        event("R1", 3, "2026-08-25", "", &[A2]),
+        event("R1", 4, "2026-08-26", "refund", &[A1]),
+        event("R2", 1, "2026-08-25", "refund", &[A3]),
+    ]
+    .join(",");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO b_merchant_group_metric_daily \
+         (corpid,roomid,dt,msg_count,sender_count,event_count,merchant_event_count,unreplied_count,extraction_status,fact_completed_time) VALUES \
+         ('C','R1','2026-08-25',1,1,3,3,0,'ok','2026-08-30 10:00:00'), \
+         ('C','R1','2026-08-26',1,1,1,1,0,'ok','2026-08-30 10:00:00'), \
+         ('C','R2','2026-08-25',1,1,NULL,NULL,NULL,'failed',NULL); \
+         INSERT INTO b_merchant_group_event \
+         (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,occurred_on,asker,asker_role,agents,summary,event_type) VALUES {events};"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut connection = pool.acquire().await.unwrap();
+    let (since, until) = ("2026-08-25".parse().unwrap(), "2026-08-26".parse().unwrap());
+
+    let got = read_agent_categories(
+        &mut connection,
+        "C",
+        since,
+        until,
+        1800,
+        &Filters::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            json!({"agent": A1, "unlabeled": 0,
+                   "counts": {"reschedule": 1, "__untyped__": 1, "refund": 1}}),
+            json!({"agent": A2, "unlabeled": 1, "counts": {"reschedule": 1}}),
+        ],
+        "多人参与的事件各计一次；A3 只在失败群日上，不该出现；NULL 进 unlabeled"
+    );
+
+    for filters in [
+        Filters::default(),
+        Filters {
+            types: Some("reschedule".into()),
+            ..Default::default()
+        },
+        Filters {
+            agent: Some(A2.into()),
+            ..Default::default()
+        },
+    ] {
+        let by_agent: BTreeMap<String, i64> =
+            read_agent_categories(&mut connection, "C", since, until, 1800, &filters)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    let labeled: i64 = r["counts"]
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .map(|n| n.as_i64().unwrap())
+                        .sum();
+                    (
+                        r["agent"].as_str().unwrap().to_owned(),
+                        labeled + r["unlabeled"].as_i64().unwrap(),
+                    )
+                })
+                .collect();
+        let agents: BTreeMap<String, i64> =
+            read_agents(&mut connection, "C", since, until, 1800, &filters)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["agent"].as_str().unwrap().to_owned(),
+                        r["involved"].as_i64().unwrap(),
+                    )
+                })
+                .collect();
+        assert_eq!(
+            by_agent, agents,
+            "counts 加 unlabeled 应等于 /api/agents 的 involved"
         );
     }
 

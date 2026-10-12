@@ -6,6 +6,7 @@ import { fetchDataset, type DatasetWindow } from "./client";
 
 export {
   fetchAgentAggs as loadAgentAggs,
+  fetchAgentCategories as loadAgentCategories,
   fetchCategories as loadCategories,
   fetchEvent as loadEvent,
   fetchEventsPage as loadEventsPage,

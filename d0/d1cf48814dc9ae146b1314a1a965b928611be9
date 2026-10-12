@@ -1,0 +1,116 @@
+src/web/serve.rs
+  s_ca0847af9b85e1::t_a1f9a610e96d97 293,295-296
+webui/src/features/rooms/RoomsPage.test.tsx
+  s_ca0847af9b85e1::t_a0f95ed7de344d 27,568-569,571-577
+  s_ca0847af9b85e1::t_8b01d7597fb4fd 8
+  s_82313a9e88b365::t_008859caf7aee0 29,578
+  s_ca0847af9b85e1::t_7906c4e8491187 564
+  s_ca0847af9b85e1::t_7d5890bebdde64 14,31,33-35,565-567,570
+webui/src/features/export/workbook.ts
+  s_ca0847af9b85e1::t_7906c4e8491187 56,58,64
+  s_ca0847af9b85e1::t_b969f26f1bbc6a 1-55,57,59-63,65-102
+webui/src/domain/schemas.ts
+  s_82313a9e88b365::t_f17fc5b1dc3d05 355-358,362-363
+src/web/tests.rs
+  s_ca0847af9b85e1::t_16820210e87859 331
+  s_ca0847af9b85e1::t_87d624b7d3e912 322-323
+  s_ca0847af9b85e1::t_d0d2c588760cb0 1690
+  s_ca0847af9b85e1::t_43ff6247878933 1680,1682-1684,1736,1738-1740,1743-1748,1763,1766-1780,1793-1796
+webui/src/api/client.test.ts
+  s_ca0847af9b85e1::t_159184052a593b 58
+  s_ca0847af9b85e1::t_8464d66e030371 2-9,45-57
+webui/src/features/export/workbook.test.ts
+  s_ca0847af9b85e1::t_5f4246f3ff01f6 20,70-71,74,78,80
+  s_ca0847af9b85e1::t_8af9a740a2c812 1-19,21-69,72-73,75-77,79,81
+webui/src/test/mock/aggregate.ts
+  s_ca0847af9b85e1::t_57c7b55496b9f0 39,247-263,266
+  s_ca0847af9b85e1::t_058ebd5794e78a 264-265
+  s_ca0847af9b85e1::t_51178f52f17135 267-269
+webui/src/features/agents/AgentsPage.test.tsx
+  s_ca0847af9b85e1::t_7d5890bebdde64 13,26-31,88-90
+  s_ca0847af9b85e1::t_7906c4e8491187 87
+webui/src/features/agents/exportAgents.test.ts
+  s_ca0847af9b85e1::t_7d5890bebdde64 41,63-74,76-86,88-99,103,112
+  s_ca0847af9b85e1::t_7906c4e8491187 5
+webui/src/features/rooms/exportRooms.ts
+  s_ca0847af9b85e1::t_274fbbdced53a6 152-153
+  s_ca0847af9b85e1::t_3d4c7c33801e05 5,15,22-36,39-49
+  s_82313a9e88b365::t_acce9c3c06afb5 9-12
+  s_ca0847af9b85e1::t_e3593690c882e1 17,74,77-81,96,104-105,115,120-121,130-132,143,150-151,154-155,171-181
+  s_82313a9e88b365::t_757d77e0a1c002 38,51,64-66
+  s_ca0847af9b85e1::t_3d72c66341f218 192
+  s_ca0847af9b85e1::t_27a588a9962ed0 134-135,138-141,144-145,156-167
+  s_82313a9e88b365::t_51218bacdec0d9 100-101,103,107-110,112-113,116,122-129,133,136-137,142,146-149,169-170,186-191
+CONTEXT.md
+  s_82313a9e88b365::t_5497fec958f4a1 60
+  s_82313a9e88b365::t_39e32618cf764d 61
+  s_82313a9e88b365::t_731847c0383417 58
+  s_82313a9e88b365::t_3c3fe9056445bb 59
+webui/src/features/rooms/exportRooms.test.ts
+  s_ca0847af9b85e1::t_80f6986192196a 3-4,53-57,75-90,92-107,109-123,127,140,153-159,162-163,165-166,168-178,180,182,184-187,191,202,212,215,227,234,240-241,243-244,249,261,266
+  s_ca0847af9b85e1::t_7906c4e8491187 8
+  s_ca0847af9b85e1::t_058ebd5794e78a 268-292
+  s_82313a9e88b365::t_f94950b3c117f2 5,9,11-13,23,146,148-149,151,161,167,179,181,183,188-190,192-200,203-211,213-214,216-225,228-233,237-239,242,245-246,248,250-260,262-265,267
+webui/src/features/agents/AgentsPage.tsx
+  s_ca0847af9b85e1::t_5d86c50df555eb 36
+  s_ca0847af9b85e1::t_9c68ed862064ea 32
+  s_ca0847af9b85e1::t_664f48b08bd40c 23
+  s_ca0847af9b85e1::t_7906c4e8491187 348
+  s_ca0847af9b85e1::t_d98cc3853e7be5 350
+webui/src/test/aggregateStub.ts
+  s_ca0847af9b85e1::t_3c0205b8d097cb 5-6
+  s_ca0847af9b85e1::t_57c7b55496b9f0 18,43
+  s_ca0847af9b85e1::t_18517bd5cdef10 33
+webui/src/features/rooms/RoomInsightsDrawer.tsx
+  s_82313a9e88b365::t_4a388ebc04415b 211,226
+src/web/scope.rs
+  s_ca0847af9b85e1::t_b73937fddb09b5 23-30
+  s_ca0847af9b85e1::t_fb469245209a14 31-33
+webui/src/test/workbook.ts
+  s_ca0847af9b85e1::t_60630d417ada00 1-10
+webui/src/components/states/index.tsx
+  s_ca0847af9b85e1::t_d98cc3853e7be5 4
+  s_ca0847af9b85e1::t_4a886951b5aaca 58
+src/web/query.rs
+  s_82313a9e88b365::t_812daa694210bd 889,893,896,898,900,914-916,919,922,924-931,934-936,1831
+  s_ca0847af9b85e1::t_dabd12053ce195 917-918,920-921,923,933,1809-1812,1815-1830
+  s_ca0847af9b85e1::t_43ff6247878933 1813-1814
+  s_ca0847af9b85e1::t_34704ce997c5fc 1832
+  s_82313a9e88b365::t_eea7f0d1511d6e 890
+webui/src/features/agents/exportAgents.ts
+  s_ca0847af9b85e1::t_5d86c50df555eb 2,26-36,46,53-55,57-63,74
+  s_ca0847af9b85e1::t_274fbbdced53a6 20-21,56
+  s_ca0847af9b85e1::t_8a7d55a2446b17 22-23
+webui/src/api/client.ts
+  s_ca0847af9b85e1::t_251755480ca044 272-273,275
+  s_ca0847af9b85e1::t_d98cc3853e7be5 71-79
+webui/src/features/rooms/RoomsPage.tsx
+  s_82313a9e88b365::t_d19709229fe71a 284
+  s_ca0847af9b85e1::t_d98cc3853e7be5 297
+  s_ca0847af9b85e1::t_5d86c50df555eb 24,27,285,288-293
+  s_ca0847af9b85e1::t_664f48b08bd40c 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0d1cf48814dc9ae146b1314a1a965b928611be9",
+  "prompts": {},
+  "sessions": {
+    "s_82313a9e88b365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5668333-80a3-442d-b0b4-f6b244254f56",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    },
+    "s_ca0847af9b85e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6bf280e-7a90-4144-a2ca-6b35466a8f25",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

@@ -52,12 +52,7 @@ const DEFAULT_DAYS: i64 = 7;
 /// 超长链接靠它收紧起点。两边不一致时是这里的 400，不是静默错数。
 const MAX_SPAN_DAYS: i64 = 31;
 
-/// 明细翻页的上限 —— **护栏，不是产能规划**。
-///
-/// 延迟关联把每页的常数压小了一个数量级，但没有消掉「偏移量越大扫得越多」。
-/// 翻到第 200 页（4000 条）还在翻的人，要的其实是筛选或导出，不是翻页 ——
-/// 让它明确说「请缩小范围」，比让它慢慢跑到超时好。
-pub(super) const MAX_PAGE: u64 = 200;
+/// 明细每页条数的上限。**页码没有上限**，理由见 [`Paging::window`]。
 pub(super) const PAGE_SIZE_MAX: u64 = 100;
 
 #[derive(Default, Deserialize)]
@@ -120,16 +115,19 @@ pub(super) struct Paging {
 }
 
 impl Paging {
-    /// 返回 `(offset, limit)`。**越界一律显式报错，不静默夹到边界上** ——
-    /// 夹住的话用户翻到第 300 页会看到第 200 页的内容，还以为那就是全部。
+    /// 返回 `(offset, limit)`。**越界一律显式报错，不静默夹到边界上**。
+    ///
+    /// **页码没有上限。** 明细能排的键没有一个与索引同序，所以每一页都是
+    /// 「扫完整个筛选后的窗口 → 排序 → 取一页」，偏移量只多出一点排序的活：
+    /// 2026-10-11 Docker MySQL 8.4 模拟数据 30 万行 / 31 天窗口实测，第 1 页 261 ms、
+    /// 第 200 页 266 ms、最后一页（第 14880 页）291 ms。成本的上界是日期窗口
+    /// （[`MAX_SPAN_DAYS`]），不是页码 —— 此前那道 200 页护栏挡的是一个不存在的代价，
+    /// 换游标分页也只能省回这 10%。
     pub(super) fn window(&self) -> Result<(u64, u64), WebError> {
         let page = self.page.unwrap_or(1);
         let size = self.page_size.unwrap_or(20);
-        if page == 0 || page > MAX_PAGE {
-            return Err(WebError(
-                StatusCode::BAD_REQUEST,
-                format!("页码须在 1~{MAX_PAGE} 之间，再深请缩小日期范围或加筛选"),
-            ));
+        if page == 0 {
+            return Err(WebError(StatusCode::BAD_REQUEST, "页码从 1 开始".into()));
         }
         if size == 0 || size > PAGE_SIZE_MAX {
             return Err(WebError(
@@ -137,22 +135,25 @@ impl Paging {
                 format!("每页条数须在 1~{PAGE_SIZE_MAX} 之间"),
             ));
         }
-        Ok(((page - 1) * size, size))
+        // 乘出来溢出只可能是手改 URL —— 400，不 panic 也不回绕。
+        let offset = (page - 1)
+            .checked_mul(size)
+            .ok_or_else(|| WebError(StatusCode::BAD_REQUEST, "页码过大".into()))?;
+        Ok((offset, size))
     }
 
-    /// 总数 → `(页数, 是否被 [`MAX_PAGE`] 护栏夹过)`。
+    /// 总数 → 页数。
     ///
-    /// **后端算好**：前端不做任何算术，也不需要知道 `MAX_PAGE` 这个常量存在。
+    /// **后端算好**：前端不做任何分页算术。
     /// 此前它借 `/api/summary` 的事件总数自己 `ceil` 再 `min` —— 而那个数只算
     /// **已知成功群日**上的事件，和明细表翻的集合不是一个，于是窗口里一有抽取失败
     /// 的群日，人就被夹在更早的页码上，尾部的行永远翻不到。
     ///
     /// 页码越过页数不是错误：`LIMIT 偏移, 条数` 自然吐空集合，前端显示空表。
-    /// 校验仍然只有 [`Self::window`] 那一处 —— 越过 `MAX_PAGE` 才是 400。
-    pub(super) fn pages(&self, total: u64) -> Result<(u64, bool), WebError> {
+    /// 校验只有 [`Self::window`] 那一处。
+    pub(super) fn pages(&self, total: u64) -> Result<u64, WebError> {
         let (_, size) = self.window()?;
-        let needed = total.div_ceil(size);
-        Ok((needed.min(MAX_PAGE), needed > MAX_PAGE))
+        Ok(total.div_ceil(size))
     }
 
     /// 排序片段。**只开放 `idx_overview` 里有的列。**
@@ -307,11 +308,7 @@ impl Filters {
         sla_sec: u32,
         last_day: NaiveDate,
     ) -> (String, Vec<Bind>) {
-        let (mut sql, mut binds) = (String::new(), Vec::new());
-        if let Some(room) = &self.room {
-            sql.push_str(" AND e.roomid = ?");
-            binds.push(Bind::Str(room.clone()));
-        }
+        let (mut sql, mut binds) = self.rooms_clause("e.roomid", corp);
         if let Some(agent) = &self.agent {
             // JSON 列进不了索引，这一条必然回表 —— 已知且有意，窗口把行数压住。
             sql.push_str(" AND JSON_CONTAINS(e.agents, JSON_QUOTE(?))");
@@ -377,12 +374,37 @@ impl Filters {
                 .replace('_', "\\_");
             binds.push(Bind::Str(format!("%{escaped}%")));
         }
+        (sql, binds)
+    }
+
+    /// 是否把范围缩到了少数几个群（群 · 商家分组 · 业务经理）。
+    ///
+    /// 这是「事件表钉不钉覆盖索引」的判据（`query::event_table`），也是 [`Self::rooms_clause`]
+    /// 出不出片段的判据 —— **新增按群收窄的筛选，两处都只改这里与 `rooms_clause`。**
+    pub(super) fn narrows_rooms(&self) -> bool {
+        self.room.is_some()
+            || self.merchant_group_config_name.is_some()
+            || self.business_manager_id.is_some()
+    }
+
+    /// 按群收窄的那几条筛选，**群列由调用方给**。
+    ///
+    /// 事实查询拿 `e.roomid`（[`Self::clause`] 的开头）；分母边界拿 `g.roomid`，
+    /// 把同一组条件下推进 `KNOWN_OK_DAYS` —— 否则选一个群也要为全部群物化分母边界
+    /// （31 天约 9000 个群日、30 ms，正是单群下钻的全部耗时）。下推不改结果：
+    /// `d` 与 `e` 按群内连接，`e` 那边本来就带着同一组条件。
+    pub(super) fn rooms_clause(&self, column: &str, corp: &str) -> (String, Vec<Bind>) {
+        let (mut sql, mut binds) = (String::new(), Vec::new());
+        if let Some(room) = &self.room {
+            sql.push_str(&format!(" AND {column} = ?"));
+            binds.push(Bind::Str(room.clone()));
+        }
         if self.merchant_group_config_name.is_some() || self.business_manager_id.is_some() {
             // 商家分组与业务经理是**商家**的属性，不在事件表上：群配置表 → 商家摘要表，
             // 子查询交出符合条件的群。匹配语义见 `Filters` 两个字段的文档。
             // 别名用 `gc` / `ms`，避开外层的 `e` / `d` / `g`。
             sql.push_str(&format!(
-                " AND e.roomid IN (SELECT gc.official_room_id FROM b_wecom_merchant_group gc \
+                " AND {column} IN (SELECT gc.official_room_id FROM b_wecom_merchant_group gc \
                  JOIN {T_MERCHANT_SUMMARY} ms ON ms.merchant_id = gc.merchant_id \
                  WHERE gc.corp_id = ?"
             ));
@@ -768,21 +790,18 @@ mod tests {
         assert_eq!(pattern, r"%100\%\_a\\b%");
     }
 
-    /// 越界一律显式 400，**不静默夹到边界上** —— 夹住的话用户翻到第 300 页
-    /// 会看到第 200 页的内容，还以为那就是全部。
+    /// 越界一律显式 400，**不静默夹到边界上**。页码没有上限，只拦 0 和乘出来溢出的。
     #[test]
     fn paging_rejects_out_of_range_instead_of_clamping() {
         assert_eq!(paging(None, None).window().unwrap(), (0, 20));
         assert_eq!(paging(Some(3), Some(10)).window().unwrap(), (20, 10));
         assert_eq!(
-            paging(Some(MAX_PAGE), Some(PAGE_SIZE_MAX))
-                .window()
-                .unwrap(),
-            ((MAX_PAGE - 1) * PAGE_SIZE_MAX, PAGE_SIZE_MAX)
+            paging(Some(1000), Some(PAGE_SIZE_MAX)).window().unwrap(),
+            (999 * PAGE_SIZE_MAX, PAGE_SIZE_MAX)
         );
         for bad in [
             paging(Some(0), None),
-            paging(Some(MAX_PAGE + 1), None),
+            paging(Some(u64::MAX), Some(PAGE_SIZE_MAX)),
             paging(None, Some(0)),
             paging(None, Some(PAGE_SIZE_MAX + 1)),
         ] {

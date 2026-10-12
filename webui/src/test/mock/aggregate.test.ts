@@ -105,7 +105,6 @@ describe("明细排序", () => {
     const page = mockEventsPage(events, cells, tax, { from: DAY, to: DAY }, 1, 2, {});
     expect(page.total).toBe(3);
     expect(page.pages).toBe(2);
-    expect(page.truncated).toBe(false);
     // 越过页数返回空数组，不报错 —— 手改 URL 跳到不存在的页不是故障。
     expect(mockEventsPage(events, cells, tax, { from: DAY, to: DAY }, 9, 2, {}).rows).toEqual([]);
   });

@@ -993,6 +993,21 @@ systemctl list-timers | grep merchant     # NEXT 列应是最近一个 12:10 或
 `src/nacos.rs` 读出来的，**没有在目标机上实际跑过**，unit 文件也没有用 `systemd-analyze verify` 校验过。
 第一次照着做时把踩到的坑补回来。
 
+### 已有库增加首响归属索引
+
+工作台按「首响归属给某位客服」筛选（客服抽屉的分群明细）要用 `idx_responder`。
+**先在目标库执行，再升级 `webui`** —— 查询里用 `USE INDEX (idx_overview, idx_responder)` 点了它的名，
+索引不存在时 MySQL 直接报 1176，客服抽屉整块报错。新建库直接执行根目录 `schema.sql`。
+
+```sql
+ALTER TABLE b_merchant_group_event
+    ADD KEY idx_responder (corpid, first_responder, occurred_on)
+    COMMENT '只读工作台「首响归属给某位客服」的筛选。只读查询用USE INDEX(idx_overview, idx_responder)让优化器二选一';
+```
+
+MySQL 8 的 `ADD KEY` 是在线 DDL，不锁读写。模拟数据 50 万行实测 1.6 秒、索引约 29 MB（表体积 +14%）；
+跑批写入多一份索引维护，整表灌入慢约 17%，日常两天分片的删重写可以忽略。跑批不用它，也不检查它在不在。
+
 ### 验证命令
 
 ```bash

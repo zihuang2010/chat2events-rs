@@ -389,14 +389,12 @@ export const eventListSchema = z.array(eventSchema);
  * 窗口里一有失败或凭据未知的群日，两个数就不等，取较小值那步把人夹在更早的页码上，
  * **尾部的行永远翻不到，而页面看起来一切正常**。
  *
- * `pages` 由后端算好（总数 ÷ 每页条数，再夹最大页码护栏），前端不做任何算术，
- * 也不需要知道那个护栏的取值。`truncated` = 页数被护栏夹过，据此给一句提示。
+ * `pages` 由后端算好（总数 ÷ 每页条数），前端不做任何算术。
  */
 export const eventsPageSchema = z.object({
   rows: eventListSchema,
   total: z.number(),
   pages: z.number(),
-  truncated: z.boolean(),
 });
 export type EventsPage = z.infer<typeof eventsPageSchema>;
 export const groupDailyListSchema = z.array(groupDailySchema);

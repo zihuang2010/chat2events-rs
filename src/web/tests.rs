@@ -151,13 +151,12 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             .unwrap(),
     )
     .unwrap();
-    // ⚠️ **翻页契约整个在响应体里**：行 ＋ 总数 ＋ 页数 ＋ 是否被护栏夹过。
+    // ⚠️ **翻页契约整个在响应体里**：行 ＋ 总数 ＋ 页数。
     // 前端不再借 `/api/summary` 的事件总数推算分页 —— 那是另一个集合
     // （只算已知成功群日），窗口里一有失败的群日两个数就不等。
     assert_eq!(page["rows"].as_array().unwrap().len(), 2);
     assert_eq!(page["total"], 2);
     assert_eq!(page["pages"], 1);
-    assert_eq!(page["truncated"], false);
     // 不带 sort：默认按开始时间倒序，最新的（08-26 09:00）在前。
     assert_eq!(page["rows"][0]["first_msg_time"], "2026-08-26 09:00:00");
     assert_eq!(page["rows"][1]["source_msg_ids"], json!(["m1", "m2"]));
@@ -429,7 +428,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
         400
     );
 
-    // ── 明细翻页：延迟关联 + 页码护栏 ──────────────────────────────────────
+    // ── 明细翻页：延迟关联 ─────────────────────────────────────────────────
     // 翻过头返回空页，不报错 —— 那是「这一页确实没有」，不是参数错。
     let beyond: Value = serde_json::from_str(
         &http
@@ -480,10 +479,19 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
             "{path}"
         );
     }
+    // 页码没有上限：第 201 页照常 200（越过页数就是空页）。
+    assert_eq!(
+        http.get(format!("{base}/api/events?page=201"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
     // 越界的页码 / 页大小是 400，**不夹到边界上** —— 夹住的话用户会以为看到了全部。
     for path in [
         "/api/events?page=0",
-        "/api/events?page=201",
+        "/api/events?page=18446744073709551615&page_size=100",
         "/api/events?page_size=0",
         "/api/events?page_size=101",
     ] {
@@ -1188,15 +1196,14 @@ async fn mysql_a_failure_only_clouds_its_own_window() {
     .await
     .unwrap();
 
-    let ok_days: Vec<(String, chrono::NaiveDate)> = sqlx::query_as(sqlx::AssertSqlSafe(
-        super::query::ok_days_sql_for_test().to_owned(),
-    ))
-    .bind("C")
-    .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())
-    .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let ok_days: Vec<(String, chrono::NaiveDate)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(super::query::ok_days_sql_for_test()))
+            .bind("C")
+            .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())
+            .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         ok_days,
         vec![(
@@ -1209,15 +1216,14 @@ async fn mysql_a_failure_only_clouds_its_own_window() {
     // 加这两列之前的历史失败行（窗口为 NULL）仍按「影响全历史」保守处理。
     sqlx::query("INSERT INTO b_merchant_group_run_failure (run_date,corpid,roomid,reason,stage) VALUES ('2026-09-09','C','R','升级前的历史失败','extract')")
         .execute(&pool).await.unwrap();
-    let ok_days: Vec<(String, chrono::NaiveDate)> = sqlx::query_as(sqlx::AssertSqlSafe(
-        super::query::ok_days_sql_for_test().to_owned(),
-    ))
-    .bind("C")
-    .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())
-    .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let ok_days: Vec<(String, chrono::NaiveDate)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(super::query::ok_days_sql_for_test()))
+            .bind("C")
+            .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())
+            .bind(chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert!(
         ok_days.is_empty(),
         "窗口未知的历史失败行不能被当成「只影响某几天」"
@@ -1267,20 +1273,19 @@ async fn mysql_known_ok_days_rewrite_matches_the_previous_definition() {
         chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
         chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
     );
-    let run = async |sql: &'static str| -> Vec<(String, chrono::NaiveDate)> {
-        let mut rows: Vec<(String, chrono::NaiveDate)> =
-            sqlx::query_as(sqlx::AssertSqlSafe(sql.to_owned()))
-                .bind("C")
-                .bind(since)
-                .bind(until)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+    let run = async |sql: String| -> Vec<(String, chrono::NaiveDate)> {
+        let mut rows: Vec<(String, chrono::NaiveDate)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind("C")
+            .bind(since)
+            .bind(until)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         rows.sort();
         rows
     };
     let fresh = run(super::query::ok_days_sql_for_test()).await;
-    let legacy = run(super::query::LEGACY_KNOWN_OK_DAYS).await;
+    let legacy = run(super::query::LEGACY_KNOWN_OK_DAYS.to_owned()).await;
     assert_eq!(fresh, legacy, "改写必须与上一版选出完全相同的群日");
     // 也钉住集合本身 —— 两版一起错的话「相等」证明不了什么。
     assert_eq!(

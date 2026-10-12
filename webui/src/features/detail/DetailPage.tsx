@@ -9,7 +9,7 @@
 import { Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo } from "react";
-import { EVENT_SORTS, MAX_PAGE, METRIC, PAGE_SIZE_MAX, type EventSort } from "@/domain/definitions";
+import { EVENT_SORTS, METRIC, PAGE_SIZE_MAX, type EventSort } from "@/domain/definitions";
 import { decorate, statusOf } from "@/domain/metrics";
 import type { DecoratedEvent } from "@/domain/schemas";
 import { useEventsPage, useSummary } from "@/api/queries";
@@ -29,21 +29,21 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
   const { filters, patch, reset } = api;
   const source = analytics.dataset.source;
   const summary = useSummary(source, analytics.q);
-  // 翻页护栏与后端 `Paging::window` 同一组数：越界那边是 **400 不是截断**，先在这边拦住。
-  // ⚠️ 这两个 `Math.min` 夹的是**请求参数**，不是页数 —— 页数由后端算好（`pages`），
-  // 这里一个算术都不做。手改 URL 到 `?page=999` 因此看到的是空表（越过实际页数的空一页），
-  // 不是一屏 `ErrorState`：一次误操作不该长得像故障。
+  // 每页条数上限与后端 `Paging::window` 同一个数：越界那边是 **400 不是截断**，先在这边拦住。
+  // ⚠️ 这个 `Math.min` 夹的是**请求参数**，不是页数 —— 页数由后端算好（`pages`），
+  // 这里一个算术都不做。页码没有上限，手改 URL 到 `?page=999` 看到的是空表
+  // （越过实际页数的空一页），不是一屏 `ErrorState`：一次误操作不该长得像故障。
   const pageSize = Math.min(PAGE_SIZE_MAX, filters.pageSize);
   const sorting = useMemo(
     () => ({ sort: filters.sort, dir: filters.dir }),
     [filters.sort, filters.dir],
   );
-  const currentPage = Math.min(filters.page, MAX_PAGE);
+  const currentPage = filters.page;
   const pageQuery = useEventsPage(source, analytics.q, currentPage, pageSize, sorting);
   // ⚠️ **总数、页数都来自 `/api/events` 自己**，不再借 `/api/summary` 的事件量。
   // 那个数只算**已知成功群日**上的事件，而明细表翻的是窗口内全部事件 ——
   // 窗口里一有抽取失败的群日，两个数就不等，取较小值那步把人夹在更早的页码上，
-  // 尾部的行永远翻不到，而页面看起来一切正常。页数由后端夹好护栏，这里不做算术。
+  // 尾部的行永远翻不到，而页面看起来一切正常。页数由后端算好，这里不做算术。
   const page = pageQuery.data;
   const total = page?.total ?? 0;
   const events = useMemo(
@@ -316,13 +316,7 @@ export function DetailPage({ analytics, api }: { analytics: Analytics; api: Filt
       <InsightSection
         title="事件明细"
         info="一行是一个事件，可能由多条消息组成。首响耗时是 first_agent_reply_time 减 first_msg_time。平台发起的事件首响恒 0 秒，不进任何首响指标。"
-        footer={
-          // ⚠️ 被翻页护栏夹过时要说一句**能让人知道该怎么做**的话 ——
-          // 否则「只能翻到这里」看起来就是「数据到头了」，而那两件事差得很远。
-          page.truncated
-            ? `结果超过可翻页的范围，只能翻到第 ${page.pages} 页（共 ${total} 起）；请缩小日期范围或加筛选。首响按工作时段 08:30–21:00 计算，时段外的等待不计；平台发起事件不计入首响指标。`
-            : "首响按工作时段 08:30–21:00 计算，时段外的等待不计；平台发起事件不计入首响指标。"
-        }
+        footer="首响按工作时段 08:30–21:00 计算，时段外的等待不计；平台发起事件不计入首响指标。"
       >
         {total === 0 ? (
           <EmptyState

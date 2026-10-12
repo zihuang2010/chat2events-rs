@@ -37,13 +37,12 @@
   gap: var(--space-xs);
   min-width: 0;
 }
+/* ID 是回查排障的抓手，按内容宽度完整显示，不截断。 */
 .ia-trace-id {
-  flex: 0 0 44px;
+  flex: none;
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .ia-trace-ellipsis {
   display: block;

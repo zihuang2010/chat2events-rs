@@ -44,25 +44,15 @@ vi.mock("@/components/charts/EChart", () => ({
  * 由 `mock/aggregate`（口径的前端对照实现）算成接口的形状 —— 不手写假数字。
  */
 const stub = vi.hoisted(() => ({ events: [], groupDaily: [], tax: new Map() }) as never);
-/** 明细页实际请求过的页码 —— 翻页护栏只有在这里看得见（模拟数据源不会像真接口那样 400）。 */
-const pageCalls = vi.hoisted(() => [] as number[]);
 vi.mock("@/api/source", async (importOriginal) => {
   const { sourceStub } = await import("@/test/aggregateStub");
-  const stubbed = sourceStub(await importOriginal(), stub);
-  return {
-    ...stubbed,
-    loadEventsPage: (...args: Parameters<typeof stubbed.loadEventsPage>) => {
-      pageCalls.push(args[1]);
-      return stubbed.loadEventsPage(...args);
-    },
-  };
+  return sourceStub(await importOriginal(), stub);
 });
 afterEach(cleanup);
 // 缓存是模块级单例，用例之间不清就会读到上一个用例的数字。
 afterEach(() => queryClient.clear());
 afterEach(() => vi.unstubAllGlobals());
 beforeEach(() => {
-  pageCalls.length = 0;
   messages.mode = "empty";
   messages.data = [];
   messages.retry.mockClear();
@@ -750,14 +740,17 @@ it("越界页码显示空表而不是报错，分页照旧带着真实总数", a
   expect(beyond.container.querySelector(".ant-pagination-total-text")).toHaveTextContent(
     total.split(" / ")[1]!,
   );
-  cleanup();
-  // 越过后端的翻页护栏（`MAX_PAGE` = 200）时**不能把参数原样发上去** —— 真接口对
-  // `page > 200` 返回 400，整页会变成 ErrorState，而这只是一次手改 URL。
-  // 模拟数据源不会 400，所以这条只能盯「请求出去的页码」，盯不了渲染结果。
-  pageCalls.length = 0;
-  const clamped = await mount("detail", "?page=999&size=25");
-  expect(clamped.container.querySelectorAll(".ia-summary-link")).toHaveLength(0);
-  expect(Math.max(...pageCalls)).toBeLessThanOrEqual(200);
+});
+
+it("pages_past_200_are_reachable", async () => {
+  // 页码没有上限：此前第 200 页之后的页码点了会被夹回第 200 页，看起来像点不动。
+  const source = dataset.events[0]!;
+  const events = Array.from({ length: 205 }, (_, index) => ({ ...source, id: index + 1 }));
+  const view = await mount("detail", "?page=203&size=1", { ...dataset, events });
+  expect(view.container.querySelectorAll(".ia-summary-link")).toHaveLength(1);
+  expect(view.container.querySelector(".ant-pagination-item-active")).toHaveTextContent("203");
+  const items = view.container.querySelectorAll(".ant-pagination-item");
+  expect(items[items.length - 1]).toHaveTextContent("205");
 });
 
 it("开关抽屉保留当前页码", async () => {

@@ -54,7 +54,8 @@ CREATE TABLE b_merchant_group_event (
     KEY idx_shard (corpid, roomid, occurred_on) COMMENT '分片删重写必需。**也是「点进某个群看历史」的最优索引**：群号已知时等值+范围，比idx_overview更贴',
     KEY idx_day (occurred_on) COMMENT 'BI直连：按时间段捞事件明细',
     KEY idx_modified (gmt_modified_time) COMMENT '只读工作台缓存的数据戳：MAX(gmt_modified_time) 走索引尾读，一次一行。没有它每个请求都全表扫一遍',
-    KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type, first_msg_time, first_agent_reply_time, last_msg_time) COMMENT '只读工作台全局概览的覆盖索引。前两列corpid等值+occurred_on范围负责定位（等值列必须在范围列之前）；后六列只为「别回表」——聚合要用的全在这儿，窗口聚合不必逐行回表。⚠️此处曾写「47万行」，那个数全仓无推导无测量。2026-09-19实测dev库：17028行/9天/307群，默认七天窗口约1.3万行——比注释假设的11万小8倍。见docs/deploy.md「实测基线」（生产规模仍未测）。首响秒差由这两个时间列在索引内算出并过滤（ICP），所以不需要生成列。⚠️agents是JSON进不了索引，按客服筛选那条查询会回表，是已知且有意的例外。⚠️它是idx_corp_day(corpid,occurred_on)的超集，那条已删'
+    KEY idx_overview (corpid, occurred_on, roomid, asker_role, event_type, first_msg_time, first_agent_reply_time, last_msg_time) COMMENT '只读工作台全局概览的覆盖索引。前两列corpid等值+occurred_on范围负责定位（等值列必须在范围列之前）；后六列只为「别回表」——聚合要用的全在这儿，窗口聚合不必逐行回表。⚠️此处曾写「47万行」，那个数全仓无推导无测量。2026-09-19实测dev库：17028行/9天/307群，默认七天窗口约1.3万行——比注释假设的11万小8倍。见docs/deploy.md「实测基线」（生产规模仍未测）。首响秒差由这两个时间列在索引内算出并过滤（ICP），所以不需要生成列。⚠️agents是JSON进不了索引，按客服筛选那条查询会回表，是已知且有意的例外。⚠️它是idx_corp_day(corpid,occurred_on)的超集，那条已删',
+    KEY idx_responder (corpid, first_responder, occurred_on) COMMENT '只读工作台「首响归属给某位客服」的筛选（客服抽屉的分群明细）。first_responder不在idx_overview里，没有它就要把窗口内每一行回表才知道是不是这个人。只读查询用USE INDEX(idx_overview, idx_responder)让优化器二选一——不FORCE：某位客服占窗口三成以上时，强制走它会让以分母边界驱动的计划慢30倍。2026-10-11模拟数据（50万行/40客服）31天窗口：分群明细312→94ms'
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '抽取出的结构化业务事件';
 
 -- ─────────────────────────────────────────────────────────────────────────────

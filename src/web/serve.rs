@@ -411,7 +411,7 @@ async fn categories(
 /// 事件明细的一页 —— **不参与任何指标**，纯粹是给人翻的表。
 ///
 /// 走 [`event_page_select`] 的延迟关联：内层只在覆盖索引里数够偏移量、不回表，
-/// 外层才拿那几个 id 回表。页码上限由 [`Paging::window`] 拦，越界是 400 不是截断。
+/// 外层才拿那几个 id 回表。页码没有上限（理由见 [`Paging::window`]）。
 ///
 /// ⚠️ **和 `/api/dataset` 里的 `events` 是两条路**：那一条要拉齐整个窗口来算指标
 /// （所以有 `max_rows` 那个天花板），这一条只取一页。群数上去之后，
@@ -427,7 +427,7 @@ async fn events(
     // 而结果原样丢掉；页面点一下筛选就是四个聚合接口，于是四遍。见 `available_range`。
     let range = available_range(&mut tx, &state.corp, &state.limits).await?;
     let (since, until) = paging.period.bounds(&range)?;
-    // 行、总数、页数、截断标志**全在这一个响应里** —— 前端不再借 `/api/summary`
+    // 行、总数、页数**全在这一个响应里** —— 前端不再借 `/api/summary`
     // 的事件总数推算分页（那是另一个集合，见 `count_events`）。
     let mut budget = ResponseBudget::new(&state.limits);
     budget.frame("{\"rows\":[")?;
@@ -435,13 +435,11 @@ async fn events(
     // 计数与取行在**同一个只读快照事务**里，总数与行必然同集合。
     let total = count_events(&mut tx, &state.corp, since, until, &paging).await?;
     tx.commit().await?;
-    let (pages, truncated) = paging.pages(total)?;
+    let pages = paging.pages(total)?;
     budget.frame("],\"total\":")?;
     budget.value(&total)?;
     budget.frame(",\"pages\":")?;
     budget.value(&pages)?;
-    budget.frame(",\"truncated\":")?;
-    budget.value(&truncated)?;
     budget.frame("}")?;
     Ok(budget.finish())
 }

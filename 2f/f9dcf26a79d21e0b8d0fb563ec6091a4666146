@@ -1,0 +1,71 @@
+src/web/tests.rs
+  s_d2f0b7e24cf842::t_3204fe200351eb 370-380
+  s_d2f0b7e24cf842::t_a79e595d8902cc 1813-1876,1878-1940
+  s_d2f0b7e24cf842::t_0370d8f322d5e9 1877
+webui/src/features/agents/AgentsPage.tsx
+  s_d2f0b7e24cf842::t_0f2b4f1546bc62 25,37
+  s_d2f0b7e24cf842::t_2139db0c6e3d74 348-364
+webui/src/features/agents/AgentsPage.test.tsx
+  s_d2f0b7e24cf842::t_f0276815591cf9 88-121
+webui/src/test/aggregateStub.ts
+  s_d2f0b7e24cf842::t_893e88f19d2832 6,15,34,44
+webui/src/features/export/categoryPivot.ts
+  s_d2f0b7e24cf842::t_56ade4e9981a42 1-129
+webui/src/features/rooms/exportRooms.test.ts
+  s_d2f0b7e24cf842::t_96991cb086d5e8 293-299
+webui/src/api/client.test.ts
+  s_d2f0b7e24cf842::t_d8e09ad4ee65f8 84-85,89-97
+  s_d2f0b7e24cf842::t_b492dc8d8e65eb 86-88
+  s_d2f0b7e24cf842::t_9074447d0aca5b 5
+src/web/serve.rs
+  s_d2f0b7e24cf842::t_e6fa411868fd21 350-364
+  s_d2f0b7e24cf842::t_a27060ead4f93a 18-19
+  s_d2f0b7e24cf842::t_0d2b8606d5ba49 74
+  s_d2f0b7e24cf842::t_148457f18f18bf 347-349
+  s_d2f0b7e24cf842::t_80f092cd2be0ec 337-346
+webui/src/features/agents/exportAgents.ts
+  s_d2f0b7e24cf842::t_b72ac82d21d1ea 11-15,19-20,46-70,80,82-83,95-130,132
+  s_d2f0b7e24cf842::t_ad7df9c4985a5b 131
+webui/src/features/agents/exportAgents.test.ts
+  s_d2f0b7e24cf842::t_834ad488c43424 3-5,9,11-14,66,108,117,121-137,140-163,165-178
+  s_d2f0b7e24cf842::t_946ea129a2993b 138-139,164
+webui/src/api/source.ts
+  s_d2f0b7e24cf842::t_9074447d0aca5b 9
+webui/src/domain/schemas.ts
+  s_d2f0b7e24cf842::t_8a0e90396b60b3 367-378
+webui/src/api/client.ts
+  s_d2f0b7e24cf842::t_a8487e80ba76d4 287-293
+  s_d2f0b7e24cf842::t_50ec5f4275cbaa 19
+  s_d2f0b7e24cf842::t_7f203dfc8a5fd5 26
+webui/src/test/mock/aggregate.ts
+  s_d2f0b7e24cf842::t_893e88f19d2832 32,320-344
+  s_d2f0b7e24cf842::t_966fb9b0a5c718 345-346
+src/web/query.rs
+  s_d2f0b7e24cf842::t_e17bd35652e0ae 1865,1874-1878
+  s_d2f0b7e24cf842::t_ac06b5349a19a3 1598,1838
+  s_d2f0b7e24cf842::t_e529afbf8edafd 1842
+  s_d2f0b7e24cf842::t_a1c829a3c9180d 1614
+  s_d2f0b7e24cf842::t_edf0adcc9b2def 1692-1707
+  s_d2f0b7e24cf842::t_0eadc76b68ba12 914,917-946,948-949,957
+  s_d2f0b7e24cf842::t_886d48902e1fec 1850-1851,1853,1856-1858
+  s_d2f0b7e24cf842::t_1c976c52912808 1859-1864
+  s_d2f0b7e24cf842::t_9c5d4d6da13bbc 959
+webui/src/features/rooms/exportRooms.ts
+  s_d2f0b7e24cf842::t_badc161a8598d2 17,39,60,97-98,110-117,123,130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ff9dcf26a79d21e0b8d0fb563ec6091a4666146",
+  "prompts": {},
+  "sessions": {
+    "s_d2f0b7e24cf842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae490952-ddbe-45b7-9e2a-9bf6ae3243b6",
+        "model": "unknown"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

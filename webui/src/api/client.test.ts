@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAgentAggs, fetchDataset, fetchEvent, fetchMessages } from "./client";
+import {
+  errorText,
+  fetchAgentAggs,
+  fetchDataset,
+  fetchEvent,
+  fetchMessages,
+  fetchRoomCategories,
+} from "./client";
 import { buildMockDataset } from "@/test/mock/generator";
 
 afterEach(() => {
@@ -34,6 +41,20 @@ describe("只读接口边界", () => {
       status: 410,
       detail: "该事件早于原文留存，取不到原文",
     });
+  });
+  it("给人看的错误说明带上后端的 detail，不只是 HTTP 状态码", async () => {
+    const detail = "结果超出读取预算，请缩小日期范围；未返回部分统计";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(Response.json({ error: detail }, { status: 413 }))),
+    );
+    const error: unknown = await fetchRoomCategories({
+      from: "2026-10-01",
+      to: "2026-10-03",
+      slaSec: 1800,
+    }).catch((e: unknown) => e);
+    expect(errorText(error)).toBe(`接口返回 413：/room-categories。${detail}`);
+    expect(errorText(new Error("boom"))).toBe("boom");
   });
   it("成功响应校验后返回，不发送写请求", async () => {
     const fetch = vi.fn(() => Promise.resolve(Response.json([])));

@@ -319,7 +319,8 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
         rooms[0]["topGroups"],
         json!([{"key": "reschedule", "count": 2}])
     );
-    // 群 × 类型（xlsx 导出第二个 sheet）：走同一条查询串契约，各类型相加等于上面的 events。
+    // 群 × 二级分类（xlsx 导出的两张分类宽表），一群一行：走同一条查询串契约，
+    // `counts` 各项加 `unlabeled` 等于上面的 events。
     let room_categories: Value = get_json(
         &http,
         format!("{base}/api/room-categories?from=2026-08-25&to=2026-08-26&sla_sec=300"),
@@ -327,7 +328,7 @@ async fn mysql_http_dataset_and_evidence_obey_the_read_contract() {
     .await;
     assert_eq!(
         room_categories,
-        json!([{"roomid": "R", "key": "reschedule", "count": 2}])
+        json!([{"roomid": "R", "counts": {"reschedule": 2}, "unlabeled": 0}])
     );
 
     let agents: Value = serde_json::from_str(
@@ -1676,15 +1677,17 @@ async fn mysql_merchant_filters_narrow_every_endpoint_to_the_matching_rooms() {
     testutil::drop_mysql_database(pool).await;
 }
 
-/// **群 × 类型拆开再相加，必须等于 `/api/rooms` 的 `events`** —— 导出第二个 sheet 的对账口径。
+/// **每群 `counts` 各项加 `unlabeled`，必须等于 `/api/rooms` 的 `events`** —— 导出分类宽表的对账口径。
 ///
-/// 夹具覆盖四种会让两边分家的事件：正常类型、`__untyped__`（词表归不上去）、`NULL`（打标未完成，
-/// 以 `key: null` 出行而不是并进别的桶）、以及抽取失败群日上残留的旧事件（`known_ok_days` 必须挡掉）。
+/// 夹具覆盖四种会让两边分家的事件：正常类型、`__untyped__`（词表归不上去，在 `counts` 里是自己的键）、
+/// `NULL`（打标未完成，进 `unlabeled` 而不是并进 `__untyped__` 或别的桶）、
+/// 以及抽取失败群日上残留的旧事件（`known_ok_days` 必须挡掉）。
 /// 同一组筛选下两边的范围是同一段 `Scope` 拼出来的，所以带 `types` 筛选再对一遍。
 #[tokio::test]
 #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
 async fn mysql_room_categories_add_up_to_room_events() {
     use super::params::Filters;
+    use serde_json::json;
     use std::collections::BTreeMap;
     let pool = testutil::mysql_pool("room_categories").await;
     //   R1  08-25 ok：reschedule×2（一条平台发起）· __untyped__×1 · NULL×1；08-26 ok：refund×1
@@ -1729,39 +1732,20 @@ async fn mysql_room_categories_add_up_to_room_events() {
 
     let mut connection = pool.acquire().await.unwrap();
     let (since, until) = ("2026-08-25".parse().unwrap(), "2026-08-26".parse().unwrap());
-    type Cells = BTreeMap<(String, Option<String>), i64>;
-    let cells = |rows: Vec<serde_json::Value>| -> Cells {
-        rows.iter()
-            .map(|r| {
-                (
-                    (
-                        r["roomid"].as_str().unwrap().to_owned(),
-                        r["key"].as_str().map(str::to_owned),
-                    ),
-                    r["count"].as_i64().unwrap(),
-                )
-            })
-            .collect()
-    };
-    let key = |room: &str, ty: Option<&str>| (room.to_owned(), ty.map(str::to_owned));
 
-    // 默认筛选：逐格核对，再对 `/api/rooms`
+    // 默认筛选：逐群核对，再对 `/api/rooms`
     let filters = Filters::default();
-    let got = cells(
-        read_room_categories(&mut connection, "C", since, until, 1800, &filters)
-            .await
-            .unwrap(),
-    );
+    let got = read_room_categories(&mut connection, "C", since, until, 1800, &filters)
+        .await
+        .unwrap();
     assert_eq!(
         got,
-        Cells::from([
-            (key("R1", Some("reschedule")), 2),
-            (key("R1", Some("__untyped__")), 1),
-            (key("R1", None), 1),
-            (key("R1", Some("refund")), 1),
-            (key("R2", Some("refund")), 3),
-        ]),
-        "R3 的失败群日不该出现；NULL 以 null 出行，不并进 __untyped__"
+        vec![
+            json!({"roomid": "R1", "unlabeled": 1,
+                   "counts": {"reschedule": 2, "__untyped__": 1, "refund": 1}}),
+            json!({"roomid": "R2", "unlabeled": 0, "counts": {"refund": 3}}),
+        ],
+        "R3 的失败群日不该出现；NULL 进 unlabeled，不并进 __untyped__"
     );
 
     // 带筛选再对一遍：两边范围同源，筛选下也必须相等
@@ -1776,16 +1760,24 @@ async fn mysql_room_categories_add_up_to_room_events() {
             ..Default::default()
         },
     ] {
-        let by_room: BTreeMap<String, i64> = cells(
+        let by_room: BTreeMap<String, i64> =
             read_room_categories(&mut connection, "C", since, until, 1800, &filters)
                 .await
-                .unwrap(),
-        )
-        .into_iter()
-        .fold(BTreeMap::new(), |mut acc, ((room, _), n)| {
-            *acc.entry(room).or_default() += n;
-            acc
-        });
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    let labeled: i64 = r["counts"]
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .map(|n| n.as_i64().unwrap())
+                        .sum();
+                    (
+                        r["roomid"].as_str().unwrap().to_owned(),
+                        labeled + r["unlabeled"].as_i64().unwrap(),
+                    )
+                })
+                .collect();
         let rooms: BTreeMap<String, i64> =
             read_rooms(&mut connection, "C", since, until, 1800, &filters, &[])
                 .await
@@ -1798,7 +1790,10 @@ async fn mysql_room_categories_add_up_to_room_events() {
                     )
                 })
                 .collect();
-        assert_eq!(by_room, rooms, "各类型相加应等于 /api/rooms 的 events");
+        assert_eq!(
+            by_room, rooms,
+            "counts 加 unlabeled 应等于 /api/rooms 的 events"
+        );
     }
 
     drop(connection);

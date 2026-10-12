@@ -5,13 +5,13 @@ import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { buildMockDataset } from "@/test/mock/generator";
 import { buildTaxonomyIndex, decorate } from "@/domain/metrics";
 import type { LoadedDataset } from "@/api/source";
-import type { DecoratedEvent, RoomCategoryAgg } from "@/domain/schemas";
+import type { DecoratedEvent } from "@/domain/schemas";
 import { Providers } from "@/app/providers";
 import { queryClient } from "@/app/queryClient";
 import { Workbench } from "@/components/layout/Workbench";
 import { useFilters } from "@/features/filters/useFilters";
 import { useAnalytics } from "@/features/filters/useAnalytics";
-import type * as ExportRooms from "./exportRooms";
+import type * as Workbook from "@/features/export/workbook";
 import { RoomsPage } from "./RoomsPage";
 
 vi.mock("@/components/charts/EChart", () => ({
@@ -22,24 +22,17 @@ vi.mock("@/components/charts/EChart", () => ({
  * 由 `mock/aggregate`（口径的前端对照实现）算成接口的形状 —— 不手写假数字。
  */
 const stub = vi.hoisted(() => ({ events: [], groupDaily: [], tax: new Map() }) as never);
-// 群 × 类型只有导出会取，聚合替身不管它：这里给一个可指定返回值的替身。
-const roomCategories = vi.hoisted(() =>
-  vi.fn<(f: unknown) => Promise<RoomCategoryAgg[]>>(() => Promise.resolve([])),
-);
 vi.mock("@/api/source", async (importOriginal) => {
   const { sourceStub } = await import("@/test/aggregateStub");
-  return {
-    ...sourceStub(await importOriginal(), stub),
-    loadRoomCategories: roomCategories,
-  };
+  return sourceStub(await importOriginal(), stub);
 });
-// 下载本身（浏览器里写文件）替换掉，只验证页面交给它的那两张表。
+// 下载本身（浏览器里写文件）替换掉，只验证页面交给它的那三张表。
 const download = vi.hoisted(() =>
-  vi.fn<(sheets: { metrics: unknown[]; types: unknown[][] }) => Promise<void>>(),
+  vi.fn<(sheets: Workbook.WorkbookSheet[], view: unknown, prefix: string) => Promise<void>>(),
 );
-vi.mock("./exportRooms", async (importOriginal) => ({
-  ...(await importOriginal<typeof ExportRooms>()),
-  downloadRoomSheets: download,
+vi.mock("@/features/export/workbook", async (importOriginal) => ({
+  ...(await importOriginal<typeof Workbook>()),
+  downloadWorkbook: download,
 }));
 afterEach(cleanup);
 // 缓存是模块级单例，用例之间不清就会读到上一个用例的数字。
@@ -566,15 +559,21 @@ it("exports_every_filtered_room_not_only_the_current_page", async () => {
   const total = Number(/共 (\d+) 个群/.exec(screen.getByText(/共 \d+ 个群/).textContent)![1]);
   expect(total).toBeGreaterThan(10);
 
-  roomCategories.mockResolvedValueOnce([
-    { roomid: dataset.meta.rooms[0]!.roomid, key: null, count: 2 },
-  ]);
   await user.click(screen.getByRole("button", { name: /导出 Excel/ }));
   await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
-  const { metrics, types } = download.mock.calls[0]![0];
-  // 摘要 · 空行 · 表头之后，每个群一行 —— 不受当前页大小限制。
-  expect(metrics).toHaveLength(3 + total);
-  // 第二个 sheet 的数据是点了导出才取的，带着页面当前的筛选；打标未完成作为普通类型行写出。
-  expect(roomCategories).toHaveBeenCalledTimes(1);
-  expect(types.slice(3).some((r) => r[5] === "打标未完成" && r[6] === 2)).toBe(true);
+  const [sheets] = download.mock.calls[0]!;
+  expect(sheets.map((s) => s.name)).toEqual(["群维度指标", "群×一级分类", "群×二级分类"]);
+  // 每个群一行 —— 不受当前页大小限制；两张宽表与第一张逐行对齐。
+  for (const sheet of sheets) expect(sheet.rows).toHaveLength(total);
+  // 宽表的数据是点了导出才取的，带着页面当前的筛选：每行各分类列 + 未归类 + 打标未完成
+  // 等于事件量（对不上导出会直接失败，走不到这里）。
+  for (const sheet of sheets.slice(1)) {
+    const names = sheet.columns.map((c) => c.header);
+    const [from, to] = [names.indexOf("事件量"), names.indexOf("数据完整性")];
+    const tallied = sheet.rows.filter((r) => typeof r[from] === "number" && r[from] > 0);
+    expect(tallied.length).toBeGreaterThan(0);
+    for (const r of tallied) {
+      expect((r.slice(from + 1, to) as number[]).reduce((a, b) => a + b, 0)).toBe(r[from]);
+    }
+  }
 });

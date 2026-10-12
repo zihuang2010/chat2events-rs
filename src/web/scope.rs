@@ -20,6 +20,17 @@
 //! [`Scope::finish`] 再用 `assert!` 兜一道 —— **用 `assert!` 不用 `debug_assert!`**：
 //! 后者在 release 里会蒸发，而这条不变量恰恰要在生产上第一次请求时就炸，
 //! 不能安静地算错一整天。
+//!
+//! ## 为什么不把三个预置片段合成一个「已知成功群日范围」
+//!
+//! 聚合语句里 `.known_ok_days().window().filters()` 连写了十来处，看着像该收成一个入口，
+//! 2026-10 评审过，**不收**：
+//! - 顺序写错会直接报 SQL 错或撞上 `finish` 的断言，不会静默算错；
+//! - 真正静默的是新聚合**漏了**分母边界，合成一个入口也挡不住 —— 明细那两条
+//!   （`event_page_sql` / `count_events_sql`）本来就**有意**只用窗口 + 筛选，这条路必须留着；
+//! - 按客服展开的两处（`summary_agents_sql`，以及三条客服查询共用的 `agent_inv_scope`）
+//!   要在 `JOIN d` 与 `WHERE` 之间插 `JSON_TABLE`（必须与基表同层），合不进去，
+//!   于是同一件事会有两种写法。每处只省两行，换来多一个入口。
 
 use super::params::{Bind, Filters};
 use super::query::KNOWN_OK_DAYS;

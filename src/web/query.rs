@@ -886,19 +886,18 @@ async fn read_room_top_groups(
     Ok(out)
 }
 
-/// 群 × 二级类型的事件数 —— 给群聊洞察 xlsx 导出的第二个 sheet，页面本身不调它。
+/// 群 × 二级分类的事件数，一个群一行 —— 给群聊洞察 xlsx 导出的两张分类宽表（一级由前端按词表相加），
+/// 页面本身不调它。
 ///
 /// 范围与 [`rooms_sql`] 完全相同（已知成功群日 · 窗口 · 筛选），所以同一组筛选下
-/// 每个群各类型（含 `NULL`）相加恒等于 `/api/rooms` 的 `events`；
+/// 每个群 `counts` 各项加 `unlabeled` 恒等于 `/api/rooms` 的 `events`；
 /// `mysql_room_categories_add_up_to_room_events` 钉住这一点。
 ///
-/// ⚠️ **`event_type IS NULL`（打标未完成）不排除，以 `key: null` 出行** —— 与
+/// ⚠️ **`event_type IS NULL`（打标未完成）不排除，折成 `unlabeled`，不进 `counts`** —— 与
 /// [`room_top_groups_sql`] 相反：那条要的是「有标签的前几名」，这里要的是对得上事件量的全集。
-/// 未完成是 `null`，不是 `__untyped__`，更不是 0（承重不变量 4）。
+/// 未完成不是 `__untyped__`，更不是 0（承重不变量 4）。
 ///
-/// ⚠️ **行数是「实际出现过的 (群, 类型) 组合数」，没有天然上界**，与上面
-/// [`read_room_top_groups`] 的注释说的是同一件事 —— 那条为此在库里截前四，这条是有意的
-/// 例外：导出要全集，超出 `web.max_rows` 由 handler 显式 413，不截断。
+/// 行数封顶在群数上，与 [`read_rooms`] 同一个上界，超出 `web.max_rows` 由 handler 显式 413。
 pub(super) async fn read_room_categories(
     connection: &mut MySqlConnection,
     corp: &str,
@@ -912,10 +911,29 @@ pub(super) async fn read_room_categories(
         bind_all(sqlx::query_as(sqlx::AssertSqlSafe(sql)), binds)
             .fetch_all(&mut *connection)
             .await?;
-    Ok(rows
+    Ok(fold_room_categories(rows))
+}
+
+/// 把 `(群, 类型, 事件数)` 折成每群一行，按 `roomid` 排序。`NULL` 类型进 `unlabeled`，
+/// 其余（含 `__untyped__` 与词表外的历史编码）原样做 `counts` 的键。
+fn fold_room_categories(rows: Vec<(String, Option<String>, i64)>) -> Vec<Value> {
+    let mut rooms: std::collections::BTreeMap<String, (serde_json::Map<String, Value>, i64)> =
+        std::collections::BTreeMap::new();
+    for (roomid, event_type, count) in rows {
+        let (counts, unlabeled) = rooms.entry(roomid).or_default();
+        match event_type {
+            Some(event_type) => {
+                counts.insert(event_type, json!(count));
+            }
+            None => *unlabeled = count,
+        }
+    }
+    rooms
         .into_iter()
-        .map(|(roomid, key, count)| json!({"roomid": roomid, "key": key, "count": count}))
-        .collect())
+        .map(|(roomid, (counts, unlabeled))| {
+            json!({"roomid": roomid, "counts": counts, "unlabeled": unlabeled})
+        })
+        .collect()
 }
 
 /// 按客服一行 —— 行数是客服数，几百。
@@ -1786,6 +1804,30 @@ mod binding_tests {
                 category_cells_sql(c, s, u, sla, &filters, &groups);
             }
         }
+    }
+
+    /// 折叠成每群一行：`NULL` 只进 `unlabeled`，不并进 `__untyped__`，也不进 `counts`；
+    /// 词表外的历史编码原样做键；没有事件的群不出行；按 `roomid` 排序。
+    #[test]
+    fn room_categories_fold_into_one_row_per_room() {
+        let row =
+            |room: &str, ty: Option<&str>, n: i64| (room.to_owned(), ty.map(str::to_owned), n);
+        let got = fold_room_categories(vec![
+            row("R1", None, 1),
+            row("R1", Some("__untyped__"), 1),
+            row("R1", Some("urge_accept"), 3),
+            row("R1", Some("retired_code"), 2),
+            row("R2", Some("refund"), 4),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                json!({"roomid": "R1", "unlabeled": 1,
+                       "counts": {"urge_accept": 3, "__untyped__": 1, "retired_code": 2}}),
+                json!({"roomid": "R2", "unlabeled": 0, "counts": {"refund": 4}}),
+            ]
+        );
+        assert!(fold_room_categories(Vec::new()).is_empty());
     }
 
     /// 明细那两条走的是同一条内层 `WHERE`，总数与行因此必然同集合。

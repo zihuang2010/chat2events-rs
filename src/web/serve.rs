@@ -290,10 +290,10 @@ async fn rooms(
     bounded_json(&rows, &state.limits)
 }
 
-/// 群 × 二级类型的事件数 —— 只有群聊洞察的 xlsx 导出会调（点了才请求）。
+/// 群 × 二级分类的事件数，一个群一行 —— 只有群聊洞察的 xlsx 导出会调（点了才请求）。
 ///
-/// ⚠️ **行数没有天然上界**（群数 × 出现过的类型数），不像 `rooms` / `agents` 封顶在群数 / 客服数上。
-/// 超过 `max_rows` 一律 413，不截断：截断会让导出少几个群的某些类型而看起来一切正常。
+/// 行数封顶在群数上，与 `rooms` 同一个上界。超过 `max_rows` 一律 413，不截断：
+/// 截断会让导出少几个群而看起来一切正常。
 async fn room_categories(
     State(state): State<WebState>,
     Query(sla): Query<Sla>,

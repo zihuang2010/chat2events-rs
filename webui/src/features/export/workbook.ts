@@ -1,0 +1,102 @@
+/**
+ * xlsx 导出共用的版式与写文件。群导出（`rooms/exportRooms.ts`）与客服导出
+ * （`agents/exportAgents.ts`）只描述「有哪几个 sheet、每个 sheet 的表头与行」，版式在这里一处定。
+ *
+ * 版式：第 1 行导出条件，第 2 行空着，第 3 行表头，前三行冻结。⚠️ 空行是有意的：
+ * Excel 排序会把与表头相连的非空行一并当成表格，摘要行贴着表头就会被认成表头、
+ * 真表头被排进数据里。
+ */
+
+import type { Row } from "write-excel-file/browser";
+import { EVENT_STATUS, SLA_OPTIONS } from "@/domain/definitions";
+import { level2Label, managerLabels } from "@/domain/metrics";
+import type { Meta } from "@/domain/schemas";
+import { formatDateTime } from "@/lib/format";
+import type { Analytics } from "@/features/filters/useAnalytics";
+import type { Filters } from "@/features/filters/useFilters";
+
+/** 一个 sheet：表头与列宽写在同一个 `columns` 里，两者不会错位；`rows` 每行按 `columns` 的顺序。 */
+export interface WorkbookSheet {
+  name: string;
+  /** 第 1 行，见 `summary`。 */
+  caption: string;
+  /** `width` 的单位是字符，一个汉字约占两个。 */
+  columns: { header: string; width: number }[];
+  rows: Row[];
+  /** 横向滚动时冻住的前几列，缺省不冻。 */
+  stickyColumns?: number;
+}
+
+/** 条件行与文件名用到的那部分页面状态，群导出与客服导出共用。 */
+export type SheetView = Pick<Analytics, "days" | "lastDay" | "roomLabel" | "agentLabel">;
+
+/** 页面实际展示的日期区间（URL 上的日期已被夹进已加载窗口）。 */
+const span = (view: SheetView) => ({ from: view.days[0] ?? view.lastDay, to: view.lastDay });
+
+/** 时长存成 Excel 的「天」，配 `[h]:mm:ss`：看着是时长，排序与计算仍是数值。 */
+export const duration = (sec: number | null) =>
+  sec === null ? null : { value: sec / 86_400, format: "[h]:mm:ss" };
+export const percent = (v: number | null) => (v === null ? null : { value: v, format: "0.0%" });
+
+/** 把 sheet 描述排成 `writeXlsxFile` 的入参：导出条件 · 空行 · 加粗表头 · 数据行。 */
+export const layoutSheets = (sheets: readonly WorkbookSheet[]) =>
+  sheets.map((s) => ({
+    data: [
+      [s.caption],
+      [],
+      s.columns.map(({ header }) => ({ value: header, fontWeight: "bold" as const })),
+      ...s.rows,
+    ],
+    sheet: s.name,
+    columns: s.columns.map(({ width }) => ({ width })),
+    stickyRowsCount: 3,
+    stickyColumnsCount: s.stickyColumns ?? 0,
+  }));
+
+/** 文件名 `{第一个 sheet 名}_{起}_{止}.xlsx`：第一个 sheet 就是这份导出的主表。 */
+export async function downloadWorkbook(
+  sheets: readonly [WorkbookSheet, ...WorkbookSheet[]],
+  view: SheetView,
+): Promise<void> {
+  // 点了才加载：写 xlsx 的库只有导出用得上，不进首屏。
+  const { default: writeXlsxFile } = await import("write-excel-file/browser");
+  const { from, to } = span(view);
+  await writeXlsxFile(layoutSheets(sheets)).toFile(`${sheets[0].name}_${from}_${to}.xlsx`);
+}
+
+/**
+ * 文件离开页面之后，靠这一行说清它是在什么条件下导出的。日期与首响阈值总是写
+ * （超时率随阈值变），其余条件只写生效的；导出时间是因为窗口末尾那一两天还没冻结，
+ * 下一轮跑批可能重写，同一组条件隔天再导，数字可以不同。
+ *
+ * `scope` 是各自的行数说明（「共 N 个群」/「共 N 人」…），排在筛选条件之后、导出时间之前。
+ */
+export function summary(
+  scope: readonly (string | false)[],
+  view: SheetView,
+  meta: Pick<Meta, "rooms" | "taxonomy" | "taxonomy_version">,
+  filters: Filters,
+  now: Date,
+): string {
+  const sla =
+    SLA_OPTIONS.find((option) => option.value === filters.slaSec)?.label ?? `${filters.slaSec} 秒`;
+  const query = filters.query.trim();
+  const { from, to } = span(view);
+  const parts = [
+    `日期 ${from} ~ ${to}（${view.days.length} 天，UTC+8）`,
+    `首响阈值 ${sla}`,
+    filters.room && `群聊：${view.roomLabel(filters.room)}`,
+    filters.agent && `客服：${view.agentLabel(filters.agent)}`,
+    filters.merchantGroup && `商家分组：${filters.merchantGroup}`,
+    filters.businessManager &&
+      `业务经理：${managerLabels(meta.rooms).get(filters.businessManager) ?? filters.businessManager}`,
+    query && `事件摘要：${query}`,
+    filters.level1 && `一级分类：${filters.level1}`,
+    filters.level2 && `二级分类：${level2Label(meta, filters.level2)}`,
+    filters.status && `状态：${EVENT_STATUS[filters.status]}`,
+    filters.overdueOnly !== null && `超时：${filters.overdueOnly ? "仅超时" : "仅未超时"}`,
+    ...scope,
+    `导出于 ${formatDateTime(now).slice(0, 16)}`,
+  ];
+  return parts.filter(Boolean).join("｜");
+}

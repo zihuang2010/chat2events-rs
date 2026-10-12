@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { METRIC, SLA_OPTIONS } from "@/domain/definitions";
 import { compareRoomEvents, roomCoverageLabel, roomRollup, type RoomRow } from "@/domain/metrics";
+import { errorText } from "@/api/client";
 import { useRoomAggs } from "@/api/queries";
 import { loadRoomCategories } from "@/api/source";
 import { ErrorState, PageSkeleton } from "@/components/states";
@@ -20,9 +21,10 @@ import {
 } from "@/components/primitives";
 import { EmptyState } from "@/components/states";
 import { formatInt } from "@/lib/format";
+import { downloadWorkbook } from "@/features/export/workbook";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
-import { downloadRoomSheets, roomSheet, roomTypeSheet } from "./exportRooms";
+import { roomPivotSheet, roomSheet } from "./exportRooms";
 import { RoomFilters } from "./RoomFilters";
 import { RoomInsightsDrawer } from "./RoomInsightsDrawer";
 import "./rooms.css";
@@ -279,19 +281,20 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
   const exportXlsx = async () => {
     setExporting(true);
     try {
-      // 第二个 sheet 的数据只在导出时才取（行数是群数 × 类型数，页面用不到）。
-      const cells = await loadRoomCategories(analytics.q);
+      // 两张分类宽表的数据只在导出时才取（行数是群数 × 二级分类数，页面用不到）。
+      const aggs = await loadRoomCategories(analytics.q);
       const now = new Date();
       const { meta } = analytics.dataset;
-      await downloadRoomSheets(
-        {
-          metrics: roomSheet(rows, analytics, meta, filters, now),
-          types: roomTypeSheet(rows, cells, analytics, meta, filters, now),
-        },
+      await downloadWorkbook(
+        [
+          roomSheet(rows, analytics, meta, filters, now),
+          roomPivotSheet("level1", rows, aggs, analytics, meta, filters, now),
+          roomPivotSheet("level2", rows, aggs, analytics, meta, filters, now),
+        ],
         analytics,
       );
     } catch (error) {
-      void message.error(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+      void message.error(`导出失败：${errorText(error)}`);
     } finally {
       setExporting(false);
     }

@@ -352,13 +352,15 @@ export const categoryAggListSchema = z.array(categoryAggSchema);
 export const roomAggListSchema = z.array(roomAggSchema);
 
 /**
- * 群 × 二级类型的事件数，只有群聊洞察的 xlsx 导出用。`key` 是 `type_id`；
- * **`null` = 打标未完成**（不是 `__untyped__`，更不是 0）。没有事件的类型不出行。
+ * 一个群一行的二级分类事件数，只有群聊洞察的 xlsx 导出用。行数 = 有事件的群数，与
+ * `/api/rooms` 同一个上界。`counts` 的键是 `type_id`（含 `__untyped__` 与词表外的历史
+ * 编码），没有事件的分类不出键；`unlabeled` 是打标未完成的事件数 —— 不是 `__untyped__`，
+ * 不并进 `counts`。没有事件的群不出行。
  */
 export const roomCategoryAggSchema = z.object({
   roomid: z.string(),
-  key: z.string().nullable(),
-  count: z.number(),
+  counts: z.record(z.string(), z.number()),
+  unlabeled: z.number(),
 });
 export type RoomCategoryAgg = z.infer<typeof roomCategoryAggSchema>;
 export const roomCategoryAggListSchema = z.array(roomCategoryAggSchema);

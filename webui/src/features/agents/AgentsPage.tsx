@@ -20,6 +20,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { METRIC } from "@/domain/definitions";
 import { agentRollup, type AgentRow } from "@/domain/metrics";
+import { errorText } from "@/api/client";
 import { useAgentAggs, useRoomAggs, useSummary } from "@/api/queries";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { InsightsLayout, InsightMetrics, InsightSection } from "@/features/insights/InsightsLayout";
@@ -28,10 +29,11 @@ import { EmptyState } from "@/components/states";
 import { TrendChart } from "@/components/charts/TrendChart";
 import { WorkloadQualityChart, type WorkloadPoint } from "@/components/charts/WorkloadQualityChart";
 import { formatDuration, formatInt, formatPercent, shortId } from "@/lib/format";
+import { downloadWorkbook } from "@/features/export/workbook";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { FiltersApi } from "@/features/filters/useFilters";
 import { WORKBENCH_THEME, cssVars } from "@/app/theme/workbench";
-import { agentSheet, downloadAgentSheet } from "./exportAgents";
+import { agentSheet } from "./exportAgents";
 import "./agents.css";
 
 export function AgentsPage({ analytics, api }: { analytics: Analytics; api: FiltersApi }) {
@@ -343,9 +345,9 @@ export function AgentsPage({ analytics, api }: { analytics: Analytics; api: Filt
     setExporting(true);
     try {
       const sheet = agentSheet(rows, analytics, dataset.meta, filters, new Date());
-      await downloadAgentSheet(sheet, analytics);
+      await downloadWorkbook([sheet], analytics);
     } catch (error) {
-      void message.error(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+      void message.error(`导出失败：${errorText(error)}`);
     } finally {
       setExporting(false);
     }

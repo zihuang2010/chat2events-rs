@@ -10,7 +10,7 @@ import { queryClient } from "@/app/queryClient";
 import { Workbench } from "@/components/layout/Workbench";
 import { useFilters } from "@/features/filters/useFilters";
 import { useAnalytics } from "@/features/filters/useAnalytics";
-import type * as ExportAgents from "./exportAgents";
+import type * as Workbook from "@/features/export/workbook";
 import { AgentsPage } from "./AgentsPage";
 
 vi.mock("@/components/charts/EChart", () => ({
@@ -23,10 +23,12 @@ vi.mock("@/api/source", async (importOriginal) => {
   return sourceStub(await importOriginal(), stub);
 });
 // 下载本身（浏览器里写文件）替换掉，只验证页面交给它的那张表。
-const download = vi.hoisted(() => vi.fn<(sheet: unknown[]) => Promise<void>>());
-vi.mock("./exportAgents", async (importOriginal) => ({
-  ...(await importOriginal<typeof ExportAgents>()),
-  downloadAgentSheet: download,
+const download = vi.hoisted(() =>
+  vi.fn<(sheets: Workbook.WorkbookSheet[], view: unknown, prefix: string) => Promise<void>>(),
+);
+vi.mock("@/features/export/workbook", async (importOriginal) => ({
+  ...(await importOriginal<typeof Workbook>()),
+  downloadWorkbook: download,
 }));
 afterEach(cleanup);
 afterEach(() => queryClient.clear());
@@ -82,6 +84,8 @@ it("exports_every_filtered_agent_not_only_the_current_page", async () => {
 
   await user.click(screen.getByRole("button", { name: /导出 Excel/ }));
   await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
-  // 摘要 · 空行 · 表头之后，每个客服一行 —— 不受当前页大小限制。
-  expect(download.mock.calls[0]![0]).toHaveLength(3 + total);
+  const [sheets] = download.mock.calls[0]!;
+  expect(sheets.map((s) => s.name)).toEqual(["客服效能"]);
+  // 每个客服一行 —— 不受当前页大小限制。
+  expect(sheets[0]!.rows).toHaveLength(total);
 });

@@ -208,7 +208,7 @@ function RoomInsightsReady({
               value={level}
               options={[
                 { label: "一级分类", value: "level1" },
-                { label: "二级类型", value: "level2" },
+                { label: "二级分类", value: "level2" },
               ]}
               onChange={(value) => setLevel(value)}
             />
@@ -223,7 +223,7 @@ function RoomInsightsReady({
               <EChart
                 option={charts.classification}
                 height={Math.max(240, categories.length * 28 + 36)}
-                ariaLabel={`近7天${level === "level1" ? "一级分类" : "二级类型"}事件数量分布`}
+                ariaLabel={`近7天${level === "level1" ? "一级分类" : "二级分类"}事件数量分布`}
               />
             </div>
           ) : (

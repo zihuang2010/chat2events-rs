@@ -2,60 +2,53 @@
  * 群维度指标导出成 xlsx。写出的是页面上 `roomRollup` 已经拼好的行，这里**不算任何指标**
  * —— 再算一遍就是第四份口径实现（CLAUDE.md「指标口径有三份实现」），分家了没有金标能发现。
  *
- * 版式：第 1 行导出条件，第 2 行空着，第 3 行表头。⚠️ 空行是有意的：Excel 排序会把与表头
- * 相连的非空行一并当成表格，摘要行贴着表头就会被认成表头、真表头被排进数据里。
+ * 版式（导出条件 · 空行 · 表头）与写文件在 `features/export/workbook.ts`，这里只描述三个 sheet。
  *
  * 缺失值（null）写空格子，绝不写 0 —— 承重不变量 4。
  *
- * 同一个文件里有第二个 sheet「群×事件类型」（长表，一行 = 群 × 二级类型），数据来自
- * `/api/room-categories`。它同样不算指标：每行的事件量就是接口给的数，范围与第一个 sheet
- * 同一组筛选，所以每个群各行相加（含「打标未完成」）等于第一个 sheet 的「事件量」。
+ * 同一个文件里还有两张分类宽表「群×一级分类」「群×二级分类」，数据来自
+ * `/api/room-categories`（群 × 二级分类的事件数），一级按词表把二级相加。它们同样不算指标，
+ * 只是换个形状：范围与第一个 sheet 同一组筛选，所以每行各分类列 + 未归类 + 打标未完成
+ * 等于第一个 sheet 的「事件量」。
  */
 
-import type { SheetData } from "write-excel-file/browser";
-import { EVENT_STATUS, SLA_OPTIONS } from "@/domain/definitions";
-import {
-  buildTaxonomyIndex,
-  compareRoomEvents,
-  level2Label,
-  managerLabels,
-  roomCoverageLabel,
-  type RoomRow,
-} from "@/domain/metrics";
+import { compareRoomEvents, roomCoverageLabel, type RoomRow } from "@/domain/metrics";
 import type { Meta, RoomCategoryAgg } from "@/domain/schemas";
-import { formatDateTime } from "@/lib/format";
+import { duration, percent, summary, type WorkbookSheet } from "@/features/export/workbook";
 import type { Analytics } from "@/features/filters/useAnalytics";
 import type { Filters } from "@/features/filters/useFilters";
 
-const HEADERS = [
-  "群名称",
-  "商家名称",
-  "商家分组",
-  "业务经理",
-  "消息总量",
-  "事件量",
-  "商家发起",
-  "首响 P50",
-  "首响 P90",
-  "无响应",
-  "无响应率",
-  "超时率",
-  "数据完整性",
-];
 /** 列宽，单位是字符；一个汉字约占两个。 */
-const WIDTHS = [30, 24, 14, 12, 10, 10, 10, 11, 11, 9, 10, 9, 30];
-
-const TYPE_HEADERS = [
-  "群名称",
-  "商家名称",
-  "商家分组",
-  "业务经理",
-  "一级分类",
-  "二级类型",
-  "事件量",
-  "数据完整性",
+const COLUMNS = [
+  { header: "群名称", width: 30 },
+  { header: "商家名称", width: 24 },
+  { header: "商家分组", width: 14 },
+  { header: "业务经理", width: 12 },
+  { header: "消息总量", width: 10 },
+  { header: "事件量", width: 10 },
+  { header: "商家发起", width: 10 },
+  { header: "首响 P50", width: 11 },
+  { header: "首响 P90", width: 11 },
+  { header: "无响应", width: 9 },
+  { header: "无响应率", width: 10 },
+  { header: "超时率", width: 9 },
+  { header: "数据完整性", width: 30 },
 ];
-const TYPE_WIDTHS = [30, 24, 14, 12, 14, 22, 10, 30];
+
+/** 分类宽表固定的头尾列；中间是词表全量的分类列，个数随词表而定，每列同宽。 */
+const PIVOT_HEAD = [
+  { header: "群名称", width: 30 },
+  { header: "商家名称", width: 24 },
+  { header: "商家分组", width: 14 },
+  { header: "业务经理", width: 12 },
+  { header: "事件量", width: 10 },
+];
+const PIVOT_TAIL = [
+  { header: "未归类", width: 9 },
+  { header: "打标未完成", width: 11 },
+  { header: "数据完整性", width: 30 },
+];
+const CATEGORY_WIDTH = 14;
 
 export type RoomSheetView = Pick<
   Analytics,
@@ -68,16 +61,9 @@ export type RoomSheetView = Pick<
   | "roomManager"
 >;
 
-/** 条件行与文件名用到的那部分页面状态，群导出与客服导出共用。 */
-export type SheetView = Pick<Analytics, "days" | "lastDay" | "roomLabel" | "agentLabel">;
-
-/** 页面实际展示的日期区间（URL 上的日期已被夹进已加载窗口）。 */
-const span = (view: SheetView) => ({ from: view.days[0] ?? view.lastDay, to: view.lastDay });
-
-/** 时长存成 Excel 的「天」，配 `[h]:mm:ss`：看着是时长，排序与计算仍是数值。 */
-export const duration = (sec: number | null) =>
-  sec === null ? null : { value: sec / 86_400, format: "[h]:mm:ss" };
-export const percent = (v: number | null) => (v === null ? null : { value: v, format: "0.0%" });
+/** 分类宽表还要词表分组（列）与当前的分类筛选（范围外的列留空）。 */
+export type RoomPivotView = RoomSheetView &
+  Pick<Analytics, "parents"> & { q: Pick<Analytics["q"], "types" | "typesExclude"> };
 
 export function roomSheet(
   rows: readonly RoomRow[],
@@ -85,14 +71,14 @@ export function roomSheet(
   meta: Pick<Meta, "rooms" | "taxonomy" | "taxonomy_version">,
   filters: Filters,
   now: Date,
-): SheetData {
+): WorkbookSheet {
   // 与页面默认排序相同：事件量倒序，缺失排最后。sort 是稳定的，同值保持页面上的先后。
   const sorted = [...rows].sort((a, b) => compareRoomEvents(b, a));
-  return [
-    [summary([`共 ${rows.length} 个群`], view, meta, filters, now)],
-    [],
-    HEADERS.map((value) => ({ value, fontWeight: "bold" as const })),
-    ...sorted.map((r) => [
+  return {
+    name: "群维度指标",
+    caption: summary([`共 ${rows.length} 个群`], view, meta, filters, now),
+    columns: COLUMNS,
+    rows: sorted.map((r) => [
       r.label,
       view.roomMerchant(r.key),
       view.roomMerchantGroup(r.key),
@@ -107,141 +93,101 @@ export function roomSheet(
       percent(r.overdueRate),
       roomCoverageLabel(r).text,
     ]),
-  ];
+  };
 }
 
 /**
- * 「群×事件类型」sheet。群的顺序与第一个 sheet 相同（事件量倒序），群内类型按事件量倒序。
+ * 「群×一级分类」/「群×二级分类」宽表。一个群一行，群与顺序同第一个 sheet（事件量倒序），
+ * 0 事件、抽取全失败的群也各占一行 —— 三个 sheet 逐行对齐。
  *
- * 一级 / 二级的显示名与事件明细（`decorate`）同一套：`key` 为 null 是「打标未完成」，
- * 词表里找不到的编码（`__untyped__` 以外的历史编码）一级落「未归类」、二级原样写编码。
- * 没有事件的类型不出行，所以「数据完整性」才是判断缺的是真 0 还是数据不全的依据。
+ * 分类列取词表全量、顺序固定，换个日期范围再导列也不变，能直接拼表：一级按中文名
+ * （`parentGroups` 的顺序），二级按所属一级聚在一起、组内按中文名。`unlabeled` 进
+ * 「打标未完成」，`counts` 里的 `__untyped__` 与词表外的历史编码进「未归类」—— 两者绝不合并。
  *
- * ⚠️ 整段抽取都失败的群（`events === null`）没有任何 (群, 类型) 行可写，但不能悄悄消失：
- * 写一行只有群信息和「N / N 日失败」的空行，类型与事件量留空（不是 0）。
+ * 格子是事件量。留空有两种原因，都不能写 0（承重不变量 4）：
+ * - 抽取全失败的群（`events === null`）：整行没算出来；
+ * - 带了分类筛选时范围外的列：这次压根没计数（后端只要带分类筛选，就连打标未完成一起
+ *   排掉，见 `web/params.rs`），写 0 会被读成「这个群没有这类事件」。
  */
-export function roomTypeSheet(
+export function roomPivotSheet(
+  level: "level1" | "level2",
   rows: readonly RoomRow[],
-  cells: readonly RoomCategoryAgg[],
-  view: RoomSheetView,
+  aggs: readonly RoomCategoryAgg[],
+  view: RoomPivotView,
   meta: Pick<Meta, "rooms" | "taxonomy" | "taxonomy_version">,
   filters: Filters,
   now: Date,
-): SheetData {
-  const tax = buildTaxonomyIndex(meta.taxonomy, meta.taxonomy_version);
-  const cellsByRoom = new Map<string, RoomCategoryAgg[]>();
-  for (const cell of cells) {
-    const bucket = cellsByRoom.get(cell.roomid);
-    if (bucket) bucket.push(cell);
-    else cellsByRoom.set(cell.roomid, [cell]);
+): WorkbookSheet {
+  const categories =
+    level === "level1"
+      ? view.parents.map((p) => ({ header: p.name, types: p.types }))
+      : view.parents.flatMap((p) =>
+          meta.taxonomy
+            .filter((t) => t.parent_name === p.name)
+            .map((t) => ({ header: t.name, types: [t.type_id] }))
+            .sort((a, b) => a.header.localeCompare(b.header, "zh")),
+        );
+  const column = new Map(categories.flatMap((c, i) => c.types.map((id) => [id, i] as const)));
+  const unclassified = categories.length;
+  const unlabeled = categories.length + 1;
+
+  // 与后端 `types` / `typesExclude` 那两段 WHERE 逐条同义（`web/params.rs`）：两者都给就取
+  // 交集；任一分类筛选都连带排掉打标未完成。这个 key 的事件有没有被计数。
+  const { types, typesExclude } = view.q;
+  const counted = (key: string | null) =>
+    (!types && !typesExclude) ||
+    (key !== null &&
+      (!types || types.includes(key)) &&
+      (!typesExclude || !typesExclude.includes(key)));
+  const inScope = [
+    ...categories.map((c) => c.types.some(counted)),
+    // 未归类 = 词表外的编码，列不出名单：只有 `types` 点名了词表外的编码才算在范围内。
+    !types || types.some((key) => !column.has(key) && counted(key)),
+    counted(null),
+  ];
+
+  const counts = new Map<string, number[]>();
+  for (const agg of aggs) {
+    const bucket = inScope.map(() => 0);
+    for (const [type, n] of Object.entries(agg.counts))
+      bucket[column.get(type) ?? unclassified]! += n;
+    bucket[unlabeled] = agg.unlabeled;
+    counts.set(agg.roomid, bucket);
   }
-  const body: SheetData = [];
-  let roomsWritten = 0;
-  for (const r of [...rows].sort((a, b) => compareRoomEvents(b, a))) {
-    const identity = [
+  // ⚠️ 两份数据来自两次请求：群指标是页面早先取的（最多缓存 5 分钟），分类计数是点导出时
+  // 现取的。中间跑批落库或商家摘要刷新，就会写出「各分类相加 ≠ 事件量」的文件而毫无提示。
+  // 数据一致时这个等式必然成立（同一组筛选、同一个范围），对不上就是取数之间数据变了。
+  // 整行没算出来的群（`events === null`）两张表都留空，不比。
+  for (const r of rows) {
+    const tally = counts.get(r.key)?.reduce((a, b) => a + b, 0) ?? 0;
+    if (r.events !== null && tally !== r.events) {
+      throw new Error(
+        `数据刚有更新（群「${r.label}」分类合计 ${tally}，事件量 ${r.events}），请刷新页面后重新导出`,
+      );
+    }
+  }
+
+  const sorted = [...rows].sort((a, b) => compareRoomEvents(b, a));
+  return {
+    name: level === "level1" ? "群×一级分类" : "群×二级分类",
+    caption: summary([`共 ${rows.length} 个群`], view, meta, filters, now),
+    // 宽表有几十列：横向滚动时冻住首列「群名称」。
+    stickyColumns: 1,
+    columns: [
+      ...PIVOT_HEAD,
+      ...categories.map((c) => ({ header: c.header, width: CATEGORY_WIDTH })),
+      ...PIVOT_TAIL,
+    ],
+    rows: sorted.map((r) => [
       r.label,
       view.roomMerchant(r.key),
       view.roomMerchantGroup(r.key),
       view.roomManager(r.key),
-    ];
-    const coverage = roomCoverageLabel(r).text;
-    const typed = (cellsByRoom.get(r.key) ?? []).map((cell) => {
-      const type = cell.key === null ? undefined : tax.get(cell.key);
-      return {
-        level1: cell.key === null ? "打标未完成" : (type?.parent_name ?? "未归类"),
-        level2: type?.name ?? cell.key ?? "打标未完成",
-        count: cell.count,
-      };
-    });
-    if (typed.length === 0) {
-      if (r.events === null) {
-        body.push([...identity, null, null, null, coverage]);
-        roomsWritten += 1;
-      }
-      continue;
-    }
-    typed.sort((a, b) => b.count - a.count || a.level2.localeCompare(b.level2, "zh"));
-    for (const t of typed) body.push([...identity, t.level1, t.level2, t.count, coverage]);
-    roomsWritten += 1;
-  }
-  return [
-    [summary([`共 ${roomsWritten} 个群`], view, meta, filters, now)],
-    [],
-    TYPE_HEADERS.map((value) => ({ value, fontWeight: "bold" as const })),
-    ...body,
-  ];
-}
-
-/**
- * 文件离开页面之后，靠这一行说清它是在什么条件下导出的。日期与首响阈值总是写
- * （超时率随阈值变），其余条件只写生效的；导出时间是因为窗口末尾那一两天还没冻结，
- * 下一轮跑批可能重写，同一组条件隔天再导，数字可以不同。
- *
- * `scope` 是各自的行数说明（「共 N 个群」/「共 N 人」…），排在筛选条件之后、导出时间之前。
- */
-export function summary(
-  scope: readonly (string | false)[],
-  view: SheetView,
-  meta: Pick<Meta, "rooms" | "taxonomy" | "taxonomy_version">,
-  filters: Filters,
-  now: Date,
-): string {
-  const sla =
-    SLA_OPTIONS.find((option) => option.value === filters.slaSec)?.label ?? `${filters.slaSec} 秒`;
-  const query = filters.query.trim();
-  const { from, to } = span(view);
-  const parts = [
-    `日期 ${from} ~ ${to}（${view.days.length} 天，UTC+8）`,
-    `首响阈值 ${sla}`,
-    filters.room && `群聊：${view.roomLabel(filters.room)}`,
-    filters.agent && `客服：${view.agentLabel(filters.agent)}`,
-    filters.merchantGroup && `商家分组：${filters.merchantGroup}`,
-    filters.businessManager &&
-      `业务经理：${managerLabels(meta.rooms).get(filters.businessManager) ?? filters.businessManager}`,
-    query && `事件摘要：${query}`,
-    filters.level1 && `一级分类：${filters.level1}`,
-    filters.level2 && `二级分类：${level2Label(meta, filters.level2)}`,
-    filters.status && `状态：${EVENT_STATUS[filters.status]}`,
-    filters.overdueOnly !== null && `超时：${filters.overdueOnly ? "仅超时" : "仅未超时"}`,
-    ...scope,
-    `导出于 ${formatDateTime(now).slice(0, 16)}`,
-  ];
-  return parts.filter(Boolean).join("｜");
-}
-
-/** 一个文件两个 sheet：群维度指标 ＋ 群×事件类型。文件名沿用 `群维度指标_{起}_{止}.xlsx`。 */
-export async function downloadRoomSheets(
-  sheets: { metrics: SheetData; types: SheetData },
-  view: SheetView,
-): Promise<void> {
-  // 点了才加载：写 xlsx 的库只有导出用得上，不进首屏。
-  const { default: writeXlsxFile } = await import("write-excel-file/browser");
-  const { from, to } = span(view);
-  const sheet = (data: SheetData, name: string, widths: readonly number[]) => ({
-    data,
-    sheet: name,
-    columns: widths.map((width) => ({ width })),
-    stickyRowsCount: 3,
-  });
-  await writeXlsxFile([
-    sheet(sheets.metrics, "群维度指标", WIDTHS),
-    sheet(sheets.types, "群×事件类型", TYPE_WIDTHS),
-  ]).toFile(`群维度指标_${from}_${to}.xlsx`);
-}
-
-/** sheet 名同时是文件名前缀：`{name}_{起}_{止}.xlsx`。 */
-export async function downloadSheet(
-  data: SheetData,
-  view: SheetView,
-  name: string,
-  widths: readonly number[],
-): Promise<void> {
-  // 点了才加载：写 xlsx 的库只有导出用得上，不进首屏。
-  const { default: writeXlsxFile } = await import("write-excel-file/browser");
-  const { from, to } = span(view);
-  await writeXlsxFile(data, {
-    sheet: name,
-    columns: widths.map((width) => ({ width })),
-    stickyRowsCount: 3,
-  }).toFile(`${name}_${from}_${to}.xlsx`);
+      r.events,
+      ...inScope.map((scoped, i) =>
+        r.events === null || !scoped ? null : (counts.get(r.key)?.[i] ?? 0),
+      ),
+      roomCoverageLabel(r).text,
+    ]),
+  };
 }

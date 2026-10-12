@@ -68,6 +68,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 给人看的错误说明。`ApiError` 要拼上后端给的 `detail`（如 413 的「请缩小日期范围」），
+ * 只用 `message` 的话用户只看得到「HTTP 413」，不知道该怎么办。
+ */
+export function errorText(error: unknown): string {
+  if (!(error instanceof ApiError)) return error instanceof Error ? error.message : "未知错误";
+  return `${error.userMessage}${error.detail ? `。${error.detail}` : ""}`;
+}
+
 async function get<T>(
   path: string,
   schema: ZodType<T>,
@@ -260,9 +269,10 @@ export const fetchRoomAggs = (
   });
 
 /**
- * 群 × 二级类型的事件数 —— 只有 xlsx 导出会调，点了才请求。
+ * 群 × 二级分类的事件数，一个群一行（二级分类各自的事件数 + 打标未完成的事件数）——
+ * 只有 xlsx 导出会调，点了才请求。
  *
- * ⚠️ 行数是「群数 × 出现过的类型数」，**没有天然上界**；超过后端 `web.max_rows`
+ * 行数封顶在群数上，与 `/rooms` 同一个上界；超过后端 `web.max_rows`
  * 会收到 413（不截断），由调用方把错误报给用户，缩短日期或加筛选再导。
  */
 export const fetchRoomCategories = (f: QueryFilters): Promise<RoomCategoryAgg[]> =>

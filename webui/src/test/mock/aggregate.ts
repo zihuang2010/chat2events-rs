@@ -36,6 +36,7 @@ import type {
   GroupDailyRow,
   Meta,
   RoomAgg,
+  RoomCategoryAgg,
   SummaryRow,
 } from "@/domain/schemas";
 import { RESPONSE_BIN_EDGES } from "@/domain/definitions";
@@ -240,6 +241,29 @@ export function mockRoomAggs(
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
           .slice(0, 4),
       };
+    });
+}
+
+/**
+ * `/api/room-categories` 的对照：一个群一行，范围与 `mockRoomAggs` 同一个 `select`，
+ * 所以每个群 `counts` 相加再加 `unlabeled` 等于它的 `events`（后端
+ * `mysql_room_categories_add_up_to_room_events` 钉的是同一件事）。
+ */
+export function mockRoomCategories(
+  events: readonly EventRow[],
+  groupDaily: readonly GroupDailyRow[],
+  tax: TaxonomyIndex,
+  f: QueryFilters,
+  rooms?: Meta["rooms"],
+): RoomCategoryAgg[] {
+  const { rows } = select(events, groupDaily, tax, f, "known-ok-days", rooms);
+  return [...byKey(rows, (e) => e.roomid)]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([roomid, mine]) => {
+      const counts: Record<string, number> = {};
+      for (const e of mine)
+        if (e.event_type !== null) counts[e.event_type] = (counts[e.event_type] ?? 0) + 1;
+      return { roomid, counts, unlabeled: mine.filter((e) => e.event_type === null).length };
     });
 }
 

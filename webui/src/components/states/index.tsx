@@ -1,7 +1,7 @@
 /** 加载、空数据、错误三态。骨架形状贴着真实布局，不用转圈圈。 */
 
 import { Button, Empty, Result, Skeleton, Space } from "antd";
-import { ApiError } from "@/api/client";
+import { errorText } from "@/api/client";
 
 export function PageSkeleton() {
   return (
@@ -55,12 +55,7 @@ export function EmptyState({
 }
 
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const api = error instanceof ApiError ? error : null;
-  const detail = api
-    ? `${api.userMessage}${api.detail ? `。${api.detail}` : ""}`
-    : error instanceof Error
-      ? error.message
-      : "未知错误";
+  const detail = errorText(error);
   return (
     <Result
       status="warning"

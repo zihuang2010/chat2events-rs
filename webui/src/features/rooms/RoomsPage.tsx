@@ -96,7 +96,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "label",
       key: "label",
       fixed: "left",
-      width: 240,
+      width: 200,
       sorter: (a, b) => a.label.localeCompare(b.label, "zh"),
       render: (_, r) => (
         <>
@@ -118,7 +118,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
               <DataGap label="别名 待补" detail="尚未获取到该群的权威名称。" />
             </>
           )}
-          {/* 商家名另起一行挂在群名下面 —— 这一列固定 240px，塞进同一行会把两个名字
+          {/* 商家名另起一行挂在群名下面 —— 这一列固定 200px，塞进同一行会把两个名字
               都挤成省略号。没关联商家时 `roomMerchant` 回 null，整块不渲染
               （不是渲染一个空串：表格里那会变成看不出是「没有」还是「没加载出来」的空白）。
               商家摘要表里没有店名时它回落成商家 ID，那是一串裸 BIGINT —— 一看就不是名字，
@@ -134,14 +134,14 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
     {
       title: "商家分组",
       key: "merchantGroup",
-      width: 110,
+      width: 88,
       sorter: compareMissingLast(roomMerchantGroup),
       render: (_, r) => <TextOrDash value={roomMerchantGroup(r.key)} />,
     },
     {
       title: "业务经理",
       key: "businessManager",
-      width: 110,
+      width: 88,
       sorter: compareMissingLast(roomManager),
       render: (_, r) => <TextOrDash value={roomManager(r.key)} />,
     },
@@ -151,7 +151,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       key: "msgs",
       className: "ra-metric-emphasis",
       align: "right",
-      width: 92,
+      width: 80,
       sorter: (a, b) => (a.msgs ?? -1) - (b.msgs ?? -1),
       render: (n: number | null) => <NumberOrNull value={n} />,
     },
@@ -161,7 +161,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       key: "events",
       className: "ra-metric-emphasis",
       align: "right",
-      width: 92,
+      width: 72,
       defaultSortOrder: "descend",
       sorter: compareRoomEvents,
       render: (v: number | null) => <NumberOrNull value={v} />,
@@ -169,7 +169,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
     {
       title: "主要事件类型",
       key: "top",
-      width: 280,
+      width: 220,
       responsive: ["xl"],
       render: (_, r) =>
         r.topLevel1.length === 0 ? (
@@ -181,6 +181,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
                 key={t.name}
                 to={hrefWith({ room: r.key, level1: t.name }, "/detail")}
                 className="ra-category-link"
+                title={t.name}
                 onClick={(e) => {
                   e.stopPropagation();
                 }}
@@ -197,7 +198,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "merchant",
       key: "merchant",
       align: "right",
-      width: 96,
+      width: 80,
       responsive: ["lg"],
       sorter: (a, b) => (a.merchant ?? -1) - (b.merchant ?? -1),
       render: (v: number | null) => <NumberOrNull value={v} />,
@@ -207,7 +208,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "p50",
       key: "p50",
       align: "right",
-      width: 104,
+      width: 84,
       sorter: (a, b) => (a.p50 ?? Infinity) - (b.p50 ?? Infinity),
       render: (v: number | null) => <DurationOrNull value={v} />,
     },
@@ -216,7 +217,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "p90",
       key: "p90",
       align: "right",
-      width: 116,
+      width: 84,
       sorter: (a, b) => (a.p90 ?? Infinity) - (b.p90 ?? Infinity),
       render: (v: number | null) => <DurationOrNull value={v} />,
     },
@@ -225,7 +226,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "unreplied",
       key: "unreplied",
       align: "right",
-      width: 88,
+      width: 72,
       sorter: (a, b) => (a.unreplied ?? -1) - (b.unreplied ?? -1),
       render: (v: number | null) =>
         v === null ? (
@@ -241,7 +242,7 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "unrepliedRate",
       key: "unrepliedRate",
       align: "right",
-      width: 96,
+      width: 80,
       responsive: ["lg"],
       sorter: (a, b) => (a.unrepliedRate ?? -1) - (b.unrepliedRate ?? -1),
       render: (v: number | null) => <PercentOrNull value={v} />,
@@ -251,14 +252,14 @@ export function RoomsPage({ analytics, api }: { analytics: Analytics; api: Filte
       dataIndex: "overdueRate",
       key: "overdueRate",
       align: "right",
-      width: 90,
+      width: 72,
       sorter: (a, b) => (a.overdueRate ?? -1) - (b.overdueRate ?? -1),
       render: (v: number | null) => <PercentOrNull value={v} />,
     },
     {
       title: "数据完整性",
       key: "coverage",
-      width: 116,
+      width: 100,
       render: (_, r) => {
         const { text, state } = roomCoverageLabel(r);
         return state === "failed" ? (

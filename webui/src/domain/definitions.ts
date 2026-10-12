@@ -36,10 +36,9 @@ export const RESPONSE_BIN_LABELS = [
 ] as const;
 
 /**
- * 明细翻页的护栏，**与后端 `web::query` 的 `MAX_PAGE` / `PAGE_SIZE_MAX` 相同**。
- * 越界那边直接 400（不夹到边界上），所以这边得先拦住，别把错留给用户看。
+ * 明细每页条数上限，**与后端 `web::params::PAGE_SIZE_MAX` 相同**。
+ * 越界那边直接 400（不夹到边界上），所以这边得先拦住，别把错留给用户看。页码没有上限。
  */
-export const MAX_PAGE = 200;
 export const PAGE_SIZE_MAX = 100;
 
 /**

@@ -2,7 +2,7 @@
 //!
 //! 三个文件的分工：`params.rs` 管「请求长什么样」，本文件管「请求怎么变成带绑定的
 //! SQL」，`query.rs` 管「`SELECT` 本身」。依赖方向 `params` ← `scope` ← `query`，无环
-//! （本文件从 `query` 取的只有分母边界那个**常量**，SQL 仍然全在 `query.rs`）。
+//! （本文件从 `query` 取的只有分母边界那个**函数**，SQL 仍然全在 `query.rs`）。
 //!
 //! ## 它守的是什么
 //!
@@ -33,7 +33,7 @@
 //!   于是同一件事会有两种写法。每处只省两行，换来多一个入口。
 
 use super::params::{Bind, Filters};
-use super::query::KNOWN_OK_DAYS;
+use super::query::known_ok_days_sql;
 use chrono::NaiveDate;
 
 /// 一条只读 `SELECT` 的文本与绑定。**成对追加，一次遍历同时产出。**
@@ -63,10 +63,24 @@ impl Scope {
     /// 调用方的文本停在基表 `b_merchant_group_event e` 之后即可，
     /// `JOIN (…) d ON …` 整段由这里出 —— 于是「分母边界的三个 `?` 排在
     /// 外层窗口之前」这件事再也不用写在注释里。
-    pub(super) fn known_ok_days(self, corp: &str, since: NaiveDate, until: NaiveDate) -> Self {
+    ///
+    /// 按群收窄的筛选（[`Filters::rooms_clause`]）**也下推一份进来**，绑定跟在窗口之后。
+    pub(super) fn known_ok_days(
+        self,
+        corp: &str,
+        since: NaiveDate,
+        until: NaiveDate,
+        filters: &Filters,
+    ) -> Self {
+        let (rooms, rooms_binds) = filters.rooms_clause("g.roomid", corp);
         self.push(
-            &format!(" JOIN ({KNOWN_OK_DAYS}) d ON d.roomid = e.roomid AND d.dt = e.occurred_on"),
-            window_binds(corp, since, until),
+            &format!(
+                " JOIN ({}) d ON d.roomid = e.roomid AND d.dt = e.occurred_on",
+                known_ok_days_sql(&rooms)
+            ),
+            window_binds(corp, since, until)
+                .into_iter()
+                .chain(rooms_binds),
         )
     }
 

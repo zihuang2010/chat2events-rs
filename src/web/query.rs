@@ -364,8 +364,8 @@ const EVENT_DOCUMENT: &str = "CAST(JSON_OBJECT('id', e.id, 'corpid', e.corpid, '
 /// 读出来；两边排得不一样的话，页码是对的、页内顺序是乱的。片段由
 /// [`Paging::order_by`] 生成，恒定以 `e.id` 收尾保证唯一。
 ///
-/// ⚠️ **仍然要有最大页码护栏。** 延迟关联把常数压小了一个数量级，但没有把
-/// 「偏移量越大扫得越多」这件事消掉。翻到第几千页本来就没人在看数据了。
+/// 页码没有上限：排序键与索引不同序，内层每一页都扫整个筛选后的窗口，
+/// 偏移量只多一点排序的活（实测见 [`Paging::window`]）。
 fn event_page_sql(
     corp: &str,
     since: NaiveDate,
@@ -378,7 +378,10 @@ fn event_page_sql(
     // 偏移量与条数是**后缀绑定**，排在窗口与筛选之后。
     Ok(Scope::new()
         .push(
-            &format!("SELECT {EVENT_DOCUMENT} FROM (SELECT e.id FROM b_merchant_group_event e"),
+            &format!(
+                "SELECT {EVENT_DOCUMENT} FROM (SELECT e.id FROM {}",
+                event_table(&paging.filters)
+            ),
             [],
         )
         .window(corp, since, until)
@@ -399,6 +402,58 @@ fn event_page_sql(
             [Bind::Num(offset), Bind::Num(limit)],
         )
         .finish())
+}
+
+/// 事件表的表引用 —— **明细两条与全部聚合语句共用**，没有按群收窄时钉死 `idx_overview`。
+///
+/// 只有一个企业，`corpid = ?` 对 `idx_shard (corpid, roomid, occurred_on)` 是一次等值查找，
+/// 优化器偏爱它：日期窗口占全表的比例一大，就弃 `idx_overview` 的覆盖范围扫描，
+/// 改走 `idx_shard` 逐行回表；聚合语句还会因此先扫 `e` 再拿每行去探分母边界 `d`。
+/// 2026-10-11 Docker MySQL 8.4 模拟数据（50 万行 / 120 天 / 300 群，**生产规模未测**）
+/// 31 天窗口实测，钉死前 → 后：
+/// - 明细：无筛选 184 → 51 ms · 按客服 218 → 162 · 摘要搜索 203 → 138 · 计数（未回复）173 → 47；
+/// - 聚合：分类 788 → 421 · 群首要分类 369 → 126 · 首响直方图 324 → 118 ·
+///   按「未回复」/ 按分类筛选普遍 250 → 90 上下；客服四条只省 15% ~ 35%（还卡在连接顺序上，见下）。
+///
+/// 7 天窗口优化器本来就选对，钉不钉一样。加提示前后的结果集逐条对拍过，完全相同 ——
+/// 索引提示只改访问路径，不改语义。
+///
+/// ⚠️ **按群收窄时不钉** —— `room` / 商家分组 / 业务经理都把范围缩到少数几个群，
+/// 逐群走 `idx_shard` 等值查找才是对的（明细：按群 0.86 → 46 ms、商家分组 25 → 71 ms，
+/// 都是钉死之后变慢；聚合有分母边界先行，钉不钉一样）。判据是 [`Filters::narrows_rooms`]。
+///
+/// **按首响归属筛（`responder`）时改成 `USE INDEX (idx_overview, idx_responder)`**：
+/// `first_responder` 不在 `idx_overview` 里，钉死它就得把窗口内每一行回表；
+/// `idx_responder` 直接定位到这个人的事件（分群明细 31 天 312 → 94 ms）。**只给候选、不钉**：
+/// 某位客服占窗口三成以上时，钉死 `idx_responder` 会让以 `d` 驱动的计划慢 30 倍（82 ms → 2.4 s），
+/// `USE INDEX` 在各种占比下都不比只用 `idx_overview` 差 3% 以上。这个索引要先在库里建好
+/// （`docs/deploy.md`「已有库增加首响归属索引」），否则 MySQL 报 1176。
+///
+/// ## 连接顺序与 CTE 物化 —— 提示写在各条语句的 `SELECT` 上，不在这里
+///
+/// - 概览六条 `JOIN_ORDER(d, e)`、客服四条 `JOIN_ORDER(d, e, a)`：钉死「先物化分母边界，
+///   再按（日, 群）点查事件」。只钉索引时优化器仍可能先扫 `e` 再逐行探 `d`，而且会随缓冲池里
+///   索引的驻留比例翻转。31 天实测（钉索引 → 再钉顺序）：客服明细格子 475 → 362 ms ·
+///   客服所在群 396 → 275 · 概览客服数 415 → 297 · 首响分位数 242 → 167。
+///   群与分类七条加了与不加是同一个计划，所以没加。
+/// - ⚠️ **提示必须写在 `d` 与 `e` 实际所在的那个查询块上**：CTE / 派生表被合并进外层时，
+///   写在里面的提示挂在一个已经不存在的块上，**不报警告、静默失效**。所以首响直方图写在外层
+///   `SELECT b.bucket`、客服三条写在各自最外层，`agent_inv_scope` 里那份只对物化了的客服列表
+///   生效。由 `plan_tests::mysql_join_order_hints_attach_to_the_event_query_block` 钉住。
+/// - 按日趋势与客服列表的 CTE 被引用两次（汇总、分位数各一次），合并会把 `d ⋈ e` 算两遍；
+///   最外层 `SET_VAR(optimizer_switch='derived_merge=off')` 让它只物化一次（客服列表：
+///   按客服 463 → 233 ms、按首响人 376 → 186、无筛选 1049 → 972）。群与分类那两条同样引用
+///   两次，但物化有升有降（无筛选反而慢一成），没加。
+/// - 钉了顺序的十条在 `responder` 下拿不到 `idx_responder` 的好处（`d` 驱动时优化器仍选
+///   `idx_overview`，实测持平）。工作台只在群维度（`/api/rooms`）用 `responder`，那三条没钉顺序。
+fn event_table(filters: &Filters) -> &'static str {
+    if filters.narrows_rooms() {
+        "b_merchant_group_event e"
+    } else if filters.responder.is_some() {
+        "b_merchant_group_event e USE INDEX (idx_overview, idx_responder)"
+    } else {
+        "b_merchant_group_event e FORCE INDEX (idx_overview)"
+    }
 }
 
 /// **已知成功群日** —— 聚合的分母边界。术语条目见 `CONTEXT.md`「术语」一节；
@@ -430,14 +485,21 @@ fn event_page_sql(
 ///
 /// 这一版把**逐字写了两遍**（一次判空、一次比较）的相关子查询合成一次：MySQL 不保证
 /// 对相关子查询做公共子表达式消除，此前每个候选群日行都要做两次失败记录的索引查找。
-pub(super) const KNOWN_OK_DAYS: &str = "SELECT g.roomid, g.dt FROM b_merchant_group_metric_daily g \
+///
+/// `rooms` 是 [`Filters::rooms_clause`] 以 `g.roomid` 出的按群收窄片段（不收窄时为空），
+/// 绑定排在窗口三个 `?` 之后 —— 理由见那个函数。
+pub(super) fn known_ok_days_sql(rooms: &str) -> String {
+    format!(
+        "SELECT g.roomid, g.dt FROM b_merchant_group_metric_daily g \
      LEFT JOIN b_merchant_group_run_failure f \
        ON f.corpid = g.corpid AND f.roomid = g.roomid AND f.stage = 'extract' \
       AND (f.window_since IS NULL OR g.dt BETWEEN f.window_since AND f.window_until) \
      WHERE g.corpid = ? AND g.dt BETWEEN ? AND ? AND g.extraction_status = 'ok' \
-       AND g.fact_completed_time IS NOT NULL \
+       AND g.fact_completed_time IS NOT NULL{rooms} \
      GROUP BY g.roomid, g.dt, g.fact_completed_time \
-     HAVING MAX(f.gmt_created_time) IS NULL OR MAX(f.gmt_created_time) < g.fact_completed_time";
+     HAVING MAX(f.gmt_created_time) IS NULL OR MAX(f.gmt_created_time) < g.fact_completed_time"
+    )
+}
 
 /// 改写之前的那一版，**只给测试用** —— 它是这次改写唯一可运行的证据：
 /// `mysql_known_ok_days_rewrite_matches_the_previous_definition` 拿四种群日
@@ -454,11 +516,11 @@ pub(super) const LEGACY_KNOWN_OK_DAYS: &str = "SELECT g.roomid, g.dt FROM b_merc
                   AND (f.window_since IS NULL OR g.dt BETWEEN f.window_since AND f.window_until)) \
                < g.fact_completed_time)";
 
-/// 把 [`KNOWN_OK_DAYS`] 交给测试 —— 它是四个聚合接口的分母边界，
+/// 把 [`known_ok_days_sql`]（不收窄）交给测试 —— 它是四个聚合接口的分母边界，
 /// 值得有一条测试直接对着它断言，而不是隔着一整个 HTTP 响应去推。
 #[cfg(test)]
-pub(super) fn ok_days_sql_for_test() -> &'static str {
-    KNOWN_OK_DAYS
+pub(super) fn ok_days_sql_for_test() -> String {
+    known_ok_days_sql("")
 }
 
 /// 顶部那排 KPI —— 一次扫描出全部计数。
@@ -485,7 +547,7 @@ pub(super) static FIRST_REPLY_SEC: std::sync::LazyLock<String> = std::sync::Lazy
 /// 而不是整数，直接按 `i64` 取会在运行期报「类型不兼容」。踩过一次。
 static SUMMARY_COUNTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
-        "SELECT COUNT(*) AS events, COUNT(DISTINCT e.roomid) AS rooms, \
+        "SELECT /*+ JOIN_ORDER(d, e) */ COUNT(*) AS events, COUNT(DISTINCT e.roomid) AS rooms, \
      CAST(SUM(e.asker_role = 'EXTERNAL') AS SIGNED) AS merchant, \
      CAST(SUM(e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NOT NULL) AS SIGNED) AS replied, \
      CAST(SUM(e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NULL) AS SIGNED) AS unreplied, \
@@ -493,8 +555,7 @@ static SUMMARY_COUNTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
      CAST(SUM(e.asker_role = 'EXTERNAL' AND (e.first_agent_reply_time IS NULL \
          OR {sec} > ?)) AS SIGNED) AS overdue, \
      CAST(SUM(e.asker_role = 'EXTERNAL' AND e.first_agent_reply_time IS NULL AND e.occurred_on < ?) AS SIGNED) AS backlog, \
-     CAST(SUM(DATE(e.last_msg_time) <> e.occurred_on) AS SIGNED) AS cross_day \
-     FROM b_merchant_group_event e",
+     CAST(SUM(DATE(e.last_msg_time) <> e.occurred_on) AS SIGNED) AS cross_day",
         sec = *FIRST_REPLY_SEC
     )
 });
@@ -512,10 +573,9 @@ static SUMMARY_COUNTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
 static SUMMARY_QUANTILES: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "SELECT {p50} AS p50, {p90} AS p90 \
-     FROM (SELECT {sec} AS secs, \
+     FROM (SELECT /*+ JOIN_ORDER(d, e) */ {sec} AS secs, \
                   ROW_NUMBER() OVER (ORDER BY {sec}) AS rn, \
-                  COUNT(*) OVER () AS n \
-           FROM b_merchant_group_event e",
+                  COUNT(*) OVER () AS n",
         p50 = crate::quantile::sql_pick(0.5),
         p90 = crate::quantile::sql_pick(0.9),
         sec = *FIRST_REPLY_SEC
@@ -1217,8 +1277,8 @@ pub(super) async fn read_event_page(
 /// 当总数，而那个数只算已知成功群日：窗口里一有失败或凭据未知的群日，两个数就不等，
 /// 前端取较小值那步把人夹在更早的页码上，**尾部的行永远翻不到，页面看起来一切正常**。
 ///
-/// ⚠️ **这是新增成本。** 内层扫描上界原本是「最大页码 × 每页上限」个索引条目，
-/// 加计数之后要扫整个筛选后的窗口。撞服务端执行上限时返回既有的 504
+/// ⚠️ **计数要扫整个筛选后的窗口** —— 与取行那条同一量级（那条的排序键与索引不同序，
+/// 本来就扫整窗口，见 [`event_page_sql`]）。撞服务端执行上限时返回既有的 504
 /// 「查询超时，请缩小日期范围」—— **不抬超时**，那个值是护栏不是产能规划
 /// （见 `WebLimits::query_timeout_secs`）。
 pub(super) async fn count_events(
@@ -1304,7 +1364,10 @@ fn count_events_sql(
     paging: &Paging,
 ) -> (String, Vec<Bind>) {
     Scope::new()
-        .push("SELECT COUNT(*) FROM b_merchant_group_event e", [])
+        .push(
+            &format!("SELECT COUNT(*) FROM {}", event_table(&paging.filters)),
+            [],
+        )
         .window(corp, since, until)
         .filters(
             corp,
@@ -1332,10 +1395,10 @@ fn summary_counts_sql(
 ) -> (String, Vec<Bind>) {
     Scope::new()
         .push(
-            &SUMMARY_COUNTS,
+            &format!("{} FROM {}", *SUMMARY_COUNTS, event_table(filters)),
             [Bind::Num(sla_sec.into()), Bind::Date(until)],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .finish()
@@ -1349,8 +1412,11 @@ fn summary_quantiles_sql(
     filters: &Filters,
 ) -> (String, Vec<Bind>) {
     Scope::new()
-        .push(&SUMMARY_QUANTILES, [])
-        .known_ok_days(corp, since, until)
+        .push(
+            &format!("{} FROM {}", *SUMMARY_QUANTILES, event_table(filters)),
+            [],
+        )
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .push(
@@ -1369,10 +1435,13 @@ fn summary_agents_sql(
 ) -> (String, Vec<Bind>) {
     Scope::new()
         .push(
-            "SELECT COUNT(DISTINCT a.agent) FROM b_merchant_group_event e",
+            &format!(
+                "SELECT /*+ JOIN_ORDER(d, e) */ COUNT(DISTINCT a.agent) FROM {}",
+                event_table(filters)
+            ),
             [],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .push(
             " JOIN JSON_TABLE(e.agents, '$[*]' COLUMNS(agent VARCHAR(16) PATH '$')) a",
             [],
@@ -1396,18 +1465,19 @@ fn summary_by_day_sql(
     Scope::new()
     .push(
         &format!(
-            "WITH ev AS (SELECT e.occurred_on, e.asker_role, e.first_agent_reply_time, \
-               {sec} AS secs FROM b_merchant_group_event e",
-            sec = *FIRST_REPLY_SEC
+            "WITH ev AS (SELECT /*+ JOIN_ORDER(d, e) */ e.occurred_on, e.asker_role, e.first_agent_reply_time, \
+               {sec} AS secs FROM {table}",
+            sec = *FIRST_REPLY_SEC,
+            table = event_table(filters)
         ),
         [],
     )
-    .known_ok_days(corp, since, until)
+    .known_ok_days(corp, since, until, filters)
     .window(corp, since, until)
     .filters(corp, filters, sla_sec, until)
     .push(
         &format!(
-            ") SELECT c.occurred_on, c.events, c.merchant, c.unreplied, c.overdue, p.p50, p.p90 \
+            ") SELECT /*+ SET_VAR(optimizer_switch='derived_merge=off') */ c.occurred_on, c.events, c.merchant, c.unreplied, c.overdue, p.p50, p.p90 \
              FROM (SELECT occurred_on, COUNT(*) AS events, \
                      CAST(SUM(asker_role = 'EXTERNAL') AS SIGNED) AS merchant, \
                      CAST(SUM(asker_role = 'EXTERNAL' AND first_agent_reply_time IS NULL) AS SIGNED) AS unreplied, \
@@ -1432,15 +1502,16 @@ fn summary_by_hour_sql(
     Scope::new()
         .push(
             &format!(
-                "SELECT HOUR(e.first_msg_time) AS h, COUNT(*) AS events, \
+                "SELECT /*+ JOIN_ORDER(d, e) */ HOUR(e.first_msg_time) AS h, COUNT(*) AS events, \
              CAST(SUM(e.asker_role = 'EXTERNAL' AND (e.first_agent_reply_time IS NULL \
                  OR {sec} > ?)) AS SIGNED) AS overdue \
-             FROM b_merchant_group_event e",
-                sec = *FIRST_REPLY_SEC
+             FROM {table}",
+                sec = *FIRST_REPLY_SEC,
+                table = event_table(filters)
             ),
             [Bind::Num(sla_sec.into())],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .push(" GROUP BY h ORDER BY h", [])
@@ -1464,13 +1535,14 @@ fn reply_buckets_sql(
     Scope::new()
         .push(
             &format!(
-                "SELECT b.bucket, COUNT(*) AS n FROM (\
+                "SELECT /*+ JOIN_ORDER(d, e) */ b.bucket, COUNT(*) AS n FROM (\
              SELECT CASE {arms}ELSE {last} END AS bucket \
-             FROM b_merchant_group_event e"
+             FROM {table}",
+                table = event_table(filters)
             ),
             buckets.iter().map(|e| Bind::Num(u64::from(*e))),
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .push(
@@ -1496,12 +1568,13 @@ fn rooms_sql(
     .push(
         &format!(
             "WITH ev AS (SELECT e.roomid, e.asker_role, e.first_agent_reply_time, e.occurred_on, \
-               {sec} AS secs FROM b_merchant_group_event e",
-            sec = *FIRST_REPLY_SEC
+               {sec} AS secs FROM {table}",
+            sec = *FIRST_REPLY_SEC,
+            table = event_table(filters)
         ),
         [],
     )
-    .known_ok_days(corp, since, until)
+    .known_ok_days(corp, since, until, filters)
     .window(corp, since, until)
     .filters(corp, filters, sla_sec, until)
     .push(
@@ -1529,10 +1602,13 @@ fn room_cells_sql(
 ) -> (String, Vec<Bind>) {
     Scope::new()
         .push(
-            "SELECT e.roomid, e.occurred_on, COUNT(*) AS events FROM b_merchant_group_event e",
+            &format!(
+                "SELECT e.roomid, e.occurred_on, COUNT(*) AS events FROM {}",
+                event_table(filters)
+            ),
             [],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .push(
@@ -1558,11 +1634,12 @@ fn room_top_groups_sql(
                SELECT c.roomid, c.k, c.n, \
                  ROW_NUMBER() OVER (PARTITION BY c.roomid ORDER BY c.n DESC, c.k) AS rn \
                FROM (SELECT e.roomid, {key_expr} AS k, COUNT(*) AS n \
-                     FROM b_merchant_group_event e"
+                     FROM {table}",
+                table = event_table(filters)
             ),
             group_binds(groups),
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .push(" AND e.event_type IS NOT NULL", [])
         .filters(corp, filters, sla_sec, until)
@@ -1583,10 +1660,13 @@ fn room_categories_sql(
 ) -> (String, Vec<Bind>) {
     Scope::new()
         .push(
-            "SELECT e.roomid, e.event_type, COUNT(*) AS n FROM b_merchant_group_event e",
+            &format!(
+                "SELECT e.roomid, e.event_type, COUNT(*) AS n FROM {}",
+                event_table(filters)
+            ),
             [],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .filters(corp, filters, sla_sec, until)
         .push(
@@ -1610,15 +1690,16 @@ fn agent_inv_scope(
     Scope::new()
         .push(
             &format!(
-                "WITH inv AS (SELECT a.agent, e.id, e.roomid, e.occurred_on, e.asker_role, \
+                "WITH inv AS (SELECT /*+ JOIN_ORDER(d, e, a) */ a.agent, e.id, e.roomid, e.occurred_on, e.asker_role, \
                    e.event_type, e.first_agent_reply_time, \
                    (e.first_responder = a.agent COLLATE utf8mb4_general_ci) AS owned, \
-                   {sec} AS secs FROM b_merchant_group_event e",
-                sec = *FIRST_REPLY_SEC
+                   {sec} AS secs FROM {table}",
+                sec = *FIRST_REPLY_SEC,
+                table = event_table(filters)
             ),
             [],
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .push(
             " JOIN JSON_TABLE(e.agents, '$[*]' COLUMNS(agent VARCHAR(16) PATH '$')) a",
             [],
@@ -1642,7 +1723,7 @@ fn agents_sql(
     agent_inv_scope(corp, since, until, sla_sec, filters)
     .push(
         &format!(
-            "SELECT c.agent, c.involved, c.rooms, c.owned, c.merchant_owned, c.reply_samples, \
+            "SELECT /*+ SET_VAR(optimizer_switch='derived_merge=off') */ c.agent, c.involved, c.rooms, c.owned, c.merchant_owned, c.reply_samples, \
                     c.overdue, p.p50, p.p90 \
              FROM (SELECT agent, COUNT(DISTINCT id) AS involved, COUNT(DISTINCT roomid) AS rooms, \
                      CAST(SUM(owned) AS SIGNED) AS owned, \
@@ -1667,7 +1748,7 @@ fn agent_cells_sql(
 ) -> (String, Vec<Bind>) {
     agent_inv_scope(corp, since, until, sla_sec, filters)
         .push(
-            "SELECT agent, occurred_on, COUNT(DISTINCT id) AS involved, \
+            "SELECT /*+ JOIN_ORDER(d, e, a) */ agent, occurred_on, COUNT(DISTINCT id) AS involved, \
          CAST(SUM(owned) AS SIGNED) AS owned \
          FROM inv GROUP BY agent, occurred_on ORDER BY agent, occurred_on",
             [],
@@ -1684,7 +1765,7 @@ fn agent_memberships_sql(
 ) -> (String, Vec<Bind>) {
     agent_inv_scope(corp, since, until, sla_sec, filters)
         .push(
-            "SELECT DISTINCT agent, roomid FROM inv ORDER BY agent, roomid",
+            "SELECT /*+ JOIN_ORDER(d, e, a) */ DISTINCT agent, roomid FROM inv ORDER BY agent, roomid",
             [],
         )
         .finish()
@@ -1699,7 +1780,7 @@ fn agent_categories_sql(
 ) -> (String, Vec<Bind>) {
     agent_inv_scope(corp, since, until, sla_sec, filters)
         .push(
-            "SELECT agent, event_type, COUNT(DISTINCT id) AS n FROM inv \
+            "SELECT /*+ JOIN_ORDER(d, e, a) */ agent, event_type, COUNT(DISTINCT id) AS n FROM inv \
              GROUP BY agent, event_type ORDER BY agent, event_type",
             [],
         )
@@ -1723,12 +1804,13 @@ fn category_ev_scope(
         .push(
             &format!(
                 "WITH ev AS (SELECT {key_expr} AS k, e.occurred_on, e.asker_role, \
-                   e.first_agent_reply_time, {sec} AS secs FROM b_merchant_group_event e",
-                sec = *FIRST_REPLY_SEC
+                   e.first_agent_reply_time, {sec} AS secs FROM {table}",
+                sec = *FIRST_REPLY_SEC,
+                table = event_table(filters)
             ),
             group_binds(groups),
         )
-        .known_ok_days(corp, since, until)
+        .known_ok_days(corp, since, until, filters)
         .window(corp, since, until)
         .push(" AND e.event_type IS NOT NULL", [])
         .filters(corp, filters, sla_sec, until)
@@ -1823,26 +1905,42 @@ mod binding_tests {
         for filters in [Filters::default(), busy_filters()] {
             for groups in [Vec::new(), groups()] {
                 let (c, s, u, sla) = ("C", day(1), day(31), 1800);
-                // ① 概览的六条
-                summary_counts_sql(c, s, u, sla, &filters);
-                summary_quantiles_sql(c, s, u, sla, &filters);
-                summary_agents_sql(c, s, u, sla, &filters);
-                summary_by_day_sql(c, s, u, sla, &filters);
-                summary_by_hour_sql(c, s, u, sla, &filters);
-                reply_buckets_sql(c, s, u, sla, &filters, &[60, 300, 900]);
-                // ② 按群四条
-                rooms_sql(c, s, u, sla, &filters);
-                room_cells_sql(c, s, u, sla, &filters);
-                room_top_groups_sql(c, s, u, sla, &filters, &groups);
-                room_categories_sql(c, s, u, sla, &filters);
-                // ③ 按客服四条
-                agents_sql(c, s, u, sla, &filters);
-                agent_cells_sql(c, s, u, sla, &filters);
-                agent_memberships_sql(c, s, u, sla, &filters);
-                agent_categories_sql(c, s, u, sla, &filters);
-                // ④ 分类两条
-                categories_sql(c, s, u, sla, &filters, &groups);
-                category_cells_sql(c, s, u, sla, &filters, &groups);
+                let statements = [
+                    // ① 概览的六条
+                    summary_counts_sql(c, s, u, sla, &filters),
+                    summary_quantiles_sql(c, s, u, sla, &filters),
+                    summary_agents_sql(c, s, u, sla, &filters),
+                    summary_by_day_sql(c, s, u, sla, &filters),
+                    summary_by_hour_sql(c, s, u, sla, &filters),
+                    reply_buckets_sql(c, s, u, sla, &filters, &[60, 300, 900]),
+                    // ② 按群四条
+                    rooms_sql(c, s, u, sla, &filters),
+                    room_cells_sql(c, s, u, sla, &filters),
+                    room_top_groups_sql(c, s, u, sla, &filters, &groups),
+                    room_categories_sql(c, s, u, sla, &filters),
+                    // ③ 按客服四条
+                    agents_sql(c, s, u, sla, &filters),
+                    agent_cells_sql(c, s, u, sla, &filters),
+                    agent_memberships_sql(c, s, u, sla, &filters),
+                    agent_categories_sql(c, s, u, sla, &filters),
+                    // ④ 分类两条
+                    categories_sql(c, s, u, sla, &filters, &groups),
+                    category_cells_sql(c, s, u, sla, &filters, &groups),
+                ];
+                // 每条都经 `event_table` 取表引用：不收窄时钉索引，满筛选带着 room，一条都不钉。
+                for (sql, _) in &statements {
+                    assert_eq!(
+                        sql.contains("FORCE INDEX (idx_overview)"),
+                        filters.room.is_none(),
+                        "{sql}"
+                    );
+                    // 按群收窄时分母边界里也带一份同样的条件（`Filters::rooms_clause` 下推）。
+                    assert_eq!(
+                        sql.contains(" AND g.roomid"),
+                        filters.narrows_rooms(),
+                        "{sql}"
+                    );
+                }
             }
         }
     }
@@ -1904,6 +2002,52 @@ mod binding_tests {
         }
     }
 
+    /// 没有按群收窄时钉死覆盖索引；按群 / 商家分组 / 业务经理收窄时交给优化器走 `idx_shard`。
+    #[test]
+    fn detail_statements_pin_the_covering_index_unless_rooms_are_narrowed() {
+        let pinned = |filters: Filters| {
+            let paging = Paging::for_test(1, 20, None, filters);
+            let (page, _) = event_page_sql("C", day(1), day(31), &paging).unwrap();
+            let (count, _) = count_events_sql("C", day(1), day(31), &paging);
+            let hint = "FORCE INDEX (idx_overview)";
+            assert_eq!(page.contains(hint), count.contains(hint));
+            page.contains(hint)
+        };
+        assert!(pinned(Filters::default()));
+        assert!(pinned(Filters {
+            agent: Some("A1".into()),
+            q: Some("改期".into()),
+            ..Default::default()
+        }));
+        assert!(!pinned(Filters {
+            room: Some("R1".into()),
+            ..Default::default()
+        }));
+        assert!(!pinned(Filters {
+            merchant_group_config_name: Some("华东组".into()),
+            ..Default::default()
+        }));
+        assert!(!pinned(Filters {
+            business_manager_id: Some(9),
+            ..Default::default()
+        }));
+        // 按首响归属筛：不钉，只给两个候选索引。
+        let paging = Paging::for_test(
+            1,
+            20,
+            None,
+            Filters {
+                responder: Some("A1".into()),
+                ..Default::default()
+            },
+        );
+        let (page, _) = event_page_sql("C", day(1), day(31), &paging).unwrap();
+        assert!(
+            page.contains("USE INDEX (idx_overview, idx_responder)"),
+            "{page}"
+        );
+    }
+
     /// 占位符与绑定**数量对得上还不够，位置也要对** —— 这条盯的是位置：
     /// 分母边界的三个 `?` 必须排在外层窗口那三个之前。
     #[test]
@@ -1912,5 +2056,95 @@ mod binding_tests {
         let boundary = sql.find("b_merchant_group_run_failure").unwrap();
         let outer = sql.find("WHERE e.corpid = ?").unwrap();
         assert!(boundary < outer, "分母边界必须排在外层窗口之前");
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    //! **连接顺序提示写错位置不报错，只是静默失效** —— CTE / 派生表被合并进外层时，
+    //! 写在里面的 `JOIN_ORDER` 挂在一个已经不存在的查询块上，没有任何警告，
+    //! 计划也可能碰巧一样（小数据上优化器本来就先走 `d`）。所以不看计划长相，
+    //! 看 MySQL 自己的说法：EXPLAIN 之后 Note 1003 打印的改写语句里，`JOIN_ORDER`
+    //! 必须挂在 `e` 所在的那个查询块（`@select#N`，N = `e` 那一行的 `id`）上。
+    use super::*;
+    use sqlx::Row;
+
+    #[tokio::test]
+    #[ignore = "需要隔离 MySQL，显式设置 CHAT2EVENTS_TEST_DATABASE_URL"]
+    async fn mysql_join_order_hints_attach_to_the_event_query_block() {
+        let pool = crate::testutil::mysql_pool("join_order").await;
+        // 空表会被优化成常量表、整条语句被短路，所以造几行。
+        sqlx::raw_sql("INSERT INTO b_merchant_group_event (corpid,roomid,source_msg_ids,first_msg_time,last_msg_time,first_agent_reply_time,occurred_on,asker,asker_role,agents,first_responder,summary) \
+            WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM seq WHERE n<199) \
+            SELECT 'C',CONCAT('R',MOD(n,10)),JSON_ARRAY('m1'),'2026-08-01 09:00:00','2026-08-01 09:30:00','2026-08-01 09:05:00', \
+            DATE_ADD('2026-08-01',INTERVAL MOD(n,20) DAY),'merchant00000001','EXTERNAL',JSON_ARRAY('agent00000000001'),'agent00000000001','合成事件' FROM seq; \
+            INSERT INTO b_merchant_group_metric_daily (corpid,roomid,dt,msg_count,sender_count,event_count,extraction_status,fact_completed_time) \
+            SELECT DISTINCT corpid,roomid,occurred_on,1,1,1,'ok','2026-09-01' FROM b_merchant_group_event; \
+            ANALYZE TABLE b_merchant_group_event, b_merchant_group_metric_daily;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // EXPLAIN 与 SHOW WARNINGS 必须在同一条连接上。
+        let mut conn = pool.acquire().await.unwrap();
+        let day = |d| NaiveDate::from_ymd_opt(2026, 8, d).unwrap();
+        let (c, s, u, sla, f) = ("C", day(1), day(31), 1800, Filters::default());
+        for (name, (sql, binds)) in [
+            ("summary_counts", summary_counts_sql(c, s, u, sla, &f)),
+            ("summary_quantiles", summary_quantiles_sql(c, s, u, sla, &f)),
+            ("summary_agents", summary_agents_sql(c, s, u, sla, &f)),
+            ("summary_by_day", summary_by_day_sql(c, s, u, sla, &f)),
+            ("summary_by_hour", summary_by_hour_sql(c, s, u, sla, &f)),
+            (
+                "reply_buckets",
+                reply_buckets_sql(c, s, u, sla, &f, &[60, 300]),
+            ),
+            ("agents", agents_sql(c, s, u, sla, &f)),
+            ("agent_cells", agent_cells_sql(c, s, u, sla, &f)),
+            ("agent_memberships", agent_memberships_sql(c, s, u, sla, &f)),
+            ("agent_categories", agent_categories_sql(c, s, u, sla, &f)),
+        ] {
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN {sql}")));
+            for b in binds {
+                q = match b {
+                    Bind::Str(v) => q.bind(v),
+                    Bind::Num(v) => q.bind(v),
+                    Bind::Date(v) => q.bind(v),
+                };
+            }
+            let plan = q.fetch_all(&mut *conn).await.unwrap();
+            let block = plan
+                .iter()
+                .find(|row| {
+                    row.try_get::<Option<String>, _>("table")
+                        .unwrap()
+                        .as_deref()
+                        == Some("e")
+                })
+                .map(|row| row.try_get::<Option<u64>, _>("id").unwrap().unwrap())
+                .unwrap();
+            // `SHOW WARNINGS` 不支持预处理协议（1295），走文本协议。
+            let warnings = sqlx::raw_sql("SHOW WARNINGS")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+            let mut rewritten = String::new();
+            for row in &warnings {
+                let level: String = row.try_get("Level").unwrap();
+                let code: u32 = row.try_get("Code").unwrap();
+                let message: String = row.try_get("Message").unwrap();
+                // 提示出问题都是 Warning 级别：表名写错 3128，`SET_VAR` 不在语句开头 3126。
+                // Note 级别无害（1003 是改写语句，3598 是窗口函数的提示）。
+                assert_ne!(level, "Warning", "{name}：{code} {message}");
+                if code == 1003 {
+                    rewritten = message;
+                }
+            }
+            assert!(
+                rewritten.contains(&format!("JOIN_ORDER(@`select#{block}`")),
+                "{name}：JOIN_ORDER 没挂在 e 所在的查询块 select#{block} 上：{rewritten}"
+            );
+        }
+        drop(conn);
+        crate::testutil::drop_mysql_database(pool).await;
     }
 }

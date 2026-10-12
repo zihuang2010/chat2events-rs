@@ -391,9 +391,6 @@ export function mockCategories(
     });
 }
 
-/** 后端 `web::params::MAX_PAGE` 那条翻页护栏。**只有这个模拟数据源知道它** —— 页面不需要。 */
-const MAX_PAGE = 200;
-
 /**
  * 与后端的 `ORDER BY` 逐条同序，否则翻页的内容对不上：
  * 不给排序键时开始时间倒序、`id` 倒序；给了键则 **NULL 一律排最后**
@@ -446,12 +443,10 @@ export function mockEventsPage(
       })
     : // 默认：开始时间倒序，再按事件 ID 倒序（后端 `Paging::order_by` 的无 sort 分支）
       [...rows].sort((a, b) => b.first_msg_time.localeCompare(a.first_msg_time) || b.id - a.id);
-  const needed = Math.ceil(ordered.length / pageSize);
   return {
     rows: ordered.slice((page - 1) * pageSize, page * pageSize),
     total: ordered.length,
-    pages: Math.min(needed, MAX_PAGE),
-    truncated: needed > MAX_PAGE,
+    pages: Math.ceil(ordered.length / pageSize),
   };
 }
 

@@ -105,7 +105,7 @@ jsdom 中仅补足 ECharts 文字测量和伪元素样式读取；真实布局�
 | `GET /api/summary` | KPI 一行 | 数据库算完只送数字，**不随窗口变大**。`sla_sec` 默认 1800，须与前端 `DEFAULT_SLA_SEC` 一致 |
 | `GET /api/rooms` | 按群一行 | 只出「必须从明细算」的七项（含分位数）；`msg_count` / 每日序列 / 覆盖率天数继续用 `groupDaily` 拼 |
 | `GET /api/agents` | 按客服一行 | **参与**（involved/rooms）与**首响归属**（owned/p50/p90/overdue）是两个口径，不能混。**没有 `unreplied`**：抽取保证「无平台回复 ⟹ agents 为空」，那一列结构上恒为 0；团队口径的无响应数在 `/api/summary` |
-| `GET /api/events` | `{ rows, total, pages, truncated }` | `b_merchant_group_event`。延迟关联翻页（内层只碰覆盖索引、外层才回表）。`page` 1~200、`page_size` 1~100，越界 400 不截断；页码在护栏内但越过 `pages` 返回空 `rows`。**`total` 不按已知成功群日过滤**，与 `/api/summary` 的 `events` 不是一个集合，前端不做任何分页算术 |
+| `GET /api/events` | `{ rows, total, pages }` | `b_merchant_group_event`。延迟关联翻页（内层只碰覆盖索引、外层才回表）。`page` ≥ 1 不设上限、`page_size` 1~100，越界 400 不截断；页码越过 `pages` 返回空 `rows`。**`total` 不按已知成功群日过滤**，与 `/api/summary` 的 `events` 不是一个集合，前端不做任何分页算术 |
 
 四个聚合 / 明细接口收**同一组筛选参数**，全部进 SQL 的 `WHERE`（工作台 URL 上对应 `group` / `manager` 等短键，`client.ts` 的 `params()` 翻译成下表的名字）：
 

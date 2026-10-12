@@ -1,0 +1,19 @@
+CLAUDE.md
+  s_0e289f6080bda1::t_9ce3d9d7fbbdbb 140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6d12d393346d1e15c716a67390cb3c8bc64dca0",
+  "prompts": {},
+  "sessions": {
+    "s_0e289f6080bda1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "854762f8-d7de-4e0b-963d-5fbfb263a7c1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}

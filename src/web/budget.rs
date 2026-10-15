@@ -25,6 +25,7 @@
 //! 每个响应都过一遍 zod），一直在那。**不加 `debug_assert!`** —— 这是一个决定，
 //! 不是疏忽：加一个在 release 里会蒸发的断言，只会让它看起来像疏忽。
 
+use super::cache::CACHE_HEADER;
 use super::config::WebLimits;
 use super::state::WebState;
 use crate::BoxError;
@@ -76,8 +77,15 @@ pub(super) async fn admit(
     };
     let elapsed = started.elapsed();
     if elapsed >= SLOW_REQUEST {
+        // 带上缓存标记：慢请求是 `MISS` / `BYPASS` 才是 SQL 在算；`HIT` 也慢说明慢在别处
+        // （名额、连接池）。`-` = 没走到打标那一步（超时、非 200）。
+        let cache = response
+            .headers()
+            .get(CACHE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
         tracing::warn!(
-            uri, ms = elapsed.as_millis(), status = %response.status(),
+            uri, ms = elapsed.as_millis(), status = %response.status(), cache,
             "只读请求超过 {SLOW_REQUEST:?}"
         );
     }

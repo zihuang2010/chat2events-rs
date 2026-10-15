@@ -12,12 +12,12 @@
 //! 只缓存 `200`：409（混版）/ 413（超预算）/ 400 都是「这次别看」，不是「下次也这样」。
 //! 存的是**序列化后的字节**，命中时不再解析 JSON，也不再占 `ReadBudget` 那份内存。
 
-use super::{budget::WebError, state::WebState};
+use super::{budget::WebError, serve::DATASET, state::WebState};
 use crate::stage::store::{T_EVENT, T_FAILURE, T_GROUP, T_MERCHANT_SUMMARY, T_TAXONOMY};
 use axum::{
     body::Bytes,
     extract::{Request, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, StatusCode, Uri, header},
     middleware,
     response::{IntoResponse, Response},
 };
@@ -60,9 +60,7 @@ pub(super) const STAMP_TTL: Duration = Duration::from_secs(1);
 /// 也会改这一行、推进这一列，与群名 / 商家绑定无关的改动会让缓存白白作废。
 /// 群改名要重启 `webui` 或等下一次跑批。
 ///
-/// ⚠️ **外部名册的代数也拼在戳上**（见 [`Cache::stamp`]）。名册活在进程内存里，
-/// 它整体过期重建时库里一个字节都没变 —— 不拼进来就是「名册刷新了，页面照旧回旧
-/// 响应」，而且那不会自愈。
+/// ⚠️ **外部名册的代数不在戳里，在 `/api/dataset` 的键里**（见 [`key`]）。
 type Stamp = String;
 
 async fn read_stamp(pool: &MySqlPool) -> Result<(Stamp, bool), sqlx::Error> {
@@ -137,13 +135,7 @@ impl Cache {
     ///
     /// 取数那一步由调用方传进来 —— 于是「一秒内不重复查」这件事可以**离线断言**，
     /// 不必为了测一个计时器去起一个数据库。
-    /// ⚠️ **代数在自缓存之外拼上**：库那一截可以缓一秒，名册代数不行 ——
-    /// 它一变就必须当场作废，拖一秒就是又一次「明明刷新了却还是旧的」。
-    async fn stamp_with<F, Fut>(
-        &self,
-        generation: u64,
-        fetch: F,
-    ) -> Result<(Stamp, bool), sqlx::Error>
+    async fn stamp_with<F, Fut>(&self, fetch: F) -> Result<(Stamp, bool), sqlx::Error>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(Stamp, bool), sqlx::Error>>,
@@ -154,20 +146,16 @@ impl Cache {
             _ => (String::new(), false),
         };
         if !stamp.is_empty() {
-            return Ok((format!("{stamp}|r{generation}"), quiet));
+            return Ok((stamp, quiet));
         }
         let (stamp, quiet) = fetch().await?;
         *self.recent.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((Instant::now(), stamp.clone(), quiet));
-        Ok((format!("{stamp}|r{generation}"), quiet))
+        Ok((stamp, quiet))
     }
 
-    pub(super) async fn stamp(
-        &self,
-        pool: &MySqlPool,
-        generation: u64,
-    ) -> Result<(Stamp, bool), sqlx::Error> {
-        self.stamp_with(generation, || read_stamp(pool)).await
+    pub(super) async fn stamp(&self, pool: &MySqlPool) -> Result<(Stamp, bool), sqlx::Error> {
+        self.stamp_with(|| read_stamp(pool)).await
     }
 
     fn get(&self, stamp: &str, key: &str) -> Option<Bytes> {
@@ -201,26 +189,44 @@ impl Cache {
     }
 }
 
+/// 响应头名。`budget::admit` 的慢请求日志也读它，不抄字面量 —— 抄错了日志里永远是 `-`。
+pub(super) const CACHE_HEADER: &str = "x-cache";
+
 fn tagged(mut response: Response, tag: &'static str) -> Response {
     response
         .headers_mut()
-        .insert("x-cache", HeaderValue::from_static(tag));
+        .insert(CACHE_HEADER, HeaderValue::from_static(tag));
     response
 }
 
-/// 缓存中间件。键是完整 URI（路径 + 查询串），`X-Cache` 回 `HIT` / `MISS` / `BYPASS`
+/// 缓存键：完整 URI（路径 + 查询串）；**只有 `/api/dataset` 再拼上名册代数**。
+///
+/// 名册活在进程内存里，它整体过期重建时库里一个字节都没变 —— 不拼进来就是「名册刷新了，
+/// 页面照旧回旧响应」，而且那不会自愈。但只有 dataset 带客服姓名（名册唯一的注入点是
+/// `serve::filters`），其余接口一个名字都不含，代数与它们无关。
+///
+/// ⚠️ 代数曾经拼在**数据戳**上，于是每过一个 `roster.ttl_secs` 整个缓存作废、概览的四个
+/// 聚合接口跟着白算一遍 —— 2026-10-15 生产日志 10:01 那次重算就是它（1104 群，每个请求 1~3.5 秒）。
+/// **不能只给 dataset 拼进戳**：[`Cache::put`] 见戳不同就整个清空，两种戳会互相清掉对方。
+///
+/// 旧代数的 dataset 条目留到戳变（每晚一次）或装满整清 —— 一天十来条，`cache_bytes` 封顶。
+fn key(uri: &Uri, generation: u64) -> String {
+    if uri.path() == DATASET {
+        format!("{uri}|r{generation}")
+    } else {
+        uri.to_string()
+    }
+}
+
+/// 缓存中间件。键见 [`key`]，`X-Cache` 回 `HIT` / `MISS` / `BYPASS`
 /// —— `BYPASS` 是戳太新（跑批可能还在写），这次查了但没存。
 pub(super) async fn cached(
     State(state): State<WebState>,
     request: Request,
     next: middleware::Next,
 ) -> Response {
-    let key = request.uri().to_string();
-    let (stamp, quiet) = match state
-        .cache
-        .stamp(&state.pool, state.roster.generation())
-        .await
-    {
+    let key = key(request.uri(), state.roster.generation());
+    let (stamp, quiet) = match state.cache.stamp(&state.pool).await {
         Ok(v) => v,
         Err(e) => return WebError::from(e).into_response(),
     };
@@ -262,53 +268,39 @@ mod tests {
             std::future::ready(Ok(("s1".to_owned(), true)))
         };
         for _ in 0..5 {
-            assert_eq!(
-                cache.stamp_with(0, fetch).await.unwrap(),
-                ("s1|r0".into(), true)
-            );
+            assert_eq!(cache.stamp_with(fetch).await.unwrap(), ("s1".into(), true));
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         // 过期之后再查一次 —— 戳变了整个缓存照旧作废，失效语义不变。
         *cache.recent.lock().unwrap() = None;
-        assert_eq!(
-            cache.stamp_with(0, fetch).await.unwrap(),
-            ("s1|r0".into(), true)
-        );
+        assert_eq!(cache.stamp_with(fetch).await.unwrap(), ("s1".into(), true));
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
-    /// 名册代数一变，整个响应缓存作废 —— 库里一个字节都没动也要作废，
-    /// 因为名册活在进程内存里。**不必起数据库**：取戳那一步是参数。
-    ///
-    /// 同时钉住代数**在一秒自缓存之外**拼上：库那一截照旧只查一次，
-    /// 而代数变化当场生效，不用等自缓存过期。
-    #[tokio::test]
-    async fn a_new_roster_generation_invalidates_every_cached_response() {
+    /// 名册代数一变，`/api/dataset` 作废 —— 库里一个字节都没动也要作废，因为名册活在
+    /// 进程内存里；其余接口不含姓名，照旧命中。此前代数拼在戳上，每个 TTL 整个缓存白清一次。
+    #[test]
+    fn a_new_roster_generation_invalidates_only_the_dataset() {
         let cache = Cache::new(64);
-        let calls = AtomicUsize::new(0);
-        let fetch = || {
-            calls.fetch_add(1, Ordering::Relaxed);
-            std::future::ready(Ok(("db".to_owned(), true)))
-        };
-        let (before, _) = cache.stamp_with(7, fetch).await.unwrap();
-        cache.put(
-            before.clone(),
-            "/api/dataset".into(),
-            Bytes::from_static(b"old"),
-        );
+        let dataset: Uri = format!("{DATASET}?from=2026-10-07&to=2026-10-13")
+            .parse()
+            .unwrap();
+        let summary: Uri = "/api/summary?from=2026-10-07&to=2026-10-13"
+            .parse()
+            .unwrap();
+        for uri in [&dataset, &summary] {
+            cache.put("db".into(), key(uri, 7), Bytes::from_static(b"old"));
+        }
+        // 名册整体过期 ⇒ 代数 +1，库没变（戳仍是 "db"）。
         assert_eq!(
-            cache.get(&before, "/api/dataset").as_deref(),
-            Some(&b"old"[..])
-        );
-
-        // 名册整体过期 ⇒ 代数 +1。库没变，取戳也仍然走自缓存（calls 不增）。
-        let (after, _) = cache.stamp_with(8, fetch).await.unwrap();
-        assert_ne!(before, after, "代数没进戳，名册刷新后页面会一直回旧响应");
-        assert_eq!(calls.load(Ordering::Relaxed), 1, "代数不该让库那一截重查");
-        assert_eq!(
-            cache.get(&after, "/api/dataset"),
+            cache.get("db", &key(&dataset, 8)),
             None,
-            "旧响应必须整体作废"
+            "代数没进 dataset 的键，名册刷新后页面会一直回旧姓名"
+        );
+        assert_eq!(
+            cache.get("db", &key(&summary, 8)).as_deref(),
+            Some(&b"old"[..]),
+            "聚合接口不含姓名，代数不该让它重算"
         );
     }
 

@@ -385,7 +385,7 @@ journalctl -u chat2events-merchant-sync -f              # 看日志
 ## 实测基线
 
 **2026-09-19 在 dev 库（`wechat_business_app_dev`）量过一次。** ⚠️ 这是 **dev 不是生产**，
-生产那台的规模没量过 —— 但它是目前唯一的真实测量，够用来判断此前那些外推数字靠不靠谱。
+生产的数字见本节末尾「生产（2026-10-15）」—— 生产比 dev 大 7.7 倍，下面「小 8 倍」的结论只对 dev 成立。
 
 | 项 | 实测值 |
 |---|---|
@@ -412,7 +412,7 @@ journalctl -u chat2events-merchant-sync -f              # 看日志
 **小 8 倍**，离 `web.max_rows = 20000` 还很远。所以 `architecture.md` 那句「181 个群时默认七天
 窗口就开始报错」按实测应该是 **460 群左右**才会撞上。
 
-⚠️ **生产规模仍未测。** 上面这张表是 dev 的；要生产的数字，把下面三条 SQL 在生产只读账号上再跑一遍。
+⚠️ 上面这张表是 dev 的，生产见下面「生产（2026-10-15）」。
 
 `idx_overview` 的八列覆盖设计、`web.max_rows`、`store::sql::BATCH` 全都建立在这些数字上。
 **按实测重算，它们的代价比注释里写的小 8 倍** —— 见上表。
@@ -436,6 +436,76 @@ FROM b_merchant_group_event;
 SELECT COUNT(DISTINCT roomid) AS rooms, MIN(dt) AS oldest, MAX(dt) AS newest
 FROM b_merchant_group_metric_daily;
 ```
+
+### 生产（2026-10-15）
+
+只读账号上跑窗口计数、`information_schema` 与四条慢语句的 `EXPLAIN ANALYZE`，整份连跑两遍。
+**两遍几乎一样**：buffer pool 装得下全部数据，慢在 CPU 不在 IO —— 加内存、预热缓冲池都没用。
+
+| 项 | 实测值 |
+|---|---|
+| MySQL | **8.0.36**（CI 与本地模拟用的是 8.4） |
+| `innodb_buffer_pool_size` | 13,056 MB |
+| 事件表 | 约 16.5 万行（`TABLE_ROWS` 估计值，约 11 天的量）· 数据 430 MB ＋ 索引 98 MB · `AVG_ROW_LENGTH` 2735 B |
+| 7 天窗口（2026-10-07 ~ 10-13） | **101,583 事件** · 1,104 群（事件表）/ 1,189 群（群日表）· 6,661 群日全部是已知成功群日 |
+| **事件 / 天** | **约 1.45 万**（dev 的 7.7 倍） |
+| `agents` 展开 | 104,829 行（平均 1.03 人 / 事件）· 窗口内 141 位客服 |
+| 商家发起 / 其中已回复 | 87,868 / 72,402 |
+| `run_failure` | 4 行，全是 `classify` |
+
+注释里按「1000 群 × 7 天 ≈ 11 万行」的外推**在生产上基本成立**（实测 10.2 万），上面 dev 一节「小 8 倍」不适用。
+
+单条语句（单独跑、无并发，7 天窗口；`EXPLAIN ANALYZE` 自身计时有开销，绝对值偏大，看比例）：
+
+| 语句 | 合计 ms | 其中分位数那一段（两遍窗口函数） |
+|---|---|---|
+| 筛选器客服名单（`JSON_TABLE` 展开 `agents`） | ~600 | — |
+| 按群聚合 | 1,557 | 869 |
+| 按客服聚合 | 2,101 | 720 |
+| 按二级分类聚合 | 1,430 | 778 |
+
+### 本机生产规模模拟（2026-10-15）
+
+生产库只能经人手跑，长窗口与改写方案在本机量。两份文件在 `docs/bench/`：
+`seed.sql` 按上面生产 7 天窗口的形状造 45 天数据，`diag.sql` 就是生产那一节用的诊断 SQL。
+
+```bash
+docker run -d --name c2e-bench -m 6g -e MYSQL_ROOT_PASSWORD=root -p 3308:3306 \
+  mysql:8.0.36 --innodb-buffer-pool-size=4G                  # 与生产同版本；3308 避开测试用的 3307
+docker exec c2e-bench mysqladmin ping -uroot -proot           # 回 alive 后再多等几秒
+docker exec -i c2e-bench mysql -uroot -proot -e 'CREATE DATABASE c2e_bench_test'
+docker exec -i c2e-bench mysql --default-character-set=utf8mb4 -uroot -proot c2e_bench_test < schema.sql
+docker exec -i c2e-bench mysql --default-character-set=utf8mb4 -uroot -proot c2e_bench_test < docs/bench/seed.sql   # 约 30 秒
+docker exec -i c2e-bench mysql --raw --default-character-set=utf8mb4 -uroot -proot c2e_bench_test < docs/bench/diag.sql
+docker rm -f -v c2e-bench                                     # 用完删掉，数据不留
+```
+
+⚠️ `seed.sql` 会清空五张业务表、DROP 上游群配置表，第一句护栏要求库名以 `_test` 结尾 ——
+**别加 `--force`，也别指向任何共享库**。
+
+| 语句（7 天，`EXPLAIN ANALYZE` 合计 ms） | 本机 | 生产 |
+|---|---|---|
+| 筛选器客服名单 | 311 ~ 332 | ~600 |
+| 按群聚合 | 615 ~ 666 | 1,557 |
+| 按客服聚合 | 760 ~ 798 | 2,101 |
+| 按二级分类聚合 | 521 ~ 524 | 1,430 |
+
+- 计划形状与生产一致，**生产整体慢 2.3 ~ 2.8 倍**。不是临时表设置造成的：生产是
+  `internal_tmp_mem_storage_engine=MEMORY`、`tmp_table_size` 2 MB，本机套上同样的设置合计几乎不变 —— 差距在 CPU / 存储。
+- 满 31 天（一次性压测工具量的整页并发，工具没入库）：客服效能页（dataset + summary + agents + rooms
+  同时发）最慢的请求 6.5 秒，3 人同时 9.9 秒。乘 2.4 就是 `config.toml` 里「生产约 12 ~ 25 秒」的出处。
+
+**量过、没采用的提速**（31 天、本机，输出均与原语句逐字节一致）：
+
+- **单条语句调大临时表**（`SET_VAR(tmp_table_size=256M)` 等）：rooms 5.8 → 2.6 秒，3 人并发时收益缩水。
+  生产引擎是 MEMORY，**只读账号改不了引擎**（1227，要 `SESSION_VARIABLES_ADMIN`）；只调大小的话
+  MEMORY 没有 TempTable 那样的全局内存上限，业务主库上不开。
+- **「客服参与」子表**（每事件每客服一行 + 覆盖索引）：agents 5.9 → 2.1 秒，但要改表结构、
+  跑批与打标同步写、回填存量；rooms、summary 帮不上。
+- **分位数一次排序**（`ROW_NUMBER` 与 `COUNT(*)` 共用一个窗口）：只快 2% ~ 8%。
+
+长范围是低频的月度报表、当天之后走响应缓存，所以只调了超时（`config.toml` 的 `query_timeout_secs`）。
+用户真嫌长范围慢，再从上面两条大的开始看。
 
 ## 上线前的检查
 

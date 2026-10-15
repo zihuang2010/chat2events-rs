@@ -132,7 +132,7 @@ describe("只读接口边界", () => {
       kind: "timeout",
       path: "/dataset",
     });
-    await vi.advanceTimersByTimeAsync(20000);
+    await vi.advanceTimersByTimeAsync(45000);
     await result;
     expect(vi.getTimerCount()).toBe(0);
   });

@@ -64,9 +64,12 @@ pub async fn serve(
     Ok(())
 }
 
+/// 唯一带客服姓名的路由。响应缓存只给它的键拼名册代数（`cache::key`），所以路径不抄字面量。
+pub(super) const DATASET: &str = "/api/dataset";
+
 pub(super) fn router(state: WebState) -> Router {
     Router::new()
-        .route("/api/dataset", get(dataset))
+        .route(DATASET, get(dataset))
         .route("/api/summary", get(summary))
         .route("/api/rooms", get(rooms))
         .route("/api/room-categories", get(room_categories))

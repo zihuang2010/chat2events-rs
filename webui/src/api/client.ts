@@ -33,7 +33,9 @@ import {
 } from "@/domain/schemas";
 
 export const API_BASE = "/api";
-const READ_TIMEOUT_MS = 20000;
+// 必须长于 nginx 的 proxy_read_timeout（40 秒）与后端 web.query_timeout_secs（30 秒）：
+// 超时要由后端报成 JSON 错误，前端先放弃就只剩一句「超时」，看不出是哪一层。
+const READ_TIMEOUT_MS = 45000;
 
 export type ApiErrorKind = "network" | "timeout" | "http" | "contract";
 

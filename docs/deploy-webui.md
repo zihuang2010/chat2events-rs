@@ -314,7 +314,7 @@ tar -xzf chat2events-webui-dist.tar.gz -C /srv/chat2events-webui
 | 跑着跑着日志出现 `Nacos 刷新失败，沿用上一次的实例列表` | Nacos 侧抖动。**进程不会退，页面照常**（手上那份实例列表继续用，每 10 秒重试）。持续刷就去查 Nacos 自己 |
 | 刷新子页面 404 | `try_files` 没配 |
 | 多人同时用就有面板 503 | `web.concurrency` 不够：一次开页并发 7 个请求，名额要 ≥ 在线人数 × 7 |
-| 首屏慢 | 先数一下慢请求：`journalctl -u chat2events-webui \| grep '只读请求超过'`（⚠️ **日志文本是中文，`grep SLOW_REQUEST` 什么都搜不到** —— 那是 `budget.rs` 里的常量名，不是打出来的字）。条数多再看 `docs/deploy.md`「只读工作台响应缓存」的索引升级；另见 `config.toml` 的 `roster.ttl_secs`，它是响应缓存寿命的上界 |
+| 首屏慢 | 先数一下慢请求：`journalctl -u chat2events-webui \| grep '只读请求超过'`（⚠️ **日志文本是中文，`grep SLOW_REQUEST` 什么都搜不到** —— 那是 `budget.rs` 里的常量名，不是打出来的字）。每条带 `cache=`：`MISS` / `BYPASS` 是 SQL 在重算，`HIT` 也慢说明慢在名额或连接池。条数多再看 `docs/deploy.md`「只读工作台响应缓存」的索引升级；另见 `config.toml` 的 `roster.ttl_secs`，它是 `/api/dataset` 缓存寿命的上界（其余接口只随数据戳作废） |
 
 ## 如果以后要走子路径
 

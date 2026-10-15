@@ -1,0 +1,27 @@
+docs/deploy.md
+  s_7e77bd4f466c3a::t_541dd552899be3 388,415,440-465
+  s_7e77bd4f466c3a::t_c17ab4ae7cf741 467-508
+  s_7e77bd4f466c3a::t_3e8f0d902b6b2b 466,509
+docs/bench/diag.sql
+  s_7e77bd4f466c3a::t_4e3a08b2c998b3 1-8,11-71
+  s_7e77bd4f466c3a::t_e0222643d44ef4 9-10
+docs/bench/seed.sql
+  s_7e77bd4f466c3a::t_c17ab4ae7cf741 5
+  s_7e77bd4f466c3a::t_5aaa2af5bb56a3 1-4,6-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eafe1ae55e79d8374a491c5c2fbdb32f8295636a",
+  "prompts": {},
+  "sessions": {
+    "s_7e77bd4f466c3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fe0dc0b-7ff5-4fa2-b3ac-90e214080a86",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "pis0sion <zihuang2010@126.com>"
+    }
+  }
+}
